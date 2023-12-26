@@ -12,7 +12,7 @@ def get_device_data():
             print("Device data is older than 24 hours, requesting new data...")
             data = GetDevices.start()
         return data
-    except:
-        print("Settings.json not found/corrupted, requesting new data...")
+    except FileNotFoundError:
+        print("Settings.json not found, requesting new data...")
         data = GetDevices.start()
         return data
