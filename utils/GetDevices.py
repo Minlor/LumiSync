@@ -1,16 +1,18 @@
 import socket
 import json
 import time
+import colorama
 
 multicast = "239.255.255.250"
+
 port = 4001
 listen_port = 4002
 
 def start():
     requestScan()
-    print("Listening for devices...")
+    print(f"{colorama.Fore.YELLOW}Trying to find device...")
     data = listen()
-    print("Device found!")
+    print(f"{colorama.Fore.GREEN}Device found!")
     new_data = writeJSON(json.loads(data[0]))
     return(new_data)
 
@@ -27,9 +29,9 @@ def listen():
     try:
         message, address = sock.recvfrom(1024)
     except socket.timeout:
-        print("No devices found!")
-        exit()
-    print("Received message from: ", address)
+        print(f"{colorama.Fore.RED}Error: No device found!")
+        exit(1)
+    print(f"{colorama.Fore.LIGHTGREEN_EX}Received message from: ", address)
     return(message, address)
 
 def writeJSON(data):
@@ -41,5 +43,5 @@ def writeJSON(data):
             "Time": time.time()
         }
         json.dump(data, f)
-    print("Data written to Settings.json")
+    print(f"{colorama.Fore.LIGHTGREEN_EX}Data written to Settings.json")
     return(data)
