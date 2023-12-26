@@ -35,6 +35,7 @@
 
 ## TODO
 
+* [ ] Make a wiki page for the project.
 * [ ] Add MusicSync feature.
 * [ ] Add CustomSync feature.
 * [ ] Add a GUI.
