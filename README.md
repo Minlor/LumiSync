@@ -9,7 +9,6 @@
 <p align="center">
     <a href="https://github.com/Minlor/LumiSync/stargazers"><img src="https://img.shields.io/github/stars/Minlor/LumiSync.svg?style=social&label=Star"></a>
     <a href="https://github.com/Minlor/LumiSync/watchers"><img src="https://img.shields.io/github/watchers/Minlor/LumiSync.svg?style=social&label=Watch"></a>
-    <a href="https://github.com/Minlor/LumiSync/releases"><img src="https://img.shields.io/github/downloads/Minlor/LumiSync/total.svg?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -58,7 +57,7 @@ Currently, the only way to use LumiSync is to download the source code and run i
 
 ## Download
 
-You can [download](https://github.com/Minlor/LumiSync/releases) the latest installable version of LumiSync here.
+You can [download](https://codeload.github.com/Minlor/LumiSync/zip/refs/heads/main) the latest installable version of LumiSync here.
 
 ## Credits
 
