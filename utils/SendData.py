@@ -48,7 +48,6 @@ def send_razer_on_off(on_off: bool = None) -> None:
                         {"pt": "uwABsQEK" if on_off else "uwABsgEJ"}
                     }
                })
-    print("Razer on")
 
 
 def send_data(data) -> json:
