@@ -21,7 +21,9 @@
   <a href="#license">License</a>
 </p>
 
-![screenshot](https://cloud.minlor.net/raw/Minlor/py_tcXBDhVgxP.png)
+![screenshot](https://cloud.minlor.net/raw/Minlor/py_FNHoNbJ5c6.png)
+> **Note**
+> This project is in early development.
 
 ## Key Features
 
