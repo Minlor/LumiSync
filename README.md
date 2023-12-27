@@ -26,9 +26,9 @@
 ## Key Features
 
 * Easy to use - Simple UI that allows you to easily control your lights.
-* MonitorSync - Sync your lights to your monitor.
+* MonitorSync - Sync your lights to your monitor. (Alpha)
 * Easy to use - Simple UI that allows you to easily control your lights.
-* MusicSync - Sync your lights to your music. (WIP)
+* MusicSync - Sync your lights to your music. (Alpha)
 * CustomSync - Sync your lights to a custom color/animation. (WIP)
 * Open Source - LumiSync is open source and free to use.
 * Availability - LumiSync is available for Windows and hasn't been tested on Linux or MacOS. (WIP)
@@ -36,7 +36,7 @@
 ## TODO
 
 * [ ] Make a wiki page for the project.
-* [ ] Add MusicSync feature.
+* [ ] Add Multiple MusicSync modes and improve the current one.
 * [ ] Add CustomSync feature.
 * [ ] Add a GUI.
 * [ ] Support for basic brightness control.
@@ -60,6 +60,9 @@ You can [download](https://github.com/Minlor/LumiSync/releases) the latest insta
 
 ## Credits
 
+Tools used:
+- [**Wireshark**](https://wireshark.org/) (Massive thanks to the Wireshark team for making this amazing tool.)
+
 This software uses the following open source packages:
 
 - [dxcam](https://github.com/ra1nty/DXcam)
@@ -70,7 +73,7 @@ This software uses the following open source packages:
 
 ## Related
 
-[Govee Desktop](https://www.govee.com/download/desktop) - Official Govee desktop app. (Windows only)
+[Govee Desktop](https://www.govee.com/download/desktop) - Official Govee desktop app. (Windows only, supports basic color control and monitor sync.)
 
 ## Support
 
@@ -85,5 +88,6 @@ MIT
 ---
 
 > [minlor.net](https://minlor.net) &nbsp;&middot;&nbsp;
+> [cloud.minlor.net](https://cloud.minlor.net) &nbsp;&middot;&nbsp;
 > GitHub [@minlor](https://github.com/minlor)
 
