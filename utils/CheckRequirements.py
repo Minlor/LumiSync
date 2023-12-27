@@ -1,20 +1,18 @@
-import importlib
 import os
+import pkgutil
 
 
 def check_requirements():
-    try:
         for x in open("requirements.txt").read().split("\n"):
             if x == "Pillow":
                 x = "PIL"
-            importlib.import_module(x)
-    except ModuleNotFoundError:
-        print("Error, some requirements are missing!")
-        install = input("Would you like to install them? (y/n): ")
-        if install.lower() == "y":
-            os.system("pip install -r requirements.txt")
-            os.system("cls" if os.name == "nt" else "clear")
-            print("Requirements installed!")
-        else:
-            print("Exiting...")
-            exit(1)
+            if not pkgutil.find_loader(x):
+                print(f"Error, {x} is missing!")
+                install = input("Would you like to install it? (y/n): ")
+                if install.lower() == "y":
+                    os.system(f"pip install {x}")
+                    os.system("cls" if os.name == "nt" else "clear")
+                    print("Requirement installed!")
+                else:
+                    print("Exiting...")
+                    exit(1)
