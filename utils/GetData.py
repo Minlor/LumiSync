@@ -13,8 +13,8 @@ def get_device_data():
             print("Device data is older than 24 hours, requesting new data...")
             data = GetDevices.start()
         if len(data["devices"]) > 1:
-            print(f"{colorama.Fore.LIGHTYELLOW_EX}Please select a device:\n{colorama.Fore.YELLOW}" + \
-                f"\n".join([f"{i + 1}) {device['Device_IP']} ({device['Model']})" for i, device in enumerate(data["devices"])]))
+            print(f"{colorama.Fore.LIGHTYELLOW_EX}Please select a device:\n{colorama.Fore.YELLOW}" + 
+                    "\n".join([f"{i + 1}) {device['Device_IP']} ({device['Model']})" for i, device in enumerate(data["devices"])]))
             selectedDevice = input("")
             data["selectedDevice"] = int(selectedDevice) - 1
             GetDevices.writeJSON(data)
