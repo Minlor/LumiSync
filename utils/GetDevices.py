@@ -58,13 +58,12 @@ def parseMessages(messages):
                 "MAC": device["msg"]["data"]["device"],
                 "Model": device["msg"]["data"]["sku"],
                 "Device_IP": device["msg"]["data"]["ip"],
-                "Device_Port": 4003,
-                "Time": time.time()
+                "Device_Port": 4003
             }
             settings["devices"].append(data)
         else:
             existingDevice["Device_IP"] = device["msg"]["data"]["ip"]
-            existingDevice["Time"] = time.time()
+    settings["time"] = time.time()
     return settings
 
 def writeJSON(settings):
