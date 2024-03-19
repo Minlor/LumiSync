@@ -9,7 +9,7 @@ def get_device_data():
         with open("Settings.json", "r") as f:
             data = json.load(f)
 
-        if time.time() - data["time"] > 86400:
+        if time.time() - data.get("time", 0) > 86400:
             print("Device data is older than 24 hours, requesting new data...")
             data = GetDevices.start()
         if len(data["devices"]) > 1:
