@@ -37,14 +37,13 @@ def listen():
     except socket.timeout:
         if len(messages) == 0:
             print(f"{colorama.Fore.RED}Error: No device found!")
-            sys.exit(1)
-    
+            sys.exit(1) 
     return messages
 
 def parseMessages(messages):
     try:
         with open("Settings.json", "r") as f:
-                settings = json.load(f)
+            settings = json.load(f)
     except FileNotFoundError:
         settings = {
             "time": time.time(),
