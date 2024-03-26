@@ -6,7 +6,8 @@ import json
 from utils import GetData
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-device = GetData.get_device_data()
+settings = GetData.get_device_data()
+device = settings["devices"][settings["selectedDevice"]]
 
 
 def convert_colors(colors: list) -> str:
