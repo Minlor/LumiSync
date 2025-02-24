@@ -7,8 +7,8 @@ from utils import SendData
 
 ss = dxcam.create()
 
-def lerp(start, end, t):
-    return start + t * (end - start)
+def lerp(start_value, end, t):
+    return start_value + t * (end - start_value)
 
 def start():
     SendData.send_razer_on_off(True)
