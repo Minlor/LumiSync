@@ -1,31 +1,30 @@
 from PIL import Image
 import time
 import dxcam
+import colour
 
 from utils import SendData
 
 ss = dxcam.create()
 
+def lerp(start, end, t):
+    return start + t * (end - start)
+
 def start():
     SendData.send_razer_on_off(True)
+    previous_colors = [(0, 0, 0)] * 10  # Initialize with black colors
     while True:
-
         colors = []
-
         try:
             screen = ss.grab()
             if screen is None:
                 continue
-
 
             screen = Image.fromarray(screen)
             width, height = screen.size
         except OSError:
             print("Warning: Screenshot failed, trying again...")
             continue
-
-        # TODO combine old and new colors and then add a smooth transition effect
-        # TODO possibly add processes to speed this up
 
         top, bottom = int(height / 4 * 2), int(height / 4 * 3)
 
@@ -43,6 +42,21 @@ def start():
             colors.append(img.getpixel(point))
         img = screen.crop((int((width/4 * 3)), top, width, bottom))
         colors.append(img.getpixel(point))
-        time.sleep(0.025) # Added to not kill peoples CPUs
 
-        SendData.send_razer_data(SendData.convert_colors(colors))
+        smooth_transition(previous_colors, colors)
+        previous_colors = colors
+
+def smooth_transition(previous_colors, colors, steps=10, delay=0.01):
+    prev_colors = [colour.Color(rgb=(c[0]/255, c[1]/255, c[2]/255)) for c in previous_colors]
+    next_colors = [colour.Color(rgb=(c[0]/255, c[1]/255, c[2]/255)) for c in colors]
+
+    for step in range(steps):
+        interpolated_colors = []
+        for i in range(len(colors)):
+            r = lerp(prev_colors[i].red, next_colors[i].red, step / steps)
+            g = lerp(prev_colors[i].green, next_colors[i].green, step / steps)
+            b = lerp(prev_colors[i].blue, next_colors[i].blue, step / steps)
+            interpolated_colors.append((int(r * 255), int(g * 255), int(b * 255)))
+
+        SendData.send_razer_data(SendData.convert_colors(interpolated_colors))
+        time.sleep(delay)
