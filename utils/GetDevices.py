@@ -50,6 +50,13 @@ def parseMessages(messages):
             "devices": [],
             "selectedDevice": 0
         }
+
+    # Ensure the settings dictionary has the 'devices' and 'selectedDevice' keys
+    if "devices" not in settings:
+        settings["devices"] = []
+    if "selectedDevice" not in settings:
+        settings["selectedDevice"] = 0
+
     for deviceJson in messages:
         device = json.loads(deviceJson)
         existingDevice = next((x for x in settings["devices"] if x["MAC"] == device["msg"]["data"]["device"]), None)
