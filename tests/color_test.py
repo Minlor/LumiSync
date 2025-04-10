@@ -1,7 +1,6 @@
 import time
 
-# Local
-from utils import SendData
+from lumisync.utils import SendData
 
 blue = [0, 0, 255]
 green = [0, 255, 0]

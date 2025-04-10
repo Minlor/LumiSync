@@ -2,8 +2,7 @@ import base64
 import json
 import socket
 
-# Local
-from utils import GetData
+from . import GetData
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 settings = GetData.get_device_data()

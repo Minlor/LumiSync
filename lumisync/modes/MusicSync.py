@@ -1,7 +1,7 @@
 import numpy as np
 import soundcard as sc
 
-from utils import SendData
+from ..utils import SendData
 
 # Set the audio parameters
 duration = 0.01  # seconds

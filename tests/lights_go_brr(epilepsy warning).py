@@ -1,8 +1,7 @@
 import random
 import time
 
-# Local
-from utils import SendData
+from lumisync.utils import SendData
 
 SendData.send_razer_on_off(True)
 for x in range(100):

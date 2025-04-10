@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "lumisync"
 version = "0.1.0"
@@ -8,6 +12,10 @@ dependencies = [
     "colorama>=0.4.6",
     "colour>=0.1.5",
     "dxcam>=0.0.5",
+    "numpy>=2.2.4",
     "pillow>=11.1.0",
     "soundcard>=0.4.4",
 ]
+
+[project.scripts]
+lumisync = "lumisync.lumisync:main"

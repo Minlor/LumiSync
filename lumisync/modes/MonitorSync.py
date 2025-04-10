@@ -4,7 +4,7 @@ import colour
 import dxcam
 from PIL import Image
 
-from utils import SendData
+from ..utils import SendData
 
 ss = dxcam.create()
 
