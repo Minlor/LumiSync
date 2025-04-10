@@ -1,7 +1,8 @@
 import time
+
 import colour
 
-#Local
+# Local
 from utils import SendData
 
 print("Attempting to turn on razer mode...")
@@ -24,23 +25,22 @@ print("Transitioning to next color in all_colors...")
 previous = None
 for color in all_colors:
     if previous is None:
-        previous = colour.Color(rgb=(color[0]/255, color[1]/255, color[2]/255))
+        previous = colour.Color(rgb=(color[0] / 255, color[1] / 255, color[2] / 255))
         continue
-    color = colour.Color(rgb=(color[0]/255, color[1]/255, color[2]/255))
+    color = colour.Color(rgb=(color[0] / 255, color[1] / 255, color[2] / 255))
     range = list(previous.range_to(color, 10))
     for i in range:
-        SendData.send_razer_data(SendData.convert_colors([[int(i.red*255), int(i.green*255), int(i.blue*255)]]))
+        SendData.send_razer_data(
+            SendData.convert_colors(
+                [[int(i.red * 255), int(i.green * 255), int(i.blue * 255)]]
+            )
+        )
         time.sleep(0.025)
     previous = color
 
 
-
-
-
-
-
-
 time.sleep(5)
-print("Attempting to turn off razer mode, it might take up to a minute for the lights to refresh...")
+print(
+    "Attempting to turn off razer mode, it might take up to a minute for the lights to refresh..."
+)
 SendData.send_razer_on_off()
-
