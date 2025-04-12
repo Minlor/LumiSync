@@ -3,7 +3,7 @@ import time
 
 import colorama
 
-from utils import GetDevices
+from . import GetDevices
 
 
 def get_device_data():

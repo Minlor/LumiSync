@@ -48,11 +48,10 @@
 
 Currently, the only way to use LumiSync is to download the source code and run it yourself. This will be changed in the future.
 
-
 > **Note**
-> 
+>
 > This requires you to download [python](https://www.python.org/downloads/).
-> 
+>
 > All of the python requirements will be installed automatically when you run the program for the first time.
 
 ## Download
@@ -62,15 +61,15 @@ You can [download](https://codeload.github.com/Minlor/LumiSync/zip/refs/heads/ma
 ## Credits
 
 Tools used:
-- [**Wireshark**](https://wireshark.org/) (Massive thanks to the Wireshark team for making this amazing tool.)
+* [**Wireshark**](https://wireshark.org/) (Massive thanks to the Wireshark team for making this amazing tool.)
 
 This software uses the following open source packages:
 
-- [dxcam](https://github.com/ra1nty/DXcam)
-- [Pillow](https://github.com/python-pillow/Pillow)
-- [soundcard](https://github.com/bastibe/SoundCard)
-- [colour](https://github.com/colour-science/colour)
-- [colorama](https://github.com/tartley/colorama)
+* [dxcam](https://github.com/ra1nty/DXcam)
+* [Pillow](https://github.com/python-pillow/Pillow)
+* [soundcard](https://github.com/bastibe/SoundCard)
+* [colour](https://github.com/colour-science/colour)
+* [colorama](https://github.com/tartley/colorama)
 
 ## Related
 
@@ -91,4 +90,3 @@ MIT
 > [minlor.net](https://minlor.net) &nbsp;&middot;&nbsp;
 > [cloud.minlor.net](https://cloud.minlor.net) &nbsp;&middot;&nbsp;
 > GitHub [@minlor](https://github.com/minlor)
-

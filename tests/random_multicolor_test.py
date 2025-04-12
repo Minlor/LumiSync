@@ -1,8 +1,7 @@
 import random
 import time
 
-# Local
-from utils import SendData
+from lumisync.utils import SendData
 
 colors = []
 for i in range(5):

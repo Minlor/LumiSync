@@ -41,7 +41,7 @@ def listen():
     except socket.timeout:
         if len(messages) == 0:
             print(f"{colorama.Fore.RED}Error: No device found!")
-            sys.exit(1)
+            sys.exit()
     return messages
 
 

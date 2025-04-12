@@ -2,8 +2,7 @@ import time
 
 import colour
 
-# Local
-from utils import SendData
+from lumisync.utils import SendData
 
 print("Attempting to turn on razer mode...")
 SendData.send_razer_on_off(True)
