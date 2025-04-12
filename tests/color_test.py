@@ -1,6 +1,6 @@
 import time
 
-#Local
+# Local
 from utils import SendData
 
 blue = [0, 0, 255]
@@ -25,6 +25,7 @@ print(SendData.convert_colors(colors))
 SendData.send_razer_data(SendData.convert_colors(colors))
 print("Colors sent!")
 time.sleep(5)
-print("Attempting to turn off razer mode, it might take up to a minute for the lights to refresh...")
+print(
+    "Attempting to turn off razer mode, it might take up to a minute for the lights to refresh..."
+)
 SendData.send_razer_on_off()
-

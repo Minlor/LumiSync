@@ -1,0 +1,13 @@
+[project]
+name = "lumisync"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "colorama>=0.4.6",
+    "colour>=0.1.5",
+    "dxcam>=0.0.5",
+    "pillow>=11.1.0",
+    "soundcard>=0.4.4",
+]
