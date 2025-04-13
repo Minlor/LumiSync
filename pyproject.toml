@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lumisync"
 version = "0.1.0"
-description = "Add your description here"
+description = "A Python library for syncing Govee led strips with audio and screen content."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
