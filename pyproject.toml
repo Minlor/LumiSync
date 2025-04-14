@@ -27,6 +27,7 @@ dependencies = [
   "numpy>=2.2.4",
   "pillow>=11.1.0",
   "soundcard>=0.4.4",
+  "webcolors>=24.11.1",
 ]
 
 [tool.setuptools.packages.find]
