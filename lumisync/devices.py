@@ -5,10 +5,7 @@ import time
 
 import colorama
 
-multicast = "239.255.255.250"
-
-port = 4001
-listen_port = 4002
+from .config.options import CONNECTION
 
 
 def start():
@@ -24,14 +21,17 @@ def start():
 def requestScan():
     data = {"msg": {"cmd": "scan", "data": {"account_topic": "reserve"}}}
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.sendto(bytes(json.dumps(data), "utf-8"), (multicast, port))
+    sock.sendto(
+        bytes(json.dumps(data), "utf-8"),
+        (CONNECTION.default.multicast, CONNECTION.default.port),
+    )
     return
 
 
 def listen():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(10)
-    sock.bind(("", listen_port))
+    sock.bind(("", CONNECTION.default.listen_port))
     messages = []
     try:
         while True:

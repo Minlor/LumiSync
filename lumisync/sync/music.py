@@ -2,11 +2,10 @@ import numpy as np
 import soundcard as sc
 
 from .. import connection, utils
+from ..config.options import AUDIO
 
-# Set the audio parameters
-duration = 0.01  # seconds
-sample_rate = 48000  # You can adjust this based on your requirements
 
+# TODO: These need to be moved to options.py as well
 LED_COUNT = 20
 colors = [[0, 0, 0]] * LED_COUNT
 
@@ -16,10 +15,10 @@ def start():
     while True:
         with sc.get_microphone(
             id=str(sc.default_speaker().name), include_loopback=True
-        ).recorder(samplerate=sample_rate) as mic:
+        ).recorder(samplerate=AUDIO.sample_rate) as mic:
             # Try and except due to a soundcard error when no audio is playing
             try:
-                data = mic.record(numframes=duration * sample_rate)
+                data = mic.record(numframes=AUDIO.duration * AUDIO.sample_rate)
             except TypeError:
                 data = None
             amp = get_amplitude(data)
