@@ -14,9 +14,9 @@ def main():
     match mode:
         case "1" | "2":
             if mode == "1":
-                from .modes import MonitorSync as sync
+                from .sync import monitor as sync
             else:
-                from .modes import MusicSync as sync
+                from .sync import music as sync
 
             thread = Thread(daemon=True, target=sync.start, name="MonitorSync", args=())
             thread.start()
