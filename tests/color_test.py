@@ -19,7 +19,7 @@ colors = values = [utils.get_color(name) for name in names]
 print(colors)
 
 print("Attempting to turn on razer mode...")
-connection.send_razer_on_off(True)
+connection.switch_razer(True)
 print("Attempting to send colors...")
 print(colors)
 print(utils.convert_colors(colors))
@@ -29,4 +29,4 @@ time.sleep(5)
 print(
     "Attempting to turn off razer mode, it might take up to a minute for the lights to refresh..."
 )
-connection.send_razer_on_off()
+connection.switch_razer()

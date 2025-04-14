@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 from threading import Thread
 
@@ -6,7 +7,8 @@ import colorama
 from colorama import Fore
 
 
-def main():
+def main() -> None:
+    """The main function running the program."""
     colorama.init(True)
 
     print(Fore.MAGENTA + f"Welcome to {Fore.LIGHTBLUE_EX}LumiSync!")
@@ -29,10 +31,12 @@ def main():
                 f"{Fore.LIGHTYELLOW_EX}Chose test to run:\n{Fore.YELLOW}"
                 + "\n".join([f"{i}) {x}" for i, x in files])
             )
+            # TODO: Tests sometimes appear in different order -> Keep the same
+            # TODO: Implement testing framework like pytest/unittest for the tests
             test = input("Test: ")
             for i, x in files:
                 if i == int(test):
-                    exec(open(f"tests/{x}").read())
+                    subprocess.run(["python", f"tests/{x}"], check=True)
         case _:
             input(Fore.RED + "Invalid option!\nPress Enter to exit...")
             sys.exit()

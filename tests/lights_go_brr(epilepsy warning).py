@@ -3,7 +3,7 @@ import time
 
 from lumisync import connection, utils
 
-connection.send_razer_on_off(True)
+connection.switch_razer(True)
 for x in range(100):
     t = time.perf_counter()
     colors = []

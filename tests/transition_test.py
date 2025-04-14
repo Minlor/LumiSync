@@ -5,7 +5,7 @@ import colour
 from lumisync import connection, utils
 
 print("Attempting to turn on razer mode...")
-connection.send_razer_on_off(True)
+connection.switch_razer(True)
 
 colors = [utils.get_color("blue")]
 all_colors = [utils.get_color(name) for name in ["blue", "green", "red"]]
@@ -37,4 +37,4 @@ time.sleep(5)
 print(
     "Attempting to turn off razer mode, it might take up to a minute for the lights to refresh..."
 )
-connection.send_razer_on_off()
+connection.switch_razer()

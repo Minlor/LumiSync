@@ -10,11 +10,10 @@ description = "A Python library for syncing Govee led strips with audio and scre
 readme = "README.md"
 requires-python = ">=3.11"
 classifiers = [
-  "Development Status :: 2 - Alpha",
-  "Framework :: Pytest",
+  "Development Status :: 3 - Alpha",
   "License :: OSI Approved :: MIT License",
   "Natural Language :: English",
-  "Operating System :: OS Independent",
+  "Operating System :: Microsoft :: Windows",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",

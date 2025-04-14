@@ -6,16 +6,16 @@ from PIL import Image
 
 from .. import connection, utils
 
+# TODO: Move this out of global space?
 ss = dxcam.create()
 
 
-def lerp(start_value, end, t):
-    return start_value + t * (end - start_value)
+def start() -> None:
+    """Starts the monitor-light synchronisation."""
+    connection.switch_razer(True)
 
-
-def start():
-    connection.send_razer_on_off(True)
-    previous_colors = [(0, 0, 0)] * 10  # Initialize with black colors
+    # NOTE: Initialises with black colors
+    previous_colors = [(0, 0, 0)] * 10
     while True:
         colors = []
         try:
@@ -52,7 +52,8 @@ def start():
         previous_colors = colors
 
 
-def smooth_transition(previous_colors, colors, steps=10, delay=0.01):
+def smooth_transition(previous_colors, colors, steps: int = 10, delay: float = 0.01) -> None:
+    """Computes a smooth transition of the colors and sends it to a device."""
     prev_colors = [
         colour.Color(rgb=(c[0] / 255, c[1] / 255, c[2] / 255)) for c in previous_colors
     ]
@@ -60,12 +61,13 @@ def smooth_transition(previous_colors, colors, steps=10, delay=0.01):
         colour.Color(rgb=(c[0] / 255, c[1] / 255, c[2] / 255)) for c in colors
     ]
 
+    # TODO: There is probably a quicker way to do this with the numpy package or so -> Check
     for step in range(steps):
         interpolated_colors = []
         for i in range(len(colors)):
-            r = lerp(prev_colors[i].red, next_colors[i].red, step / steps)
-            g = lerp(prev_colors[i].green, next_colors[i].green, step / steps)
-            b = lerp(prev_colors[i].blue, next_colors[i].blue, step / steps)
+            r = utils.lerp(prev_colors[i].red, next_colors[i].red, step / steps)
+            g = utils.lerp(prev_colors[i].green, next_colors[i].green, step / steps)
+            b = utils.lerp(prev_colors[i].blue, next_colors[i].blue, step / steps)
             interpolated_colors.append((int(r * 255), int(g * 255), int(b * 255)))
 
         connection.send_razer_data(utils.convert_colors(interpolated_colors))

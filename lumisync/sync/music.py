@@ -11,7 +11,7 @@ colors = [[0, 0, 0]] * LED_COUNT
 
 
 def start():
-    connection.send_razer_on_off(True)
+    connection.switch_razer(True)
     while True:
         with sc.get_microphone(
             id=str(sc.default_speaker().name), include_loopback=True
