@@ -20,56 +20,44 @@
   <a href="#license">License</a>
 </p>
 
-![screenshot](https://cloud.minlor.net/raw/Minlor/py_FNHoNbJ5c6.png)
-> **Note**
+> [!Note]
 > This project is in early development.
 
 ## Key Features
 
 * Easy to use - Simple UI that allows you to easily control your lights.
-* MonitorSync - Sync your lights to your monitor. (Alpha)
-* Easy to use - Simple UI that allows you to easily control your lights.
-* MusicSync - Sync your lights to your music. (Alpha)
-* CustomSync - Sync your lights to a custom color/animation. (WIP)
-* Open Source - LumiSync is open source and free to use.
-* Availability - LumiSync is available for Windows and hasn't been tested on Linux or MacOS. (WIP)
+* Syncing - Sync your lights to your monitor or music, potential custom sync in the future. (WIP)
+* Compatability - Available for Windows. Linux and MacOS (WIP).
+* Open Source - Open source and free to use.
 
 ## TODO
 
-* [ ] Make a wiki page for the project.
-* [ ] Add Multiple MusicSync modes and improve the current one.
-* [ ] Add CustomSync feature.
+* [ ] Turning lights on/off.
+* [ ] Make music sync work (WIP).
+* [ ] Make display sync work for Linux and macOS (WIP).
+* [ ] Add additional sync modes.
+* [ ] Add support for multiple devices (WIP).
+* [ ] Add documentation
 * [ ] Add a GUI.
 * [ ] Support for basic brightness control.
 * [ ] Support for basic color control.
-* [ ] Support for turning lights on/off.
 
 ## How To Use
 
-Currently, the only way to use LumiSync is to download the source code and run it yourself. This will be changed in the future.
+> [!Note]
+> For installation execute the following command
 
-> **Note**
->
-> This requires you to download [python](https://www.python.org/downloads/).
->
-> All of the python requirements will be installed automatically when you run the program for the first time.
-
-## Download
-
-You can [download](https://codeload.github.com/Minlor/LumiSync/zip/refs/heads/main) the latest installable version of LumiSync here.
+```
+pip install git+https://github.com/Minlor/LumiSync.git
+```
 
 ## Credits
 
 Tools used:
+
 * [**Wireshark**](https://wireshark.org/) (Massive thanks to the Wireshark team for making this amazing tool.)
 
-This software uses the following open source packages:
-
-* [dxcam](https://github.com/ra1nty/DXcam)
-* [Pillow](https://github.com/python-pillow/Pillow)
-* [soundcard](https://github.com/bastibe/SoundCard)
-* [colour](https://github.com/colour-science/colour)
-* [colorama](https://github.com/tartley/colorama)
+This packages used for this software can be found in the `pyproject.toml`.
 
 ## Related
 
