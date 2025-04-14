@@ -3,13 +3,15 @@ import sys
 from threading import Thread
 
 import colorama
+from colorama import Fore
+
 
 def main():
     colorama.init(True)
 
-    print(colorama.Fore.MAGENTA + f"Welcome to {colorama.Fore.LIGHTBLUE_EX}LumiSync!")
-    print(colorama.Fore.YELLOW + "Please select a option:")
-    print(colorama.Fore.GREEN + "1) Monitor Sync" "\n2) Music Sync" "\n9) Run test")
+    print(Fore.MAGENTA + f"Welcome to {Fore.LIGHTBLUE_EX}LumiSync!")
+    print(Fore.YELLOW + "Please select a option:")
+    print(Fore.GREEN + "1) Monitor Sync" "\n2) Music Sync" "\n9) Run test")
     mode = input("")
     match mode:
         case "1" | "2":
@@ -24,7 +26,7 @@ def main():
         case "9":
             files = list(enumerate(os.listdir("tests"), 1))
             print(
-                f"{colorama.Fore.LIGHTYELLOW_EX}Chose test to run:\n{colorama.Fore.YELLOW}"
+                f"{Fore.LIGHTYELLOW_EX}Chose test to run:\n{Fore.YELLOW}"
                 + "\n".join([f"{i}) {x}" for i, x in files])
             )
             test = input("Test: ")
@@ -32,5 +34,5 @@ def main():
                 if i == int(test):
                     exec(open(f"tests/{x}").read())
         case _:
-            input(colorama.Fore.RED + "Invalid option!\nPress Enter to exit...")
+            input(Fore.RED + "Invalid option!\nPress Enter to exit...")
             sys.exit()

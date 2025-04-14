@@ -24,6 +24,7 @@ dependencies = [
   "colorama>=0.4.6",
   "colour>=0.1.5",
   "dxcam>=0.0.5",
+  "matplotlib>=3.10.1",
   "numpy>=2.2.4",
   "pillow>=11.1.0",
   "soundcard>=0.4.4",

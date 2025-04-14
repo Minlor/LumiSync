@@ -1,7 +1,7 @@
 import numpy as np
 import soundcard as sc
 
-from ..utils import SendData
+from .. import connection, utils
 
 # Set the audio parameters
 duration = 0.01  # seconds
@@ -12,7 +12,7 @@ colors = [[0, 0, 0]] * LED_COUNT
 
 
 def start():
-    SendData.send_razer_on_off(True)
+    connection.send_razer_on_off(True)
     while True:
         with sc.get_microphone(
             id=str(sc.default_speaker().name), include_loopback=True
@@ -44,5 +44,4 @@ def wave_color(amplitude):
         case _:
             colors.append([0, 0, int(amplitude * 255)])
     colors.pop(0)
-    SendData.send_razer_data(SendData.convert_colors(colors))
-
+    connection.send_razer_data(utils.convert_colors(colors))

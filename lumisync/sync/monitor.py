@@ -4,7 +4,7 @@ import colour
 import dxcam
 from PIL import Image
 
-from ..utils import SendData
+from .. import connection, utils
 
 ss = dxcam.create()
 
@@ -14,7 +14,7 @@ def lerp(start_value, end, t):
 
 
 def start():
-    SendData.send_razer_on_off(True)
+    connection.send_razer_on_off(True)
     previous_colors = [(0, 0, 0)] * 10  # Initialize with black colors
     while True:
         colors = []
@@ -68,6 +68,5 @@ def smooth_transition(previous_colors, colors, steps=10, delay=0.01):
             b = lerp(prev_colors[i].blue, next_colors[i].blue, step / steps)
             interpolated_colors.append((int(r * 255), int(g * 255), int(b * 255)))
 
-        SendData.send_razer_data(SendData.convert_colors(interpolated_colors))
+        connection.send_razer_data(utils.convert_colors(interpolated_colors))
         time.sleep(delay)
-

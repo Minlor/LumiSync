@@ -1,9 +1,9 @@
 import random
 import time
 
-from lumisync.utils import SendData
+from lumisync import connection, utils
 
-SendData.send_razer_on_off(True)
+connection.send_razer_on_off(True)
 for x in range(100):
     t = time.perf_counter()
     colors = []
@@ -11,6 +11,6 @@ for x in range(100):
         colors.append(
             [random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)]
         )
-    SendData.send_razer_data(SendData.convert_colors(colors))
+    connection.send_razer_data(utils.convert_colors(colors))
     time.sleep(0.001)
     print(time.perf_counter() - t)
