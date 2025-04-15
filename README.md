@@ -13,8 +13,7 @@
 
 <p align="center">
   <a href="#key-features">Key Features</a> •
-  <a href="#how-to-use">How To Use</a> •
-  <a href="#download">Download</a> •
+  <a href="#Installation">Installation</a> •
   <a href="#credits">Credits</a> •
   <a href="#related">Related</a> •
   <a href="#license">License</a>
@@ -33,7 +32,6 @@
 ## TODO
 
 * [ ] Turning lights on/off.
-* [ ] Make music sync work (WIP).
 * [ ] Make display sync work for Linux and macOS (WIP).
 * [ ] Add additional sync modes.
 * [ ] Add support for multiple devices (WIP).
@@ -42,10 +40,17 @@
 * [ ] Support for basic brightness control.
 * [ ] Support for basic color control.
 
-## How To Use
+## Installation
 
 > [!Note]
-> For installation execute the following command
+> For installation, you can use one of the following methods:
+
+### Install from PyPI
+```
+pip install LumiSync
+```
+
+### Install from GitHub
 
 ```
 pip install git+https://github.com/Minlor/LumiSync.git
@@ -57,7 +62,7 @@ Tools used:
 
 * [**Wireshark**](https://wireshark.org/) (Massive thanks to the Wireshark team for making this amazing tool.)
 
-This packages used for this software can be found in the `pyproject.toml`.
+The packages used for this software can be found in the [pyproject.toml](https://github.com/Minlor/LumiSync/blob/main/pyproject.toml).
 
 ## Related
 
