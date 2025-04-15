@@ -2,17 +2,15 @@ import json
 import socket
 import sys
 import time
+from typing import Any, Dict, List
 
 import colorama
 
-multicast = "239.255.255.250"
-
-port = 4001
-listen_port = 4002
+from .config.options import CONNECTION
 
 
-def start():
-    requestScan()
+def start() -> Dict[str, Any]:
+    request()
     print(f"{colorama.Fore.YELLOW}Trying to find device...")
     data = listen()
     print(f"{colorama.Fore.GREEN}Device found!")
@@ -21,17 +19,21 @@ def start():
     return settings
 
 
-def requestScan():
+def request() -> None:
+    """Requests data from the devices in the network."""
     data = {"msg": {"cmd": "scan", "data": {"account_topic": "reserve"}}}
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.sendto(bytes(json.dumps(data), "utf-8"), (multicast, port))
-    return
+    sock.sendto(
+        bytes(json.dumps(data), "utf-8"),
+        (CONNECTION.default.multicast, CONNECTION.default.port),
+    )
 
 
-def listen():
+def listen() -> List[str]:
+    """Listens in the network to find devices."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(10)
-    sock.bind(("", listen_port))
+    sock.bind(("", CONNECTION.default.listen_port))
     messages = []
     try:
         while True:
@@ -45,14 +47,15 @@ def listen():
     return messages
 
 
-def parseMessages(messages):
+def parseMessages(messages: List[str]) -> Dict[str, Any]:
+    """Parses messages received from the devices."""
     try:
         with open("Settings.json", "r") as f:
             settings = json.load(f)
     except FileNotFoundError:
         settings = {"time": time.time(), "devices": [], "selectedDevice": 0}
 
-    # Ensure the settings dictionary has the 'devices' and 'selectedDevice' keys
+    # NOTE: Ensure the settings dictionary has the 'devices' and 'selectedDevice' keys
     if "devices" not in settings:
         settings["devices"] = []
     if "selectedDevice" not in settings:
@@ -82,7 +85,8 @@ def parseMessages(messages):
     return settings
 
 
-def writeJSON(settings):
+def writeJSON(settings: Dict[str, Any]) -> None:
+    """Writes a .json file."""
     with open("settings.json", "w") as f:
         json.dump(settings, f)
     print(f"{colorama.Fore.LIGHTGREEN_EX}Data written to Settings.json")

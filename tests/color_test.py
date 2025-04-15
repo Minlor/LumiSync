@@ -1,30 +1,32 @@
 import time
 
-from lumisync.utils import SendData
+from lumisync import connection, utils
 
-blue = [0, 0, 255]
-green = [0, 255, 0]
-red = [255, 0, 0]
-white = [255, 255, 255]
-black = [0, 0, 0]
-orange = [255, 165, 0]
-purple = [128, 0, 128]
-yellow = [255, 255, 0]
-pink = [255, 192, 203]
-aqua = [0, 255, 255]
 
-colors = [blue, green, red, white, black, orange, purple, yellow, pink, aqua]
+names = [
+    "blue",
+    "green",
+    "red",
+    "white",
+    "black",
+    "orange",
+    "purple",
+    "yellow",
+    "pink",
+    "aqua",
+]
+colors = values = [utils.get_color(name) for name in names]
 print(colors)
 
 print("Attempting to turn on razer mode...")
-SendData.send_razer_on_off(True)
+connection.switch_razer(True)
 print("Attempting to send colors...")
 print(colors)
-print(SendData.convert_colors(colors))
-SendData.send_razer_data(SendData.convert_colors(colors))
+print(utils.convert_colors(colors))
+connection.send_razer_data(utils.convert_colors(colors))
 print("Colors sent!")
 time.sleep(5)
 print(
     "Attempting to turn off razer mode, it might take up to a minute for the lights to refresh..."
 )
-SendData.send_razer_on_off()
+connection.switch_razer()

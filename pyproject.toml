@@ -4,18 +4,40 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lumisync"
-version = "0.1.0"
+dynamic = ["version"]
+license = {file = "LICENSE"}
 description = "A Python library for syncing Govee led strips with audio and screen content."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [
-    "colorama>=0.4.6",
-    "colour>=0.1.5",
-    "dxcam>=0.0.5",
-    "numpy>=2.2.4",
-    "pillow>=11.1.0",
-    "soundcard>=0.4.4",
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Natural Language :: English",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
 ]
+dependencies = [
+  "colorama>=0.4.6",
+  "colour>=0.1.5",
+  "dxcam>=0.0.5",
+  "matplotlib>=3.10.1",
+  "numpy>=2.2.4",
+  "pillow>=11.1.0",
+  "soundcard>=0.4.4",
+  "webcolors>=24.11.1",
+]
+
+[tool.setuptools.packages.find]
+include = ["lumisync*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "lumisync.__version__"}
+
+[project.urls]
+repository = "https://github.com/Minlor/LumiSync.git"
 
 [project.scripts]
 lumisync = "lumisync.lumisync:main"
