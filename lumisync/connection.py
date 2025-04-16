@@ -10,7 +10,7 @@ from colorama import Fore
 from .config.options import CONNECTION
 
 
-def listen(server) -> List[str]:
+def listen(server: socket.socket) -> List[str]:
     """Listens for device response."""
     ready = select.select([server], [], [], server.gettimeout())
     if not ready[0]:
