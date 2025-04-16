@@ -1,4 +1,6 @@
+import socket
 import time
+from typing import Any, Dict, List, Tuple
 
 import colour
 import dxcam
@@ -10,10 +12,11 @@ from .. import connection, utils
 ss = dxcam.create()
 
 
-def start() -> None:
+def start(server: socket.socket, device: Dict[str, Any]) -> None:
     """Starts the monitor-light synchronisation."""
-    connection.switch_razer(True)
+    connection.switch_razer(server, device, True)
 
+    # TODO: Initialise this in config?
     # NOTE: Initialises with black colors
     previous_colors = [(0, 0, 0)] * 10
     while True:
@@ -48,11 +51,18 @@ def start() -> None:
         img = screen.crop((int((width / 4 * 3)), top, width, bottom))
         colors.append(img.getpixel(point))
 
-        smooth_transition(previous_colors, colors)
+        smooth_transition(server, device, previous_colors, colors)
         previous_colors = colors
 
 
-def smooth_transition(previous_colors, colors, steps: int = 10, delay: float = 0.01) -> None:
+def smooth_transition(
+    server: socket.socket,
+    device: Dict[str, Any],
+    previous_colors: List[Tuple[float, float, float]],
+    colors: List[Tuple[float, float, float]],
+    steps: int = 10,
+    delay: float = 0.01,
+) -> None:
     """Computes a smooth transition of the colors and sends it to a device."""
     prev_colors = [
         colour.Color(rgb=(c[0] / 255, c[1] / 255, c[2] / 255)) for c in previous_colors
@@ -70,5 +80,7 @@ def smooth_transition(previous_colors, colors, steps: int = 10, delay: float = 0
             b = utils.lerp(prev_colors[i].blue, next_colors[i].blue, step / steps)
             interpolated_colors.append((int(r * 255), int(g * 255), int(b * 255)))
 
-        connection.send_razer_data(utils.convert_colors(interpolated_colors))
+        connection.send_razer_data(
+            server, device, utils.convert_colors(interpolated_colors)
+        )
         time.sleep(delay)

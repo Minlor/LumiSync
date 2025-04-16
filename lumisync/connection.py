@@ -1,70 +1,93 @@
+import select
+import sys
 import base64
 import json
 import socket
-import time
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
-import colorama
+from colorama import Fore
 
-from . import devices
+from .config.options import CONNECTION
 
 
-def get_data() -> Dict[str, Any]:
-    """Gets a devices's data."""
-    try:
-        with open("Settings.json", "r") as f:
-            data = json.load(f)
+def listen(server) -> List[str]:
+    """Listens for device response."""
+    ready = select.select([server], [], [], server.gettimeout())
+    if not ready[0]:
+        print(f"{Fore.RED}Error: No device found!")
+        sys.exit(1)
 
-        if time.time() - data.get("time", 0) > 86400:
-            print("Device data is older than 24 hours, requesting new data...")
-            data = devices.start()
-        if len(data["devices"]) > 1:
-            print(
-                f"{colorama.Fore.LIGHTYELLOW_EX}Please select a device:\n{colorama.Fore.YELLOW}"
-                + "\n".join(
-                    [
-                        f"{i + 1}) {device['Device_IP']} ({device['Model']})"
-                        for i, device in enumerate(data["devices"])
-                    ]
-                )
+    messages = []
+    while True:
+        try:
+            message, address = server.recvfrom(4096)
+            print(f"{Fore.LIGHTGREEN_EX}Received from {address}")
+            messages.append(message)
+        except (BlockingIOError, socket.timeout):
+            break
+
+    return messages
+
+
+def parse(messages: List[str]) -> List[Dict[str, Any]]:
+    """Parses messages from the devices."""
+    devices = CONNECTION.devices
+    for message in messages:
+        message = json.loads(message)
+        device = next(
+            (x for x in devices if x["mac"] == message["msg"]["data"]["device"]),
+            None,
+        )
+        if device is None:
+            devices.append(
+                {
+                    "mac": message["msg"]["data"]["device"],
+                    "model": message["msg"]["data"]["sku"],
+                    "ip": message["msg"]["data"]["ip"],
+                    "port": CONNECTION.default.port,
+                }
             )
-            selectedDevice = input("")
-            data["selectedDevice"] = int(selectedDevice) - 1
-            devices.writeJSON(data)
-        return data
-
-    except FileNotFoundError:
-        print("Settings.json not found, requesting new data...")
-        data = devices.start()
-        return data
+        else:
+            device["ip"] = device["msg"]["data"]["ip"]
+    return devices
 
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-settings = get_data()
-device = settings["devices"][settings["selectedDevice"]]
+def connect() -> Tuple[socket.socket, List[Dict[str, Any]]]:
+    """Creates a server listening for devices."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server.bind(("", CONNECTION.default.listen_port))
+    server.settimeout(CONNECTION.default.timeout)
+    server.sendto(
+        b'{"msg": {"cmd": "scan", "data": {"account_topic": "reserve"}}}',
+        (CONNECTION.default.multicast, CONNECTION.default.port),
+    )
+    return server, parse(listen(server))
 
 
-# TODO: Combine the below functions into one
-def send_data(data: Dict[str, Any]) -> None:
-    """Sends data to a device."""
-    sock.sendto(
+# TODO: Combine the below functions into one (into a complete "send" function?)
+def send(server: socket.socket, device: Dict[str, Any], data: Dict[str, Any]) -> None:
+    """Sends some data from the server to a device."""
+    server.sendto(
         bytes(json.dumps(data), "utf-8"),
-        (device.get("Device_IP"), device.get("Device_Port", 4003)),
+        (device["ip"], device.get("Device_Port", 4003)),
     )
 
 
-def send_razer_data(data: base64) -> None:
-    """Sends data to a device (razer mode)."""
-    send_data({"msg": {"cmd": "razer", "data": {"pt": data}}})
+def send_razer_data(
+    server: socket.socket, device: Dict[str, Any], data: base64
+) -> None:
+    send(server, device, {"msg": {"cmd": "razer", "data": {"pt": data}}})
 
 
-def switch(on: bool = False) -> None:
-    """Switches the device on or off."""
-    send_data({"msg": {"cmd": "turn", "data": {"value": int(on)}}})
+def switch(server: socket.socket, device: Dict[str, Any], on: bool = False) -> None:
+    send(server, device, {"msg": {"cmd": "turn", "data": {"value": int(on)}}})
 
 
-def switch_razer(on: bool = False) -> None:
-    """Switches the device on or off (razer mode)."""
-    send_data(
-        {"msg": {"cmd": "razer", "data": {"pt": "uwABsQEK" if on else "uwABsgEJ"}}}
+def switch_razer(
+    server: socket.socket, device: Dict[str, Any], on: bool = False
+) -> None:
+    send(
+        server,
+        device,
+        {"msg": {"cmd": "razer", "data": {"pt": "uwABsQEK" if on else "uwABsgEJ"}}},
     )
