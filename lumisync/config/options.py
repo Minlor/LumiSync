@@ -1,5 +1,8 @@
 from types import SimpleNamespace
 
+# TODO: Should the led option be moved under a different global?
+GENERAL = SimpleNamespace(nled=20)
+
 # TODO: Replace the settings.json with this during runtime
 # and only use the settings.json on restart?
 CONNECTION = SimpleNamespace(
@@ -15,5 +18,5 @@ CONNECTION = SimpleNamespace(
 AUDIO = SimpleNamespace(sample_rate=48000, duration=0.01)
 
 # TODO: This needs to change as soon as support for multiple devices
-# is to be properly implemented -> Similar with next as for the devices query?
+# is being implemented -> Similar with next as for the devices query?
 COLORS = SimpleNamespace(previous=[], current=[])
