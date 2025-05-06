@@ -54,11 +54,13 @@ def parse(messages: List[str]) -> List[Dict[str, Any]]:
 
 def connect() -> Tuple[socket.socket, List[Dict[str, Any]]]:
     """Creates a server listening for devices."""
+    print(f"{Fore.LIGHTGREEN_EX}Searching for devices...")
     server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     server.bind(("", CONNECTION.default.listen_port))
     server.settimeout(CONNECTION.default.timeout)
     server.sendto(
-        b'{"msg": {"cmd": "scan", "data": {"account_topic": "reserve"}}}',
+        b'{"msg":{"cmd":"scan","data":{"account_topic":"GA/123456789"}}}',
         (CONNECTION.default.multicast, CONNECTION.default.port),
     )
     return server, parse(listen(server))

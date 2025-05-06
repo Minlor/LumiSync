@@ -7,7 +7,7 @@ GENERAL = SimpleNamespace(nled=20)
 # and only use the settings.json on restart?
 CONNECTION = SimpleNamespace(
     default=SimpleNamespace(
-        multicast="239.255.255.250",
+        multicast="255.255.255.255",
         port=4001,
         listen_port=4002,
         timeout=5,
