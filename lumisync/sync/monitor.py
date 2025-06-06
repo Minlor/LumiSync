@@ -7,6 +7,7 @@ import dxcam
 from PIL import Image
 
 from .. import connection, utils
+from ..config.options import BRIGHTNESS
 
 # TODO: Move this out of global space?
 ss = dxcam.create()
@@ -51,8 +52,28 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
         img = screen.crop((int((width / 4 * 3)), top, width, bottom))
         colors.append(img.getpixel(point))
 
+        # Apply brightness setting to colors
+        colors = apply_brightness(colors, BRIGHTNESS.monitor)
+
         smooth_transition(server, device, previous_colors, colors)
         previous_colors = colors
+
+
+def apply_brightness(colors: List[Tuple[int, int, int]], brightness_factor: float) -> List[Tuple[int, int, int]]:
+    """Apply brightness factor to a list of colors.
+
+    Args:
+        colors: List of RGB color tuples
+        brightness_factor: Brightness factor (0.0 to 1.0)
+
+    Returns:
+        List of adjusted RGB color tuples
+    """
+    return [(
+        int(r * brightness_factor),
+        int(g * brightness_factor),
+        int(b * brightness_factor)
+    ) for r, g, b in colors]
 
 
 def smooth_transition(

@@ -76,3 +76,4 @@ def convert_colors(colors: List[Tuple[int, int, int]]) -> str:
     razer_header.append(checksum)
     base64_header = base64.b64encode(bytearray(razer_header))
     return base64_header.decode("utf-8")
+

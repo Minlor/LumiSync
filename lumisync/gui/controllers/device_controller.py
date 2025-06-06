@@ -238,3 +238,4 @@ class DeviceController:
                 self.server = None
             except:
                 pass
+

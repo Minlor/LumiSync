@@ -41,6 +41,40 @@ class DevicesTab(BaseFrame):
         # Load devices
         self.load_devices()
 
+        # Bind resize event
+        self.bind("<Configure>", self.on_resize)
+
+    def on_resize(self, event):
+        """Handle window resize events to adjust layout."""
+        # Only handle events from this widget, not children
+        if event.widget == self:
+            # Adjust height distribution
+            self.adjust_height_distribution()
+
+    def adjust_height_distribution(self):
+        """Adjust height distribution based on window height."""
+        height = self.winfo_height()
+        if height > 10:  # Avoid division by zero or negative values
+            # Set dynamic row weights based on available height
+            if height > 600:
+                # For taller windows, give more space to device details
+                self.grid_rowconfigure(0, weight=1)  # Header
+                self.grid_rowconfigure(1, weight=1)  # Actions
+                self.grid_rowconfigure(2, weight=2)  # Device list
+                self.grid_rowconfigure(3, weight=3)  # Device details (more space)
+            elif height > 450:
+                # Medium height windows
+                self.grid_rowconfigure(0, weight=1)  # Header
+                self.grid_rowconfigure(1, weight=1)  # Actions
+                self.grid_rowconfigure(2, weight=2)  # Device list
+                self.grid_rowconfigure(3, weight=2)  # Device details
+            else:
+                # For smaller heights, prioritize device list
+                self.grid_rowconfigure(0, weight=1)  # Header
+                self.grid_rowconfigure(1, weight=1)  # Actions
+                self.grid_rowconfigure(2, weight=2)  # Device list (more emphasis)
+                self.grid_rowconfigure(3, weight=1)  # Device details
+
     def load_icons(self):
         """Load icon images for buttons."""
         try:

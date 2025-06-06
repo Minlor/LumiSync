@@ -21,4 +21,8 @@ AUDIO = SimpleNamespace(sample_rate=48000, duration=0.01)
 # is being implemented -> Similar with next as for the devices query?
 COLORS = SimpleNamespace(previous=[], current=[])
 
-
+# Brightness settings for different sync modes
+BRIGHTNESS = SimpleNamespace(
+    monitor=0.75,  # 75% brightness for monitor sync
+    music=0.85,    # 85% brightness for music sync
+)

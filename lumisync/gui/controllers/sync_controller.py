@@ -11,7 +11,7 @@ from pythoncom import CoInitializeEx, CoUninitialize
 
 from ... import connection, devices
 from ...sync import monitor, music
-from ...config.options import GENERAL, AUDIO, COLORS
+from ...config.options import GENERAL, AUDIO, COLORS, BRIGHTNESS
 
 
 class SyncController:
@@ -31,6 +31,10 @@ class SyncController:
         self.server = None
         self.selected_device = None
 
+        # Initialize brightness settings from config
+        self.monitor_brightness = BRIGHTNESS.monitor
+        self.music_brightness = BRIGHTNESS.music
+
         # Initialize with available device if any
         self._init_device()
 
@@ -47,7 +51,43 @@ class SyncController:
     def set_status(self, message: str) -> None:
         """Set the status message."""
         if self.status_callback:
-            self.status_callback(message)
+            # Don't log brightness updates to avoid recursion
+            if "brightness set to" not in message:
+                self.status_callback(message)
+            # For brightness updates, handle without callback to avoid recursion
+            else:
+                # Directly set the status without logging
+                pass
+
+    def set_monitor_brightness(self, value: float) -> None:
+        """Set brightness for monitor sync mode.
+
+        Args:
+            value: Brightness value between 0.0 and 1.0
+        """
+        self.monitor_brightness = float(value)
+        BRIGHTNESS.monitor = self.monitor_brightness
+        # Don't call set_status to avoid recursion
+        # self.set_status(f"Monitor sync brightness set to {int(self.monitor_brightness * 100)}%")
+
+    def set_music_brightness(self, value: float) -> None:
+        """Set brightness for music sync mode.
+
+        Args:
+            value: Brightness value between 0.0 and 1.0
+        """
+        self.music_brightness = float(value)
+        BRIGHTNESS.music = self.music_brightness
+        # Don't call set_status to avoid recursion
+        # self.set_status(f"Music sync brightness set to {int(self.music_brightness * 100)}%")
+
+    def get_monitor_brightness(self) -> float:
+        """Get brightness for monitor sync mode."""
+        return self.monitor_brightness
+
+    def get_music_brightness(self) -> float:
+        """Get brightness for music sync mode."""
+        return self.music_brightness
 
     def _ensure_server(self):
         """Ensure we have an active server connection."""
@@ -82,6 +122,9 @@ class SyncController:
 
         if self.sync_thread and self.sync_thread.is_alive():
             self.stop_sync()
+
+        # Set the brightness in the config before starting sync
+        BRIGHTNESS.monitor = self.monitor_brightness
 
         self._ensure_server()
         self.stop_event.clear()
@@ -126,6 +169,9 @@ class SyncController:
                         img = screen.crop((int((width / 4 * 3)), top, width, bottom))
                         colors.append(img.getpixel(point))
 
+                        # Apply brightness to colors
+                        colors = monitor.apply_brightness(colors, BRIGHTNESS.monitor)
+
                         # Apply smooth transition
                         monitor.smooth_transition(
                             self.server,
@@ -148,7 +194,7 @@ class SyncController:
         self.sync_thread = threading.Thread(target=sync_task)
         self.sync_thread.daemon = True
         self.sync_thread.start()
-        self.set_status(f"Monitor sync started with {device.get('model', 'Unknown')}")
+        self.set_status(f"Monitor sync started with {device.get('model', 'Unknown')} at {int(self.monitor_brightness * 100)}% brightness")
 
     def start_music_sync(self) -> None:
         """Start music synchronization."""
@@ -159,6 +205,9 @@ class SyncController:
 
         if self.sync_thread and self.sync_thread.is_alive():
             self.stop_sync()
+
+        # Set the brightness in the config before starting sync
+        BRIGHTNESS.music = self.music_brightness
 
         self._ensure_server()
         self.stop_event.clear()
@@ -200,12 +249,15 @@ class SyncController:
 
                             COLORS.current.pop(0)
 
+                            # Apply brightness to colors
+                            adjusted_colors = music.apply_brightness(COLORS.current, BRIGHTNESS.music)
+
                             # Convert colors and send to device
                             from ...utils import convert_colors
                             connection.send_razer_data(
                                 self.server,
                                 device,
-                                convert_colors(COLORS.current)
+                                convert_colors(adjusted_colors)
                             )
 
                     except Exception as e:
@@ -225,7 +277,7 @@ class SyncController:
         self.sync_thread = threading.Thread(target=sync_task)
         self.sync_thread.daemon = True
         self.sync_thread.start()
-        self.set_status(f"Music sync started with {device.get('model', 'Unknown')}")
+        self.set_status(f"Music sync started with {device.get('model', 'Unknown')} at {int(self.music_brightness * 100)}% brightness")
 
     def stop_sync(self) -> None:
         """Stop any active synchronization."""

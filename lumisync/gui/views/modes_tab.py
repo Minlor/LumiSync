@@ -14,6 +14,7 @@ from ..base import BaseFrame
 from ..styles import MEDIUM_PAD, LARGE_PAD, MEDIUM_BUTTON, LARGE_BUTTON
 from ...gui.controllers.sync_controller import SyncController
 from ...gui.resources import get_resource_path
+from ...config.options import BRIGHTNESS
 
 
 class ModesTab(BaseFrame):
@@ -28,7 +29,7 @@ class ModesTab(BaseFrame):
         # Load icons
         self.load_icons()
 
-        # Configure grid
+        # Configure grid for responsive layout
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
         
@@ -36,7 +37,53 @@ class ModesTab(BaseFrame):
         self.create_header()
         self.create_sync_modes()
         self.create_sync_controls()
-    
+
+        # Bind configure event to handle window resize
+        self.bind("<Configure>", self.on_resize)
+
+    def on_resize(self, event):
+        """Handle window resize events to adjust layout."""
+        # Only handle events from this widget, not children
+        if event.widget == self:
+            # Update any width-dependent widgets
+            self.update_wraplengths()
+            # Update height-based layouts
+            self.adjust_height_distribution()
+
+    def update_wraplengths(self):
+        """Update text wrapping based on current window width."""
+        # Get current width and adjust wraplengths dynamically
+        width = self.winfo_width()
+        if width > 10:  # Avoid division by zero or negative values
+            # Calculate appropriate wraplength based on window width
+            panel_width = max(200, (width - 60) // 2)  # Account for padding
+
+            # Update any labels with wraplength
+            if hasattr(self, "monitor_desc"):
+                self.monitor_desc.configure(wraplength=panel_width)
+            if hasattr(self, "music_desc"):
+                self.music_desc.configure(wraplength=panel_width)
+
+    def adjust_height_distribution(self):
+        """Adjust height distribution based on window height."""
+        height = self.winfo_height()
+        if height > 10:  # Avoid division by zero or negative values
+            # Set dynamic row weights based on available height
+            # Give more space to controls section when window is taller
+            if height > 600:
+                self.grid_rowconfigure(2, weight=3)  # More space for controls
+                self.grid_rowconfigure(0, weight=1)  # Header
+                self.grid_rowconfigure(1, weight=2)  # Sync modes
+            elif height > 400:
+                self.grid_rowconfigure(2, weight=2)  # Controls
+                self.grid_rowconfigure(0, weight=1)  # Header
+                self.grid_rowconfigure(1, weight=2)  # Sync modes
+            else:
+                # For smaller heights, distribute more evenly
+                self.grid_rowconfigure(0, weight=1)  # Header
+                self.grid_rowconfigure(1, weight=1)  # Sync modes
+                self.grid_rowconfigure(2, weight=1)  # Controls
+
     def load_icons(self):
         """Load icon images for buttons."""
         try:
@@ -45,6 +92,7 @@ class ModesTab(BaseFrame):
             play_icon_path = get_resource_path("play.png")
             stop_icon_path = get_resource_path("stop.png")
             screen_icon_path = get_resource_path("screen.png")
+            settings_icon_path = get_resource_path("settings.png")
 
             # Music icon for music sync
             if music_icon_path and os.path.exists(music_icon_path):
@@ -79,6 +127,17 @@ class ModesTab(BaseFrame):
             else:
                 self.stop_icon = None
 
+            # Settings icon for settings
+            if settings_icon_path and os.path.exists(settings_icon_path):
+                self.settings_icon = ctk.CTkImage(
+                    light_image=Image.open(settings_icon_path),
+                    dark_image=Image.open(settings_icon_path),
+                    size=(20, 20)
+                )
+                self.app.set_status(f"Loaded settings icon")
+            else:
+                self.settings_icon = None
+
             # Screen icon for monitor sync (renamed from sitemap to screen)
             if screen_icon_path and os.path.exists(screen_icon_path):
                 self.monitor_icon = ctk.CTkImage(
@@ -96,6 +155,7 @@ class ModesTab(BaseFrame):
             self.play_icon = None
             self.stop_icon = None
             self.monitor_icon = None
+            self.settings_icon = None
 
     def create_header(self):
         """Create the header section."""
@@ -114,27 +174,57 @@ class ModesTab(BaseFrame):
         modes_frame = ctk.CTkFrame(self)
         modes_frame.grid(row=1, column=0, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="ew")
         
-        # Configure grid
-        modes_frame.grid_columnconfigure((0, 1), weight=1)
-        
+        # Configure grid for equal columns with responsive width
+        modes_frame.grid_columnconfigure((0, 1), weight=1, uniform="column")
+
         # Monitor Sync
         monitor_frame = ctk.CTkFrame(modes_frame)
         monitor_frame.grid(row=0, column=0, padx=MEDIUM_PAD, pady=MEDIUM_PAD, sticky="nsew")
         
+        # Configure monitor frame grid
+        monitor_frame.grid_columnconfigure(0, weight=1)
+
         monitor_label = ctk.CTkLabel(
             monitor_frame, 
             text="Monitor Sync", 
             font=("Segoe UI", 14, "bold")
         )
-        monitor_label.pack(padx=MEDIUM_PAD, pady=MEDIUM_PAD)
-        
-        monitor_desc = ctk.CTkLabel(
-            monitor_frame, 
+        monitor_label.grid(row=0, column=0, padx=MEDIUM_PAD, pady=MEDIUM_PAD, sticky="ew")
+
+        self.monitor_desc = ctk.CTkLabel(
+            monitor_frame,
             text="Synchronize your lights with your monitor content.",
             wraplength=250
         )
-        monitor_desc.pack(padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD))
-        
+        self.monitor_desc.grid(row=1, column=0, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="ew")
+
+        # Add brightness slider for monitor sync
+        brightness_frame = ctk.CTkFrame(monitor_frame)
+        brightness_frame.grid(row=2, column=0, padx=MEDIUM_PAD, pady=MEDIUM_PAD, sticky="ew")
+        brightness_frame.grid_columnconfigure(1, weight=1)
+
+        brightness_label = ctk.CTkLabel(brightness_frame, text="Brightness:")
+        brightness_label.grid(row=0, column=0, padx=(MEDIUM_PAD, 0), sticky="w")
+
+        # Initialize slider with current brightness value
+        self.monitor_brightness_slider = ctk.CTkSlider(
+            brightness_frame,
+            from_=0.1,
+            to=1.0,
+            number_of_steps=90,
+            command=self.update_monitor_brightness
+        )
+        self.monitor_brightness_slider.set(self.sync_controller.get_monitor_brightness())
+        self.monitor_brightness_slider.grid(row=0, column=1, padx=MEDIUM_PAD, pady=MEDIUM_PAD, sticky="ew")
+
+        # Add brightness percentage label
+        self.monitor_brightness_value = ctk.CTkLabel(
+            brightness_frame,
+            text=f"{int(self.sync_controller.get_monitor_brightness() * 100)}%",
+            width=40
+        )
+        self.monitor_brightness_value.grid(row=0, column=2, padx=(0, MEDIUM_PAD), sticky="e")
+
         monitor_button = ctk.CTkButton(
             monitor_frame,
             text="Start Monitor Sync",
@@ -144,26 +234,56 @@ class ModesTab(BaseFrame):
             image=self.monitor_icon if hasattr(self, 'monitor_icon') and self.monitor_icon else None,
             compound="left"
         )
-        monitor_button.pack(padx=MEDIUM_PAD, pady=MEDIUM_PAD)
-        
+        monitor_button.grid(row=3, column=0, padx=MEDIUM_PAD, pady=MEDIUM_PAD)
+
         # Music Sync
         music_frame = ctk.CTkFrame(modes_frame)
         music_frame.grid(row=0, column=1, padx=MEDIUM_PAD, pady=MEDIUM_PAD, sticky="nsew")
         
+        # Configure music frame grid
+        music_frame.grid_columnconfigure(0, weight=1)
+
         music_label = ctk.CTkLabel(
             music_frame, 
             text="Music Sync", 
             font=("Segoe UI", 14, "bold")
         )
-        music_label.pack(padx=MEDIUM_PAD, pady=MEDIUM_PAD)
-        
-        music_desc = ctk.CTkLabel(
-            music_frame, 
+        music_label.grid(row=0, column=0, padx=MEDIUM_PAD, pady=MEDIUM_PAD, sticky="ew")
+
+        self.music_desc = ctk.CTkLabel(
+            music_frame,
             text="Synchronize your lights with your music and audio.",
             wraplength=250
         )
-        music_desc.pack(padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD))
-        
+        self.music_desc.grid(row=1, column=0, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="ew")
+
+        # Add brightness slider for music sync
+        music_brightness_frame = ctk.CTkFrame(music_frame)
+        music_brightness_frame.grid(row=2, column=0, padx=MEDIUM_PAD, pady=MEDIUM_PAD, sticky="ew")
+        music_brightness_frame.grid_columnconfigure(1, weight=1)
+
+        music_brightness_label = ctk.CTkLabel(music_brightness_frame, text="Brightness:")
+        music_brightness_label.grid(row=0, column=0, padx=(MEDIUM_PAD, 0), sticky="w")
+
+        # Initialize slider with current brightness value
+        self.music_brightness_slider = ctk.CTkSlider(
+            music_brightness_frame,
+            from_=0.1,
+            to=1.0,
+            number_of_steps=90,
+            command=self.update_music_brightness
+        )
+        self.music_brightness_slider.set(self.sync_controller.get_music_brightness())
+        self.music_brightness_slider.grid(row=0, column=1, padx=MEDIUM_PAD, pady=MEDIUM_PAD, sticky="ew")
+
+        # Add brightness percentage label
+        self.music_brightness_value = ctk.CTkLabel(
+            music_brightness_frame,
+            text=f"{int(self.sync_controller.get_music_brightness() * 100)}%",
+            width=40
+        )
+        self.music_brightness_value.grid(row=0, column=2, padx=(0, MEDIUM_PAD), sticky="e")
+
         music_button = ctk.CTkButton(
             music_frame,
             text="Start Music Sync",
@@ -173,8 +293,24 @@ class ModesTab(BaseFrame):
             image=self.music_icon if hasattr(self, 'music_icon') and self.music_icon else None,
             compound="left"
         )
-        music_button.pack(padx=MEDIUM_PAD, pady=MEDIUM_PAD)
-    
+        music_button.grid(row=3, column=0, padx=MEDIUM_PAD, pady=MEDIUM_PAD)
+
+    def update_monitor_brightness(self, value):
+        """Update monitor brightness setting."""
+        # Update the controller (without status callback)
+        self.sync_controller.set_monitor_brightness(value)
+
+        # Directly update the label ourselves
+        self.monitor_brightness_value.configure(text=f"{int(value * 100)}%")
+
+    def update_music_brightness(self, value):
+        """Update music brightness setting."""
+        # Update the controller (without status callback)
+        self.sync_controller.set_music_brightness(value)
+
+        # Directly update the label ourselves
+        self.music_brightness_value.configure(text=f"{int(value * 100)}%")
+
     def create_sync_controls(self):
         """Create the synchronization controls section."""
         controls_frame = ctk.CTkFrame(self)
