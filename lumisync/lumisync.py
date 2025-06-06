@@ -8,6 +8,13 @@ from colorama import Fore
 
 from . import connection
 
+# Import GUI module
+try:
+    from .gui import run_gui
+    GUI_AVAILABLE = True
+except ImportError:
+    GUI_AVAILABLE = False
+
 
 def main() -> None:
     """The main function running the program."""
@@ -16,7 +23,7 @@ def main() -> None:
         colorama.init(True)
         print(Fore.MAGENTA + f"Welcome to {Fore.LIGHTBLUE_EX}LumiSync!")
         print(Fore.YELLOW + "Please select a option:")
-        print(Fore.GREEN + "1) Monitor Sync" "\n2) Music Sync" "\n9) Run test")
+        print(Fore.GREEN + "1) Monitor Sync" "\n2) Music Sync" "\n3) Launch GUI" "\n9) Run test")
 
         mode = input("")
         match mode:
@@ -37,6 +44,10 @@ def main() -> None:
 
                 # TODO: Remove after development is finished
                 input("Press Enter to exit...")
+            case "3":
+                print(Fore.GREEN + "Launching GUI...")
+                run_gui()
+
             case "9":
                 # HACK: For now close server to run tests
                 server.close()

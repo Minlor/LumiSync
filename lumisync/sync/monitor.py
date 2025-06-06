@@ -13,7 +13,7 @@ ss = dxcam.create()
 
 
 def start(server: socket.socket, device: Dict[str, Any]) -> None:
-    """Starts the monitor-light synchronisation."""
+    """Starts the monitor-light synchronization."""
     connection.switch_razer(server, device, True)
 
     # TODO: Initialise this in config?

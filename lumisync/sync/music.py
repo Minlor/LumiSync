@@ -7,10 +7,6 @@ import soundcard as sc
 from .. import connection, utils
 from ..config.options import GENERAL, AUDIO, COLORS
 
-
-# TODO: These need to be moved to options.py as well
-
-
 def start(server: socket.socket, device: Dict[str, Any]) -> None:
     connection.switch_razer(server, device, True)
     COLORS.current = [[0, 0, 0]] * GENERAL.nled
