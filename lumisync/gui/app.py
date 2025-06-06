@@ -13,12 +13,17 @@ from .views.devices_tab import DevicesTab
 from .views.modes_tab import ModesTab
 from .controllers.device_controller import DeviceController
 from .controllers.sync_controller import SyncController
+from ..utils.logging import setup_logger, get_logger
+
+# Set up logger for GUI application
+logger = setup_logger('lumisync_gui')
 
 
 class LumiSyncApp(BaseApp):
     """Main application class for LumiSync."""
     
     def __init__(self):
+        logger.info("Initializing LumiSync GUI application")
         super().__init__()
 
         # Create controllers first so they can be properly linked
@@ -27,6 +32,7 @@ class LumiSyncApp(BaseApp):
 
         # Link controllers together for device selection coordination
         self.device_controller.set_sync_controller(self.sync_controller)
+        logger.info("Controllers initialized and linked")
 
         # Create a tabview for the main content
         self.tabview = ctk.CTkTabview(self.container)
@@ -35,6 +41,7 @@ class LumiSyncApp(BaseApp):
         # Add tabs
         self.tabview.add("Devices")
         self.tabview.add("Modes")
+        logger.debug("Added tabs to main window")
 
         # Create tab contents, passing the controllers
         self.devices_tab = DevicesTab(self.tabview.tab("Devices"), self, self.device_controller)
@@ -42,6 +49,7 @@ class LumiSyncApp(BaseApp):
 
         self.modes_tab = ModesTab(self.tabview.tab("Modes"), self, self.sync_controller)
         self.modes_tab.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        logger.debug("Tab contents created")
 
         # Set default tab
         self.tabview.set("Devices")
@@ -52,6 +60,8 @@ class LumiSyncApp(BaseApp):
         # Ensure bottom of app is visible initially
         self.after(500, self.ensure_status_bar_visible)
 
+        logger.info("LumiSync GUI application initialized successfully")
+
     def ensure_status_bar_visible(self):
         """Ensure the status bar is visible."""
         current_height = self.winfo_height()
@@ -59,6 +69,7 @@ class LumiSyncApp(BaseApp):
 
         if current_height < min_height:
             self.geometry(f"{self.winfo_width()}x{min_height}")
+            logger.debug(f"Adjusted window size to ensure status bar visibility: {self.winfo_width()}x{min_height}")
 
         # Check again after a delay for resize events
         self.after(2000, self.ensure_status_bar_visible)
@@ -77,15 +88,29 @@ class LumiSyncApp(BaseApp):
             
             if os.path.exists(icon_path):
                 self.iconbitmap(icon_path)
-        except Exception:
+                logger.debug(f"Set application icon from {icon_path}")
+            else:
+                logger.debug(f"Icon file not found at {icon_path}")
+        except Exception as e:
             # If icon setting fails, just continue without an icon
-            pass
+            logger.warning(f"Failed to set application icon: {str(e)}")
+
+    def set_status(self, message):
+        """Set the status bar message and log it."""
+        super().set_status(message)
+        logger.info(f"Status: {message}")
 
 
 def main():
     """Main entry point for the GUI application."""
-    app = LumiSyncApp()
-    app.run()
+    logger.info("Starting LumiSync GUI application")
+    try:
+        app = LumiSyncApp()
+        app.run()
+        logger.info("LumiSync GUI application closed normally")
+    except Exception as e:
+        logger.critical(f"Uncaught exception in GUI application: {str(e)}", exc_info=True)
+        raise
 
 
 if __name__ == "__main__":

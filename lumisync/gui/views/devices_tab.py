@@ -81,7 +81,7 @@ class DevicesTab(BaseFrame):
             height=MEDIUM_BUTTON[1]
         )
         turn_off_button.grid(row=0, column=2, padx=MEDIUM_PAD, pady=MEDIUM_PAD)
-    
+
     def create_device_list(self):
         """Create the device list section."""
         list_frame = ctk.CTkFrame(self)
@@ -193,3 +193,19 @@ class DevicesTab(BaseFrame):
         self.mac_value.configure(text=device.get("mac", "-"))
         self.ip_value.configure(text=device.get("ip", "-"))
         self.port_value.configure(text=str(device.get("port", "-")))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
