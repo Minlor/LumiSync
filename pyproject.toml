@@ -33,6 +33,9 @@ dependencies = [
 [tool.setuptools.packages.find]
 include = ["lumisync*"]
 
+[tool.setuptools.package-data]
+"lumisync.gui.resources" = ["*.png", "*.ico"]
+
 [tool.setuptools.dynamic]
 version = {attr = "lumisync.__version__"}
 

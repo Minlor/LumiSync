@@ -62,6 +62,8 @@ Tools used:
 
 * [**Wireshark**](https://wireshark.org/) (Massive thanks to the Wireshark team for making this amazing tool.)
 
+* Uicons by <a href="https://www.flaticon.com/uicons">Flaticon</a>
+
 The packages used for this software can be found in the [pyproject.toml](https://github.com/Minlor/LumiSync/blob/main/pyproject.toml).
 
 ## Related

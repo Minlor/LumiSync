@@ -6,10 +6,14 @@ This module contains the UI for device discovery and management.
 import tkinter as tk
 import customtkinter as ctk
 from typing import List, Dict, Any, Callable
+import os
+import sys
+from PIL import Image
 
 from ..base import BaseFrame
 from ..styles import MEDIUM_PAD, LARGE_PAD, MEDIUM_BUTTON
 from ...gui.controllers.device_controller import DeviceController
+from ...gui.resources import get_resource_path
 
 
 class DevicesTab(BaseFrame):
@@ -20,6 +24,9 @@ class DevicesTab(BaseFrame):
         self.app = app
         # Use provided device_controller if available, otherwise create a new one
         self.device_controller = device_controller if device_controller else DeviceController(status_callback=self.app.set_status)
+
+        # Load icons
+        self.load_icons()
 
         # Configure grid
         self.grid_columnconfigure(0, weight=1)
@@ -33,6 +40,67 @@ class DevicesTab(BaseFrame):
 
         # Load devices
         self.load_devices()
+
+    def load_icons(self):
+        """Load icon images for buttons."""
+        try:
+            # Load the new icons with correct filenames
+            refresh_icon_path = get_resource_path("refresh.png")
+            power_icon_path = get_resource_path("power.png")
+            lightbulb_icon_path = get_resource_path("lightbulb-on.png")
+            settings_icon_path = get_resource_path("settings.png")
+            network_icon_path = get_resource_path("network.png")
+
+            # Refresh icon for device discovery
+            if refresh_icon_path and os.path.exists(refresh_icon_path):
+                self.refresh_icon = ctk.CTkImage(
+                    light_image=Image.open(refresh_icon_path),
+                    dark_image=Image.open(refresh_icon_path),
+                    size=(20, 20)
+                )
+                self.app.set_status(f"Loaded refresh icon")
+            else:
+                self.refresh_icon = None
+
+            # Power icon for turning device on/off
+            if power_icon_path and os.path.exists(power_icon_path):
+                self.power_icon = ctk.CTkImage(
+                    light_image=Image.open(power_icon_path),
+                    dark_image=Image.open(power_icon_path),
+                    size=(20, 20)
+                )
+                self.app.set_status(f"Loaded power icon")
+            else:
+                self.power_icon = None
+
+            # Lightbulb icon for device status
+            if lightbulb_icon_path and os.path.exists(lightbulb_icon_path):
+                self.lightbulb_icon = ctk.CTkImage(
+                    light_image=Image.open(lightbulb_icon_path),
+                    dark_image=Image.open(lightbulb_icon_path),
+                    size=(20, 20)
+                )
+                self.app.set_status(f"Loaded lightbulb icon")
+            else:
+                self.lightbulb_icon = None
+
+            # Network icon for device connectivity
+            if network_icon_path and os.path.exists(network_icon_path):
+                self.network_icon = ctk.CTkImage(
+                    light_image=Image.open(network_icon_path),
+                    dark_image=Image.open(network_icon_path),
+                    size=(20, 20)
+                )
+                self.app.set_status(f"Loaded network icon")
+            else:
+                self.network_icon = None
+
+        except Exception as e:
+            self.app.set_status(f"Failed to load icons: {str(e)}")
+            self.refresh_icon = None
+            self.power_icon = None
+            self.lightbulb_icon = None
+            self.network_icon = None
 
     def create_header(self):
         """Create the header section."""
@@ -60,7 +128,9 @@ class DevicesTab(BaseFrame):
             text="Discover Devices",
             command=self.discover_devices,
             width=MEDIUM_BUTTON[0],
-            height=MEDIUM_BUTTON[1]
+            height=MEDIUM_BUTTON[1],
+            image=self.refresh_icon if hasattr(self, 'refresh_icon') and self.refresh_icon else None,
+            compound="left"
         )
         discover_button.grid(row=0, column=0, padx=MEDIUM_PAD, pady=MEDIUM_PAD)
 
@@ -69,7 +139,9 @@ class DevicesTab(BaseFrame):
             text="Turn On",
             command=lambda: self.device_controller.turn_on_off(True),
             width=MEDIUM_BUTTON[0],
-            height=MEDIUM_BUTTON[1]
+            height=MEDIUM_BUTTON[1],
+            image=self.power_icon if hasattr(self, 'power_icon') and self.power_icon else None,
+            compound="left"
         )
         turn_on_button.grid(row=0, column=1, padx=MEDIUM_PAD, pady=MEDIUM_PAD)
         
@@ -78,7 +150,9 @@ class DevicesTab(BaseFrame):
             text="Turn Off",
             command=lambda: self.device_controller.turn_on_off(False),
             width=MEDIUM_BUTTON[0],
-            height=MEDIUM_BUTTON[1]
+            height=MEDIUM_BUTTON[1],
+            image=self.power_icon if hasattr(self, 'power_icon') and self.power_icon else None,
+            compound="left"
         )
         turn_off_button.grid(row=0, column=2, padx=MEDIUM_PAD, pady=MEDIUM_PAD)
 
@@ -193,19 +267,3 @@ class DevicesTab(BaseFrame):
         self.mac_value.configure(text=device.get("mac", "-"))
         self.ip_value.configure(text=device.get("ip", "-"))
         self.port_value.configure(text=str(device.get("port", "-")))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -6,10 +6,14 @@ This module contains the UI for synchronization modes (monitor sync and music sy
 import tkinter as tk
 import customtkinter as ctk
 from typing import List, Dict, Any, Callable
+import os
+import sys
+from PIL import Image
 
 from ..base import BaseFrame
 from ..styles import MEDIUM_PAD, LARGE_PAD, MEDIUM_BUTTON, LARGE_BUTTON
 from ...gui.controllers.sync_controller import SyncController
+from ...gui.resources import get_resource_path
 
 
 class ModesTab(BaseFrame):
@@ -21,6 +25,9 @@ class ModesTab(BaseFrame):
         # Use provided sync_controller if available, otherwise create a new one
         self.sync_controller = sync_controller if sync_controller else SyncController(status_callback=self.app.set_status)
 
+        # Load icons
+        self.load_icons()
+
         # Configure grid
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
@@ -30,6 +37,66 @@ class ModesTab(BaseFrame):
         self.create_sync_modes()
         self.create_sync_controls()
     
+    def load_icons(self):
+        """Load icon images for buttons."""
+        try:
+            # Load the new icons with updated filenames
+            music_icon_path = get_resource_path("music.png")
+            play_icon_path = get_resource_path("play.png")
+            stop_icon_path = get_resource_path("stop.png")
+            screen_icon_path = get_resource_path("screen.png")
+
+            # Music icon for music sync
+            if music_icon_path and os.path.exists(music_icon_path):
+                self.music_icon = ctk.CTkImage(
+                    light_image=Image.open(music_icon_path),
+                    dark_image=Image.open(music_icon_path),
+                    size=(24, 24)
+                )
+                self.app.set_status(f"Loaded music icon")
+            else:
+                self.music_icon = None
+
+            # Play icon for starting sync
+            if play_icon_path and os.path.exists(play_icon_path):
+                self.play_icon = ctk.CTkImage(
+                    light_image=Image.open(play_icon_path),
+                    dark_image=Image.open(play_icon_path),
+                    size=(24, 24)
+                )
+                self.app.set_status(f"Loaded play icon")
+            else:
+                self.play_icon = None
+
+            # Stop icon for stopping sync
+            if stop_icon_path and os.path.exists(stop_icon_path):
+                self.stop_icon = ctk.CTkImage(
+                    light_image=Image.open(stop_icon_path),
+                    dark_image=Image.open(stop_icon_path),
+                    size=(20, 20)
+                )
+                self.app.set_status(f"Loaded stop icon")
+            else:
+                self.stop_icon = None
+
+            # Screen icon for monitor sync (renamed from sitemap to screen)
+            if screen_icon_path and os.path.exists(screen_icon_path):
+                self.monitor_icon = ctk.CTkImage(
+                    light_image=Image.open(screen_icon_path),
+                    dark_image=Image.open(screen_icon_path),
+                    size=(24, 24)
+                )
+                self.app.set_status(f"Loaded screen icon")
+            else:
+                self.monitor_icon = None
+
+        except Exception as e:
+            self.app.set_status(f"Failed to load icons: {str(e)}")
+            self.music_icon = None
+            self.play_icon = None
+            self.stop_icon = None
+            self.monitor_icon = None
+
     def create_header(self):
         """Create the header section."""
         header_frame = ctk.CTkFrame(self)
@@ -73,7 +140,9 @@ class ModesTab(BaseFrame):
             text="Start Monitor Sync",
             command=self.start_monitor_sync,
             width=LARGE_BUTTON[0],
-            height=LARGE_BUTTON[1]
+            height=LARGE_BUTTON[1],
+            image=self.monitor_icon if hasattr(self, 'monitor_icon') and self.monitor_icon else None,
+            compound="left"
         )
         monitor_button.pack(padx=MEDIUM_PAD, pady=MEDIUM_PAD)
         
@@ -100,7 +169,9 @@ class ModesTab(BaseFrame):
             text="Start Music Sync",
             command=self.start_music_sync,
             width=LARGE_BUTTON[0],
-            height=LARGE_BUTTON[1]
+            height=LARGE_BUTTON[1],
+            image=self.music_icon if hasattr(self, 'music_icon') and self.music_icon else None,
+            compound="left"
         )
         music_button.pack(padx=MEDIUM_PAD, pady=MEDIUM_PAD)
     
@@ -150,7 +221,9 @@ class ModesTab(BaseFrame):
             width=MEDIUM_BUTTON[0],
             height=MEDIUM_BUTTON[1],
             fg_color="#E74C3C",
-            hover_color="#C0392B"
+            hover_color="#C0392B",
+            image=self.stop_icon if hasattr(self, 'stop_icon') and self.stop_icon else None,
+            compound="left"
         )
         stop_button.grid(row=2, column=0, columnspan=2, padx=MEDIUM_PAD, pady=MEDIUM_PAD)
 
