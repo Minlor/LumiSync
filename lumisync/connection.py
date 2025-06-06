@@ -1,5 +1,4 @@
 import select
-import sys
 import base64
 import json
 import socket
@@ -15,7 +14,8 @@ def listen(server: socket.socket) -> List[str]:
     ready = select.select([server], [], [], server.gettimeout())
     if not ready[0]:
         print(f"{Fore.RED}Error: No device found!")
-        sys.exit(1)
+        # Don't exit the program, just return an empty list
+        return []
 
     messages = []
     while True:
@@ -48,7 +48,7 @@ def parse(messages: List[str]) -> List[Dict[str, Any]]:
                 }
             )
         else:
-            device["ip"] = device["msg"]["data"]["ip"]
+            device["ip"] = message["msg"]["data"]["ip"]
     return devices
 
 
@@ -57,6 +57,8 @@ def connect() -> Tuple[socket.socket, List[Dict[str, Any]]]:
     print(f"{Fore.LIGHTGREEN_EX}Searching for devices...")
     server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    # Add socket reuse flag to prevent address already in use errors
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(("", CONNECTION.default.listen_port))
     server.settimeout(CONNECTION.default.timeout)
     server.sendto(
