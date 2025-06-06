@@ -28,6 +28,9 @@ dependencies = [
   "pillow>=11.1.0",
   "soundcard>=0.4.4",
   "webcolors>=24.11.1",
+  "customtkinter>=5.2.2",
+  "pywin32>=310",
+
 ]
 
 [tool.setuptools.packages.find]
