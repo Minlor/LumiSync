@@ -31,13 +31,10 @@
 
 ## TODO
 
-* [ ] Turning lights on/off.
 * [ ] Make display sync work for Linux and macOS (WIP).
 * [ ] Add additional sync modes.
 * [ ] Add support for multiple devices (WIP).
 * [ ] Add documentation
-* [ ] Add a GUI.
-* [ ] Support for basic brightness control.
 * [ ] Support for basic color control.
 
 ## Installation
