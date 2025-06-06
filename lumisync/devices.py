@@ -5,7 +5,6 @@ This module handles device discovery and management.
 
 import json
 import socket
-import sys
 import time
 from typing import Dict, List, Any
 

@@ -28,7 +28,7 @@ def main() -> None:
     try:
         server, devices = connection.connect()
         logger.info(f"Found {len(devices)} device(s)")
-        
+
         colorama.init(True)
         print(Fore.MAGENTA + f"Welcome to {Fore.LIGHTBLUE_EX}LumiSync!")
         print(Fore.YELLOW + "Please select a option:")

@@ -13,7 +13,7 @@ from .views.devices_tab import DevicesTab
 from .views.modes_tab import ModesTab
 from .controllers.device_controller import DeviceController
 from .controllers.sync_controller import SyncController
-from ..utils.logging import setup_logger, get_logger
+from ..utils.logging import setup_logger
 
 # Set up logger for GUI application
 logger = setup_logger('lumisync_gui')
@@ -21,7 +21,7 @@ logger = setup_logger('lumisync_gui')
 
 class LumiSyncApp(BaseApp):
     """Main application class for LumiSync."""
-    
+
     def __init__(self):
         logger.info("Initializing LumiSync GUI application")
         super().__init__()
@@ -82,10 +82,10 @@ class LumiSyncApp(BaseApp):
                 application_path = sys._MEIPASS
             else:
                 application_path = os.path.dirname(os.path.abspath(__file__))
-            
+
             # Path to icon file (you would need to add an icon file to the project)
             icon_path = os.path.join(application_path, "resources", "icon.ico")
-            
+
             if os.path.exists(icon_path):
                 self.iconbitmap(icon_path)
                 logger.debug(f"Set application icon from {icon_path}")

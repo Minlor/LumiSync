@@ -4,7 +4,6 @@ This module provides functions for reading and writing configuration files.
 """
 
 import json
-import os
 from typing import Any, Dict
 
 from colorama import Fore

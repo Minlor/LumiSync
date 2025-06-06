@@ -2,24 +2,20 @@
 Modes tab for the LumiSync GUI.
 This module contains the UI for synchronization modes (monitor sync and music sync).
 """
-
-import tkinter as tk
 import customtkinter as ctk
 from typing import List, Dict, Any, Callable
 import os
-import sys
 from PIL import Image
 
 from ..base import BaseFrame
-from ..styles import MEDIUM_PAD, LARGE_PAD, MEDIUM_BUTTON, LARGE_BUTTON
+from ..styles import MEDIUM_PAD, MEDIUM_BUTTON, LARGE_BUTTON
 from ...gui.controllers.sync_controller import SyncController
 from ...gui.resources import get_resource_path
-from ...config.options import BRIGHTNESS
 
 
 class ModesTab(BaseFrame):
     """Tab for synchronization modes."""
-    
+
     def __init__(self, master, app, sync_controller=None):
         super().__init__(master)
         self.app = app
@@ -32,7 +28,7 @@ class ModesTab(BaseFrame):
         # Configure grid for responsive layout
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
-        
+
         # Create widgets
         self.create_header()
         self.create_sync_modes()
@@ -101,7 +97,7 @@ class ModesTab(BaseFrame):
                     dark_image=Image.open(music_icon_path),
                     size=(24, 24)
                 )
-                self.app.set_status(f"Loaded music icon")
+                self.app.set_status("Loaded music icon")
             else:
                 self.music_icon = None
 
@@ -112,7 +108,7 @@ class ModesTab(BaseFrame):
                     dark_image=Image.open(play_icon_path),
                     size=(24, 24)
                 )
-                self.app.set_status(f"Loaded play icon")
+                self.app.set_status("Loaded play icon")
             else:
                 self.play_icon = None
 
@@ -123,7 +119,7 @@ class ModesTab(BaseFrame):
                     dark_image=Image.open(stop_icon_path),
                     size=(20, 20)
                 )
-                self.app.set_status(f"Loaded stop icon")
+                self.app.set_status("Loaded stop icon")
             else:
                 self.stop_icon = None
 
@@ -134,7 +130,7 @@ class ModesTab(BaseFrame):
                     dark_image=Image.open(settings_icon_path),
                     size=(20, 20)
                 )
-                self.app.set_status(f"Loaded settings icon")
+                self.app.set_status("Loaded settings icon")
             else:
                 self.settings_icon = None
 
@@ -145,7 +141,7 @@ class ModesTab(BaseFrame):
                     dark_image=Image.open(screen_icon_path),
                     size=(24, 24)
                 )
-                self.app.set_status(f"Loaded screen icon")
+                self.app.set_status("Loaded screen icon")
             else:
                 self.monitor_icon = None
 
@@ -161,26 +157,26 @@ class ModesTab(BaseFrame):
         """Create the header section."""
         header_frame = ctk.CTkFrame(self)
         header_frame.grid(row=0, column=0, padx=MEDIUM_PAD, pady=MEDIUM_PAD, sticky="ew")
-        
+
         header_label = ctk.CTkLabel(
             header_frame, 
             text="Synchronization Modes", 
             font=("Segoe UI", 16, "bold")
         )
         header_label.pack(padx=MEDIUM_PAD, pady=MEDIUM_PAD)
-    
+
     def create_sync_modes(self):
         """Create the synchronization modes section."""
         modes_frame = ctk.CTkFrame(self)
         modes_frame.grid(row=1, column=0, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="ew")
-        
+
         # Configure grid for equal columns with responsive width
         modes_frame.grid_columnconfigure((0, 1), weight=1, uniform="column")
 
         # Monitor Sync
         monitor_frame = ctk.CTkFrame(modes_frame)
         monitor_frame.grid(row=0, column=0, padx=MEDIUM_PAD, pady=MEDIUM_PAD, sticky="nsew")
-        
+
         # Configure monitor frame grid
         monitor_frame.grid_columnconfigure(0, weight=1)
 
@@ -239,7 +235,7 @@ class ModesTab(BaseFrame):
         # Music Sync
         music_frame = ctk.CTkFrame(modes_frame)
         music_frame.grid(row=0, column=1, padx=MEDIUM_PAD, pady=MEDIUM_PAD, sticky="nsew")
-        
+
         # Configure music frame grid
         music_frame.grid_columnconfigure(0, weight=1)
 
@@ -315,11 +311,11 @@ class ModesTab(BaseFrame):
         """Create the synchronization controls section."""
         controls_frame = ctk.CTkFrame(self)
         controls_frame.grid(row=2, column=0, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="nsew")
-        
+
         # Configure grid
         controls_frame.grid_columnconfigure(0, weight=1)
         controls_frame.grid_rowconfigure(1, weight=1)
-        
+
         # Header
         controls_label = ctk.CTkLabel(
             controls_frame, 
@@ -327,28 +323,28 @@ class ModesTab(BaseFrame):
             font=("Segoe UI", 12, "bold")
         )
         controls_label.grid(row=0, column=0, padx=MEDIUM_PAD, pady=MEDIUM_PAD, sticky="w")
-        
+
         # Status and controls
         status_frame = ctk.CTkFrame(controls_frame)
         status_frame.grid(row=1, column=0, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="nsew")
-        
+
         # Configure grid
         status_frame.grid_columnconfigure(1, weight=1)
-        
+
         # Current mode
         mode_label = ctk.CTkLabel(status_frame, text="Current Mode:")
         mode_label.grid(row=0, column=0, padx=MEDIUM_PAD, pady=MEDIUM_PAD, sticky="w")
-        
+
         self.mode_value = ctk.CTkLabel(status_frame, text="None")
         self.mode_value.grid(row=0, column=1, padx=MEDIUM_PAD, pady=MEDIUM_PAD, sticky="w")
-        
+
         # Status
         status_label = ctk.CTkLabel(status_frame, text="Status:")
         status_label.grid(row=1, column=0, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="w")
-        
+
         self.status_value = ctk.CTkLabel(status_frame, text="Idle")
         self.status_value.grid(row=1, column=1, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="w")
-        
+
         # Stop button
         stop_button = ctk.CTkButton(
             status_frame,
@@ -365,33 +361,33 @@ class ModesTab(BaseFrame):
 
         # Update status periodically
         self.update_status()
-    
+
     def start_monitor_sync(self):
         """Start monitor synchronization."""
         self.sync_controller.start_monitor_sync()
         self.update_status()
-    
+
     def start_music_sync(self):
         """Start music synchronization."""
         self.sync_controller.start_music_sync()
         self.update_status()
-    
+
     def stop_sync(self):
         """Stop synchronization."""
         self.sync_controller.stop_sync()
         self.update_status()
-    
+
     def update_status(self):
         """Update the status display."""
         current_mode = self.sync_controller.get_current_sync_mode()
         is_syncing = self.sync_controller.is_syncing()
-        
+
         if current_mode:
             self.mode_value.configure(text=current_mode.capitalize())
             self.status_value.configure(text="Active")
         else:
             self.mode_value.configure(text="None")
             self.status_value.configure(text="Idle")
-        
+
         # Schedule the next update
         self.after(1000, self.update_status)

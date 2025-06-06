@@ -7,18 +7,17 @@ import tkinter as tk
 import customtkinter as ctk
 from typing import List, Dict, Any, Callable
 import os
-import sys
 from PIL import Image
 
 from ..base import BaseFrame
-from ..styles import MEDIUM_PAD, LARGE_PAD, MEDIUM_BUTTON
+from ..styles import MEDIUM_PAD, MEDIUM_BUTTON
 from ...gui.controllers.device_controller import DeviceController
 from ...gui.resources import get_resource_path
 
 
 class DevicesTab(BaseFrame):
     """Tab for device discovery and management."""
-    
+
     def __init__(self, master, app, device_controller=None):
         super().__init__(master)
         self.app = app
@@ -92,7 +91,7 @@ class DevicesTab(BaseFrame):
                     dark_image=Image.open(refresh_icon_path),
                     size=(20, 20)
                 )
-                self.app.set_status(f"Loaded refresh icon")
+                self.app.set_status("Loaded refresh icon")
             else:
                 self.refresh_icon = None
 
@@ -103,7 +102,7 @@ class DevicesTab(BaseFrame):
                     dark_image=Image.open(power_icon_path),
                     size=(20, 20)
                 )
-                self.app.set_status(f"Loaded power icon")
+                self.app.set_status("Loaded power icon")
             else:
                 self.power_icon = None
 
@@ -114,7 +113,7 @@ class DevicesTab(BaseFrame):
                     dark_image=Image.open(lightbulb_icon_path),
                     size=(20, 20)
                 )
-                self.app.set_status(f"Loaded lightbulb icon")
+                self.app.set_status("Loaded lightbulb icon")
             else:
                 self.lightbulb_icon = None
 
@@ -125,7 +124,7 @@ class DevicesTab(BaseFrame):
                     dark_image=Image.open(network_icon_path),
                     size=(20, 20)
                 )
-                self.app.set_status(f"Loaded network icon")
+                self.app.set_status("Loaded network icon")
             else:
                 self.network_icon = None
 
@@ -140,7 +139,7 @@ class DevicesTab(BaseFrame):
         """Create the header section."""
         header_frame = ctk.CTkFrame(self)
         header_frame.grid(row=0, column=0, padx=MEDIUM_PAD, pady=MEDIUM_PAD, sticky="ew")
-        
+
         header_label = ctk.CTkLabel(
             header_frame, 
             text="Device Management", 
@@ -152,10 +151,10 @@ class DevicesTab(BaseFrame):
         """Create the actions section."""
         actions_frame = ctk.CTkFrame(self)
         actions_frame.grid(row=1, column=0, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="ew")
-        
+
         # Configure grid
         actions_frame.grid_columnconfigure((0, 1, 2), weight=1)
-        
+
         # Create buttons
         discover_button = ctk.CTkButton(
             actions_frame,
@@ -178,7 +177,7 @@ class DevicesTab(BaseFrame):
             compound="left"
         )
         turn_on_button.grid(row=0, column=1, padx=MEDIUM_PAD, pady=MEDIUM_PAD)
-        
+
         turn_off_button = ctk.CTkButton(
             actions_frame,
             text="Turn Off",
@@ -194,7 +193,7 @@ class DevicesTab(BaseFrame):
         """Create the device list section."""
         list_frame = ctk.CTkFrame(self)
         list_frame.grid(row=2, column=0, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="ew")
-        
+
         # Header
         list_label = ctk.CTkLabel(
             list_frame, 
@@ -202,7 +201,7 @@ class DevicesTab(BaseFrame):
             font=("Segoe UI", 12, "bold")
         )
         list_label.pack(padx=MEDIUM_PAD, pady=MEDIUM_PAD, anchor="w")
-        
+
         # Device list (using a Listbox with a scrollbar)
         self.device_listbox = tk.Listbox(
             list_frame,
@@ -214,21 +213,21 @@ class DevicesTab(BaseFrame):
             font=("Segoe UI", 10)
         )
         self.device_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD))
-        
+
         scrollbar = tk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.device_listbox.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y, pady=(0, MEDIUM_PAD))
-        
+
         self.device_listbox.config(yscrollcommand=scrollbar.set)
         self.device_listbox.bind("<<ListboxSelect>>", self.on_device_select)
-    
+
     def create_device_details(self):
         """Create the device details section."""
         details_frame = ctk.CTkFrame(self)
         details_frame.grid(row=3, column=0, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="nsew")
-        
+
         # Configure grid
         details_frame.grid_columnconfigure(1, weight=1)
-        
+
         # Header
         details_label = ctk.CTkLabel(
             details_frame, 
@@ -236,29 +235,29 @@ class DevicesTab(BaseFrame):
             font=("Segoe UI", 12, "bold")
         )
         details_label.grid(row=0, column=0, columnspan=2, padx=MEDIUM_PAD, pady=MEDIUM_PAD, sticky="w")
-        
+
         # Device details
         model_label = ctk.CTkLabel(details_frame, text="Model:")
         model_label.grid(row=1, column=0, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="w")
-        
+
         self.model_value = ctk.CTkLabel(details_frame, text="-")
         self.model_value.grid(row=1, column=1, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="w")
-        
+
         mac_label = ctk.CTkLabel(details_frame, text="MAC Address:")
         mac_label.grid(row=2, column=0, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="w")
-        
+
         self.mac_value = ctk.CTkLabel(details_frame, text="-")
         self.mac_value.grid(row=2, column=1, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="w")
-        
+
         ip_label = ctk.CTkLabel(details_frame, text="IP Address:")
         ip_label.grid(row=3, column=0, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="w")
-        
+
         self.ip_value = ctk.CTkLabel(details_frame, text="-")
         self.ip_value.grid(row=3, column=1, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="w")
-        
+
         port_label = ctk.CTkLabel(details_frame, text="Port:")
         port_label.grid(row=4, column=0, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="w")
-        
+
         self.port_value = ctk.CTkLabel(details_frame, text="-")
         self.port_value.grid(row=4, column=1, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="w")
 
@@ -266,7 +265,7 @@ class DevicesTab(BaseFrame):
         """Load devices from settings."""
         devices = self.device_controller.get_devices()
         self.update_device_list(devices)
-    
+
     def discover_devices(self):
         """Discover devices on the network."""
         self.device_controller.discover_devices(callback=self.update_device_list)
@@ -274,7 +273,7 @@ class DevicesTab(BaseFrame):
     def update_device_list(self, devices: List[Dict[str, Any]]):
         """Update the device list."""
         self.device_listbox.delete(0, tk.END)
-        
+
         for i, device in enumerate(devices):
             # Use lowercase key names that match our connection.py implementation
             self.device_listbox.insert(tk.END, f"{device.get('model', '-')} ({device.get('ip', '-')})")
@@ -283,7 +282,7 @@ class DevicesTab(BaseFrame):
             if i == self.device_controller.selected_device_index:
                 self.device_listbox.selection_set(i)
                 self.update_device_details(device)
-    
+
     def on_device_select(self, event):
         """Handle device selection."""
         selection = self.device_listbox.curselection()
@@ -293,7 +292,7 @@ class DevicesTab(BaseFrame):
             device = self.device_controller.get_selected_device()
             if device:
                 self.update_device_details(device)
-    
+
     def update_device_details(self, device: Dict[str, Any]):
         """Update the device details display."""
         # Use lowercase key names that match our connection.py implementation

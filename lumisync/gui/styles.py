@@ -31,11 +31,7 @@ LARGE_BUTTON = (200, 40)
 # Widget styles
 def configure_styles():
     """Configure styles for the application."""
-    # This function can be expanded to configure more styles as needed
-    pass
 
 # Theme management
 def set_theme(theme):
     """Set the application theme."""
-    # This function can be expanded to handle theme switching
-    pass

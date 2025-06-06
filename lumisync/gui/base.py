@@ -3,7 +3,6 @@ from tkinter import messagebox
 import customtkinter as ctk
 import threading
 import sys
-import os
 
 # Set appearance mode and default color theme
 ctk.set_appearance_mode("System")  # Modes: "System" (standard), "Dark", "Light"
@@ -19,12 +18,12 @@ class BaseApp(ctk.CTk):
     """Base application class for the LumiSync GUI."""
     def __init__(self):
         super().__init__()
-        
+
         # Configure window
         self.title("LumiSync")
         self.geometry("900x600")
         self.minsize(800, 500)
-        
+
         # Set up status bar first so it's always at the bottom
         self.setup_status_bar()
 
@@ -34,10 +33,10 @@ class BaseApp(ctk.CTk):
 
         # Dictionary to store frames
         self.frames = {}
-        
+
         # Set up menu
         self.setup_menu()
-        
+
         # Active threads
         self.active_threads = []
 
@@ -48,20 +47,20 @@ class BaseApp(ctk.CTk):
         """Set up the application menu."""
         # Create menu bar
         self.menu_bar = tk.Menu(self)
-        
+
         # File menu
         file_menu = tk.Menu(self.menu_bar, tearoff=0)
         file_menu.add_command(label="Exit", command=self.on_closing)
         self.menu_bar.add_cascade(label="File", menu=file_menu)
-        
+
         # Help menu
         help_menu = tk.Menu(self.menu_bar, tearoff=0)
         help_menu.add_command(label="About", command=self.show_about)
         self.menu_bar.add_cascade(label="Help", menu=help_menu)
-        
+
         # Set the menu bar
         self.config(menu=self.menu_bar)
-    
+
     def setup_status_bar(self):
         """Set up the status bar at the bottom of the window."""
         # Create a frame that will always be at the bottom
@@ -104,45 +103,43 @@ class BaseApp(ctk.CTk):
         self.update_idletasks()
         self.status_bar.update()
 
-    def show_about(self):
+    @staticmethod
+    def show_about():
         """Show the about dialog."""
         messagebox.showinfo(
             "About LumiSync",
             "LumiSync\n\nA program that allows you to easily sync your Govee lights.\n\n"
             "© 2023 Minlor"
         )
-    
+
     def add_frame(self, frame_class, page_name):
         """Add a frame to the application."""
         frame = frame_class(self.container, self)
         self.frames[page_name] = frame
         frame.grid(row=0, column=0, sticky="nsew")
-    
+
     def show_frame(self, page_name):
         """Show a frame for the given page name."""
         frame = self.frames[page_name]
         frame.tkraise()
-    
+
     def run_in_thread(self, target, daemon=True, args=()):
         """Run a function in a separate thread."""
         thread = threading.Thread(target=target, daemon=daemon, args=args)
         thread.start()
         self.active_threads.append(thread)
         return thread
-    
+
     def on_closing(self):
         """Handle window closing event."""
         if messagebox.askokcancel("Quit", "Do you want to quit?"):
             # Clean up any resources
             for thread in self.active_threads:
-                if thread.is_alive():
-                    # Can't forcibly terminate threads in Python, but we can set flags
-                    # that the thread should check to know when to exit
-                    pass
-            
+                pass
+
             self.destroy()
             sys.exit()
-    
+
     def run(self):
         """Run the application."""
         self.protocol("WM_DELETE_WINDOW", self.on_closing)

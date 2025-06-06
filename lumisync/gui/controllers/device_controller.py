@@ -13,11 +13,11 @@ from ... import devices, connection
 
 class DeviceController:
     """Controller for managing devices."""
-    
+
     def __init__(self, status_callback: Callable[[str], None] = None):
         """
         Initialize the device controller.
-        
+
         Args:
             status_callback: Callback function to update status messages
         """
@@ -48,21 +48,21 @@ class DeviceController:
         """Set the status message."""
         if self.status_callback:
             self.status_callback(message)
-    
+
     def discover_devices(self, callback: Callable[[List[Dict[str, Any]]], None] = None) -> None:
         """
         Discover devices on the network.
-        
+
         Args:
             callback: Callback function to be called when devices are discovered
         """
         if self.is_discovering:
             self.set_status("Device discovery already in progress...")
             return
-        
+
         self.is_discovering = True
         self.set_status("Discovering devices...")
-        
+
         def discovery_task():
             try:
                 # Request device data
@@ -94,11 +94,11 @@ class DeviceController:
                 self.set_status(f"Error discovering devices: {str(e)}")
             finally:
                 self.is_discovering = False
-        
+
         self.discovery_thread = threading.Thread(target=discovery_task)
         self.discovery_thread.daemon = True
         self.discovery_thread.start()
-    
+
     def get_devices(self) -> List[Dict[str, Any]]:
         """Get the list of discovered devices."""
         try:
@@ -113,7 +113,7 @@ class DeviceController:
     def select_device(self, index: int) -> None:
         """
         Select a device by index.
-        
+
         Args:
             index: Index of the device to select
         """
@@ -142,7 +142,7 @@ class DeviceController:
         if self.devices and 0 <= self.selected_device_index < len(self.devices):
             return self.devices[self.selected_device_index]
         return None
-    
+
     def set_sync_controller(self, controller):
         """Set the sync controller reference for coordinating device selection."""
         self.sync_controller = controller
@@ -195,7 +195,7 @@ class DeviceController:
     def turn_on_off(self, on: bool = True) -> None:
         """
         Turn the selected device on or off.
-        
+
         Args:
             on: True to turn on, False to turn off
         """
@@ -210,11 +210,11 @@ class DeviceController:
             self.set_status(f"Device turned {'on' if on else 'off'}")
         except Exception as e:
             self.set_status(f"Error turning device {'on' if on else 'off'}: {str(e)}")
-    
+
     def set_razer_mode(self, on: bool = True) -> None:
         """
         Set the device to Razer mode.
-        
+
         Args:
             on: True to enable Razer mode, False to disable
         """
