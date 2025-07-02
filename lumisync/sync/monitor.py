@@ -59,7 +59,9 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
         previous_colors = colors
 
 
-def apply_brightness(colors: List[Tuple[int, int, int]], brightness_factor: float) -> List[Tuple[int, int, int]]:
+def apply_brightness(
+    colors: List[Tuple[int, int, int]], brightness_factor: float
+) -> List[Tuple[int, int, int]]:
     """Apply brightness factor to a list of colors.
 
     Args:
@@ -69,11 +71,14 @@ def apply_brightness(colors: List[Tuple[int, int, int]], brightness_factor: floa
     Returns:
         List of adjusted RGB color tuples
     """
-    return [(
-        int(r * brightness_factor),
-        int(g * brightness_factor),
-        int(b * brightness_factor)
-    ) for r, g, b in colors]
+    return [
+        (
+            int(r * brightness_factor),
+            int(g * brightness_factor),
+            int(b * brightness_factor),
+        )
+        for r, g, b in colors
+    ]
 
 
 def smooth_transition(

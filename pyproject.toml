@@ -29,7 +29,7 @@ dependencies = [
   "soundcard>=0.4.4",
   "webcolors>=24.11.1",
   "customtkinter>=5.2.2",
-  "pywin32>=310",
+  "pywin32>=310; sys_platform == 'win32'",
 
 ]
 

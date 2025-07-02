@@ -3,21 +3,24 @@ Sync controller for the LumiSync GUI.
 This module handles synchronization functionality (monitor sync and music sync).
 """
 
+import platform
+import socket
 import threading
 import time
-import socket
-from typing import Callable, Dict, Any, Optional
-from pythoncom import CoInitializeEx, CoUninitialize
+from typing import Any, Callable, Dict, Optional
+
+if platform.system() == "Windows":
+    from pythoncom import CoInitializeEx, CoUninitialize
 
 from ... import connection, devices
+from ...config.options import AUDIO, BRIGHTNESS, COLORS, GENERAL
 from ...sync import monitor, music
-from ...config.options import GENERAL, AUDIO, COLORS, BRIGHTNESS
 
 
 class SyncController:
     """Controller for managing synchronization."""
 
-    def __init__(self, status_callback: Callable[[str], None] = None):
+    def __init__(self, status_callback: Callable[[str], None] | None = None):
         """
         Initialize the sync controller.
 
@@ -44,7 +47,9 @@ class SyncController:
             settings = devices.get_data()
             if settings["devices"] and len(settings["devices"]) > 0:
                 self.selected_device = settings["devices"][settings["selectedDevice"]]
-                self.set_status(f"Selected device: {self.selected_device.get('model', 'Unknown')}")
+                self.set_status(
+                    f"Selected device: {self.selected_device.get('model', 'Unknown')}"
+                )
         except Exception as e:
             self.set_status(f"Error initializing device: {str(e)}")
 
@@ -94,7 +99,9 @@ class SyncController:
         if self.server is None:
             self.server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.server.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Add reuse flag
+            self.server.setsockopt(
+                socket.SOL_SOCKET, socket.SO_REUSEADDR, 1
+            )  # Add reuse flag
             self.server.bind(("", connection.CONNECTION.default.listen_port))
             self.server.settimeout(connection.CONNECTION.default.timeout)
 
@@ -153,7 +160,9 @@ class SyncController:
                         top, bottom = int(height / 4 * 2), int(height / 4 * 3)
 
                         for x in range(4):
-                            img = screen.crop((int(width / 4 * x), 0, int(width / 4 * (x + 1)), top))
+                            img = screen.crop(
+                                (int(width / 4 * x), 0, int(width / 4 * (x + 1)), top)
+                            )
                             point = (int(img.size[0] / 2), int(img.size[1] / 2))
                             colors.append(img.getpixel(point))
                         colors.reverse()
@@ -162,7 +171,12 @@ class SyncController:
                         colors.append(img.getpixel(point))
                         for x in range(4):
                             img = screen.crop(
-                                (int(width / 4 * x), bottom, int(width / 4 * (x + 1)), height)
+                                (
+                                    int(width / 4 * x),
+                                    bottom,
+                                    int(width / 4 * (x + 1)),
+                                    height,
+                                )
                             )
                             point = (int(img.size[0] / 2), int(img.size[1] / 2))
                             colors.append(img.getpixel(point))
@@ -174,10 +188,7 @@ class SyncController:
 
                         # Apply smooth transition
                         monitor.smooth_transition(
-                            self.server,
-                            device,
-                            previous_colors,
-                            colors
+                            self.server, device, previous_colors, colors
                         )
 
                         # Update previous colors
@@ -194,7 +205,9 @@ class SyncController:
         self.sync_thread = threading.Thread(target=sync_task)
         self.sync_thread.daemon = True
         self.sync_thread.start()
-        self.set_status(f"Monitor sync started with {device.get('model', 'Unknown')} at {int(self.monitor_brightness * 100)}% brightness")
+        self.set_status(
+            f"Monitor sync started with {device.get('model', 'Unknown')} at {int(self.monitor_brightness * 100)}% brightness"
+        )
 
     def start_music_sync(self) -> None:
         """Start music synchronization."""
@@ -217,7 +230,8 @@ class SyncController:
         def sync_task():
             try:
                 # Initialize COM for this thread
-                CoInitializeEx(0)
+                if platform.system() == "Windows":
+                    CoInitializeEx(0)
 
                 # Enable Razer mode
                 connection.switch_razer(self.server, device, True)
@@ -229,11 +243,14 @@ class SyncController:
                     try:
                         # This code is adapted from music.py's start() function
                         with music.sc.get_microphone(
-                            id=str(music.sc.default_speaker().name), include_loopback=True
+                            id=str(music.sc.default_speaker().name),
+                            include_loopback=True,
                         ).recorder(samplerate=AUDIO.sample_rate) as mic:
                             # Try and except due to a soundcard error when no audio is playing
                             try:
-                                data = mic.record(numframes=int(AUDIO.duration * AUDIO.sample_rate))
+                                data = mic.record(
+                                    numframes=int(AUDIO.duration * AUDIO.sample_rate)
+                                )
                             except TypeError:
                                 data = None
                             amp = music.get_amplitude(data)
@@ -250,14 +267,15 @@ class SyncController:
                             COLORS.current.pop(0)
 
                             # Apply brightness to colors
-                            adjusted_colors = music.apply_brightness(COLORS.current, BRIGHTNESS.music)
+                            adjusted_colors = music.apply_brightness(
+                                COLORS.current, BRIGHTNESS.music
+                            )
 
                             # Convert colors and send to device
                             from ...utils import convert_colors
+
                             connection.send_razer_data(
-                                self.server,
-                                device,
-                                convert_colors(adjusted_colors)
+                                self.server, device, convert_colors(adjusted_colors)
                             )
 
                     except Exception as e:
@@ -268,7 +286,8 @@ class SyncController:
             finally:
                 # Ensure COM is uninitialized even if an exception occurs
                 try:
-                    CoUninitialize()
+                    if platform.system() == "Windows":
+                        CoUninitialize()
                 except:
                     pass
                 self.current_sync_mode = None
@@ -277,7 +296,9 @@ class SyncController:
         self.sync_thread = threading.Thread(target=sync_task)
         self.sync_thread.daemon = True
         self.sync_thread.start()
-        self.set_status(f"Music sync started with {device.get('model', 'Unknown')} at {int(self.music_brightness * 100)}% brightness")
+        self.set_status(
+            f"Music sync started with {device.get('model', 'Unknown')} at {int(self.music_brightness * 100)}% brightness"
+        )
 
     def stop_sync(self) -> None:
         """Stop any active synchronization."""
@@ -288,7 +309,9 @@ class SyncController:
 
             # If thread is still alive after timeout, we can't do much more in Python
             if self.sync_thread.is_alive():
-                self.set_status(f"Warning: {self.current_sync_mode} sync thread did not stop cleanly")
+                self.set_status(
+                    f"Warning: {self.current_sync_mode} sync thread did not stop cleanly"
+                )
 
             self.current_sync_mode = None
             self.set_status("Sync stopped")

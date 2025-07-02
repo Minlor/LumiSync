@@ -1,21 +1,26 @@
+import sys
+import threading
 import tkinter as tk
 from tkinter import messagebox
+
 import customtkinter as ctk
-import threading
-import sys
 
 # Set appearance mode and default color theme
 ctk.set_appearance_mode("System")  # Modes: "System" (standard), "Dark", "Light"
 ctk.set_default_color_theme("blue")  # Themes: "blue" (standard), "green", "dark-blue"
 
+
 class BaseFrame(ctk.CTkFrame):
     """Base frame for all frames in the application."""
+
     def __init__(self, master, **kwargs):
         super().__init__(master, **kwargs)
         self.master = master
 
+
 class BaseApp(ctk.CTk):
     """Base application class for the LumiSync GUI."""
+
     def __init__(self):
         super().__init__()
 
@@ -71,8 +76,9 @@ class BaseApp(ctk.CTk):
         self.status_bar.configure(border_width=1, border_color="#555555")
 
         # Status message label (left-aligned)
-        self.status_label = ctk.CTkLabel(self.status_bar, text="Ready", anchor="w",
-                                        font=("Segoe UI", 11))
+        self.status_label = ctk.CTkLabel(
+            self.status_bar, text="Ready", anchor="w", font=("Segoe UI", 11)
+        )
         self.status_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10, pady=5)
 
     def ensure_status_bar_visible(self):
@@ -109,7 +115,7 @@ class BaseApp(ctk.CTk):
         messagebox.showinfo(
             "About LumiSync",
             "LumiSync\n\nA program that allows you to easily sync your Govee lights.\n\n"
-            "© 2023 Minlor"
+            "© 2023 Minlor",
         )
 
     def add_frame(self, frame_class, page_name):

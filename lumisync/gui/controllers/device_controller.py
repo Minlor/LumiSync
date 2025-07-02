@@ -3,12 +3,12 @@ Device controller for the LumiSync GUI.
 This module handles device discovery and management.
 """
 
+import socket
 import threading
 import time
-import socket
-from typing import List, Dict, Any, Callable
+from typing import Any, Callable, Dict, List
 
-from ... import devices, connection
+from ... import connection, devices
 
 
 class DeviceController:
@@ -40,7 +40,9 @@ class DeviceController:
                 self.set_status(f"Found {len(self.devices)} device(s)")
                 device = self.get_selected_device()
                 if device:
-                    self.set_status(f"Selected device: {device.get('model', 'Unknown')}")
+                    self.set_status(
+                        f"Selected device: {device.get('model', 'Unknown')}"
+                    )
         except Exception as e:
             self.set_status(f"Error initializing device: {str(e)}")
 
@@ -49,7 +51,9 @@ class DeviceController:
         if self.status_callback:
             self.status_callback(message)
 
-    def discover_devices(self, callback: Callable[[List[Dict[str, Any]]], None] = None) -> None:
+    def discover_devices(
+        self, callback: Callable[[List[Dict[str, Any]]], None] = None
+    ) -> None:
         """
         Discover devices on the network.
 
@@ -133,7 +137,9 @@ class DeviceController:
                 if self.sync_controller:
                     self.sync_controller.set_device(selected_device)
 
-                self.set_status(f"Selected device: {selected_device.get('model', 'Unknown')}")
+                self.set_status(
+                    f"Selected device: {selected_device.get('model', 'Unknown')}"
+                )
             except Exception as e:
                 self.set_status(f"Error selecting device: {str(e)}")
 
@@ -171,7 +177,9 @@ class DeviceController:
             # Create a new socket
             self.server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.server.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Add reuse flag
+            self.server.setsockopt(
+                socket.SOL_SOCKET, socket.SO_REUSEADDR, 1
+            )  # Add reuse flag
 
             # Attempt to bind, with retry logic if needed
             max_retries = 3
@@ -183,7 +191,9 @@ class DeviceController:
                     break
                 except OSError as e:
                     if attempt < max_retries - 1:
-                        self.set_status(f"Socket binding issue, retrying in {retry_delay}s...")
+                        self.set_status(
+                            f"Socket binding issue, retrying in {retry_delay}s..."
+                        )
                         time.sleep(retry_delay)
                         retry_delay *= 2  # Exponential backoff
                     else:
@@ -238,4 +248,3 @@ class DeviceController:
                 self.server = None
             except:
                 pass
-
