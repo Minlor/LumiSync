@@ -1,21 +1,35 @@
+import platform
 import socket
 import time
+from functools import partial
 from typing import Any, Dict, List, Tuple
 
 import colour
-import dxcam
+import numpy as np
+
+# TODO: Move the "SS" variable out of global space?
+if platform.system() == "Windows":
+    import dxcam
+
+    SS = dxcam.create()
+else:
+    import mss
+
+    SS = mss.mss()
+
 from PIL import Image
 
 from .. import connection, utils
 from ..config.options import BRIGHTNESS
 
-# TODO: Move this out of global space?
-ss = dxcam.create()
-
 
 def start(server: socket.socket, device: Dict[str, Any]) -> None:
     """Starts the monitor-light synchronization."""
     connection.switch_razer(server, device, True)
+    if platform.system() == "Windows":
+        take_screenshot = SS.grab
+    else:
+        take_screenshot = partial(SS.grab, SS.monitors[0])
 
     # TODO: Initialise this in config?
     # NOTE: Initialises with black colors
@@ -23,9 +37,12 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
     while True:
         colors = []
         try:
-            screen = ss.grab()
+            screen = take_screenshot()
             if screen is None:
                 continue
+
+            if platform.system() != "Windows":
+                screen = np.array(screen)[..., :3][..., ::-1]
 
             screen = Image.fromarray(screen)
             width, height = screen.size
@@ -34,11 +51,11 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
             continue
 
         top, bottom = int(height / 4 * 2), int(height / 4 * 3)
-
         for x in range(4):
             img = screen.crop((int(width / 4 * x), 0, int(width / 4 * (x + 1)), top))
             point = (int(img.size[0] / 2), int(img.size[1] / 2))
             colors.append(img.getpixel(point))
+
         colors.reverse()
         img = screen.crop((0, top, int(width / 4), bottom))
         point = (int(img.size[0] / 2), int(img.size[1] / 2))

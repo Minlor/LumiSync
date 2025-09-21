@@ -10,11 +10,12 @@ from . import connection
 from .utils.logging import setup_logger
 
 # Set up logger for main application
-logger = setup_logger('lumisync')
+logger = setup_logger("lumisync")
 
 # Import GUI module
 try:
     from .gui import run_gui
+
     GUI_AVAILABLE = True
     logger.info("GUI module loaded successfully")
 except ImportError:
@@ -32,7 +33,12 @@ def main() -> None:
         colorama.init(True)
         print(Fore.MAGENTA + f"Welcome to {Fore.LIGHTBLUE_EX}LumiSync!")
         print(Fore.YELLOW + "Please select a option:")
-        print(Fore.GREEN + "1) Monitor Sync" "\n2) Music Sync" "\n3) Launch GUI" "\n9) Run test")
+        print(
+            Fore.GREEN + "1) Monitor Sync"
+            "\n2) Music Sync"
+            "\n3) Launch GUI"
+            "\n9) Run test"
+        )
 
         mode = input("")
         logger.info(f"User selected mode: {mode}")
@@ -40,9 +46,11 @@ def main() -> None:
             case "1" | "2":
                 if mode == "1":
                     from .sync import monitor as sync
+
                     logger.info("Selected Monitor Sync mode")
                 else:
                     from .sync import music as sync
+
                     logger.info("Selected Music Sync mode")
 
                 # NOTE: Right now for testing and development this is limited to 1 device.
@@ -84,7 +92,10 @@ def main() -> None:
                             subprocess.run(["python", f"tests/{x}"], check=True)
                             logger.info(f"Test {x} completed successfully")
                         except subprocess.CalledProcessError as e:
-                            logger.error(f"Test {x} failed with exit code {e.returncode}", exc_info=True)
+                            logger.error(
+                                f"Test {x} failed with exit code {e.returncode}",
+                                exc_info=True,
+                            )
             case _:
                 logger.warning(f"Invalid option entered: {mode}")
                 input(Fore.RED + "Invalid option!\nPress Enter to exit...")
@@ -92,7 +103,7 @@ def main() -> None:
     except Exception as e:
         logger.critical(f"Critical error in main function: {str(e)}", exc_info=True)
     finally:
-        if 'server' in locals():
+        if "server" in locals():
             server.close()
             logger.info("Server closed")
         logger.info("Application terminated")
