@@ -3,14 +3,11 @@ import platform
 from types import SimpleNamespace
 
 
-def _detect_display_server() -> str:
+def _detect_compositor() -> str:
     """Detects the display server for a Unix platform."""
-    wayland_display = os.environ.get("WAYLAND_DISPLAY")
-    xdg_session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
-
     if (
-        wayland_display
-        or xdg_session_type == "wayland"
+        os.environ.get("WAYLAND_DISPLAY")
+        or os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
         or "wayland" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
     ):
         return "wayland"
@@ -19,9 +16,9 @@ def _detect_display_server() -> str:
 
 
 # TODO: Should the led option be moved under a different global?
-GENERAL = SimpleNamespace(nled=20, platform=platform.system(), display_server=None)
+GENERAL = SimpleNamespace(nled=20, platform=platform.system(), compositor=None)
 if GENERAL.platform != "Windows":
-    GENERAL.display_server = _detect_display_server()
+    GENERAL.compositor = _detect_compositor()
 
 # TODO: Replace the settings.json with this during runtime
 # and only use the settings.json on restart?

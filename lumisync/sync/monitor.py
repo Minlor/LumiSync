@@ -11,19 +11,43 @@ from .. import connection, utils
 from ..config.options import BRIGHTNESS, GENERAL
 
 
+class ScreenGrab:
+    """Facilitates taking a screenshot while supporting
+    different platforms and compositors (the latter for Unix).
+    """
+
+    def __init__(self) -> None:
+        if GENERAL.platform == "Windows":
+            import dxcam
+
+            self.camera = dxcam.create()
+            self.capture_method = self.camera.grab
+        else:
+            if GENERAL.compositor == "x11":
+                import mss
+
+                self.camera = mss.mss()
+                self.capture_method = partial(self.camera.grab, self.camera.monitors[0])
+            else:
+                # TODO: Implement Wayland support
+                ...
+
+    def capture(self) -> Image.Image | None:
+        """Captures a screenshot."""
+        screen = self.capture_method()
+        if screen is None:
+            return screen
+
+        if GENERAL.platform != "Windows" and GENERAL.compositor == "x11":
+            screen = np.array(screen)[..., [2, 1, 0]]
+
+        return Image.fromarray(screen)
+
+
 def start(server: socket.socket, device: Dict[str, Any]) -> None:
     """Starts the monitor-light synchronization."""
     connection.switch_razer(server, device, True)
-    if GENERAL.platform == "Windows":
-        import dxcam
-
-        ss = dxcam.create()
-        take_screenshot = ss.grab
-    else:
-        import mss
-
-        ss = mss.mss()
-        take_screenshot = partial(ss.grab, ss.monitors[0])
+    screen_grab = ScreenGrab()
 
     # TODO: Initialise this in config?
     # NOTE: Initialises with black colors
@@ -31,14 +55,10 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
     while True:
         colors = []
         try:
-            screen = take_screenshot()
+            screen = screen_grab.capture()
             if screen is None:
                 continue
 
-            if GENERAL.platform != "Windows":
-                screen = np.array(screen)[..., [2, 1, 0]]
-
-            screen = Image.fromarray(screen)
             width, height = screen.size
         except OSError:
             print("Warning: Screenshot failed, trying again...")
