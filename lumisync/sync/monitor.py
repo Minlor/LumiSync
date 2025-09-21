@@ -1,4 +1,3 @@
-import platform
 import socket
 import time
 from functools import partial
@@ -6,30 +5,25 @@ from typing import Any, Dict, List, Tuple
 
 import colour
 import numpy as np
-
-# TODO: Move the "SS" variable out of global space?
-if platform.system() == "Windows":
-    import dxcam
-
-    SS = dxcam.create()
-else:
-    import mss
-
-    SS = mss.mss()
-
 from PIL import Image
 
 from .. import connection, utils
-from ..config.options import BRIGHTNESS
+from ..config.options import BRIGHTNESS, GENERAL
 
 
 def start(server: socket.socket, device: Dict[str, Any]) -> None:
     """Starts the monitor-light synchronization."""
     connection.switch_razer(server, device, True)
-    if platform.system() == "Windows":
-        take_screenshot = SS.grab
+    if GENERAL.platform == "Windows":
+        import dxcam
+
+        ss = dxcam.create()
+        take_screenshot = ss.grab
     else:
-        take_screenshot = partial(SS.grab, SS.monitors[0])
+        import mss
+
+        ss = mss.mss()
+        take_screenshot = partial(ss.grab, ss.monitors[0])
 
     # TODO: Initialise this in config?
     # NOTE: Initialises with black colors
@@ -41,8 +35,8 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
             if screen is None:
                 continue
 
-            if platform.system() != "Windows":
-                screen = np.array(screen)[..., :3][..., ::-1]
+            if GENERAL.platform != "Windows":
+                screen = np.array(screen)[..., [2, 1, 0]]
 
             screen = Image.fromarray(screen)
             width, height = screen.size
