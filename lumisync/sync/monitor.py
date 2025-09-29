@@ -1,21 +1,53 @@
 import socket
 import time
+from functools import partial
 from typing import Any, Dict, List, Tuple
 
 import colour
-import dxcam
+import numpy as np
 from PIL import Image
 
 from .. import connection, utils
-from ..config.options import BRIGHTNESS
+from ..config.options import BRIGHTNESS, GENERAL
 
-# TODO: Move this out of global space?
-ss = dxcam.create()
+
+class ScreenGrab:
+    """Facilitates taking a screenshot while supporting
+    different platforms and compositors (the latter for Unix).
+    """
+
+    def __init__(self) -> None:
+        if GENERAL.platform == "Windows":
+            import dxcam
+
+            self.camera = dxcam.create()
+            self.capture_method = self.camera.grab
+        else:
+            if GENERAL.compositor == "x11":
+                import mss
+
+                self.camera = mss.mss()
+                self.capture_method = partial(self.camera.grab, self.camera.monitors[0])
+            else:
+                # TODO: Implement Wayland support
+                raise NotImplementedError("Wayland support is not yet implemented in ScreenGrab.")
+
+    def capture(self) -> Image.Image | None:
+        """Captures a screenshot."""
+        screen = self.capture_method()
+        if screen is None:
+            return screen
+
+        if GENERAL.platform != "Windows" and GENERAL.compositor == "x11":
+            screen = np.array(screen)[..., [2, 1, 0]]
+
+        return Image.fromarray(screen)
 
 
 def start(server: socket.socket, device: Dict[str, Any]) -> None:
     """Starts the monitor-light synchronization."""
     connection.switch_razer(server, device, True)
+    screen_grab = ScreenGrab()
 
     # TODO: Initialise this in config?
     # NOTE: Initialises with black colors
@@ -23,22 +55,21 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
     while True:
         colors = []
         try:
-            screen = ss.grab()
+            screen = screen_grab.capture()
             if screen is None:
                 continue
 
-            screen = Image.fromarray(screen)
             width, height = screen.size
         except OSError:
             print("Warning: Screenshot failed, trying again...")
             continue
 
         top, bottom = int(height / 4 * 2), int(height / 4 * 3)
-
         for x in range(4):
             img = screen.crop((int(width / 4 * x), 0, int(width / 4 * (x + 1)), top))
             point = (int(img.size[0] / 2), int(img.size[1] / 2))
             colors.append(img.getpixel(point))
+
         colors.reverse()
         img = screen.crop((0, top, int(width / 4), bottom))
         point = (int(img.size[0] / 2), int(img.size[1] / 2))
@@ -59,7 +90,9 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
         previous_colors = colors
 
 
-def apply_brightness(colors: List[Tuple[int, int, int]], brightness_factor: float) -> List[Tuple[int, int, int]]:
+def apply_brightness(
+    colors: List[Tuple[int, int, int]], brightness_factor: float
+) -> List[Tuple[int, int, int]]:
     """Apply brightness factor to a list of colors.
 
     Args:
@@ -69,11 +102,14 @@ def apply_brightness(colors: List[Tuple[int, int, int]], brightness_factor: floa
     Returns:
         List of adjusted RGB color tuples
     """
-    return [(
-        int(r * brightness_factor),
-        int(g * brightness_factor),
-        int(b * brightness_factor)
-    ) for r, g, b in colors]
+    return [
+        (
+            int(r * brightness_factor),
+            int(g * brightness_factor),
+            int(b * brightness_factor),
+        )
+        for r, g, b in colors
+    ]
 
 
 def smooth_transition(
