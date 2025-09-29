@@ -30,7 +30,7 @@ class ScreenGrab:
                 self.capture_method = partial(self.camera.grab, self.camera.monitors[0])
             else:
                 # TODO: Implement Wayland support
-                ...
+                raise NotImplementedError("Wayland support is not yet implemented in ScreenGrab.")
 
     def capture(self) -> Image.Image | None:
         """Captures a screenshot."""
