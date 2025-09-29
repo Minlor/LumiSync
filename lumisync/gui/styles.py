@@ -27,15 +27,3 @@ LARGE_PAD = 20
 SMALL_BUTTON = (100, 30)
 MEDIUM_BUTTON = (150, 35)
 LARGE_BUTTON = (200, 40)
-
-
-# Widget styles
-def configure_styles():
-    """Configure styles for the application."""
-    ...
-
-
-# Theme management
-def set_theme(theme):
-    """Set the application theme."""
-    ...
