@@ -1,8 +1,10 @@
 """
-GUI package for LumiSync.
-This package contains the graphical user interface for the LumiSync application.
+Views package for LumiSync GUI.
+Contains all the UI views/tabs for the application.
 """
 
-from .app import main as run_gui
+from .devices_tab import DevicesTab
+from .modes_tab import ModesTab
+from .color_tab import ColorTab
 
-__all__ = ["run_gui"]
+__all__ = ['DevicesTab', 'ModesTab', 'ColorTab']
