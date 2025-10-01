@@ -11,6 +11,7 @@ import os
 from .base import BaseApp
 from .views.devices_tab import DevicesTab
 from .views.modes_tab import ModesTab
+from .views.color_tab import ColorTab
 from .controllers.device_controller import DeviceController
 from .controllers.sync_controller import SyncController
 from ..utils.logging import setup_logger
@@ -40,12 +41,16 @@ class LumiSyncApp(BaseApp):
 
         # Add tabs
         self.tabview.add("Devices")
+        self.tabview.add("Colors")
         self.tabview.add("Modes")
         logger.debug("Added tabs to main window")
 
         # Create tab contents, passing the controllers
         self.devices_tab = DevicesTab(self.tabview.tab("Devices"), self, self.device_controller)
         self.devices_tab.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        self.color_tab = ColorTab(self.tabview.tab("Colors"), self, self.device_controller)
+        self.color_tab.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         self.modes_tab = ModesTab(self.tabview.tab("Modes"), self, self.sync_controller)
         self.modes_tab.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
