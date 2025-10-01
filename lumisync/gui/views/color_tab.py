@@ -307,7 +307,7 @@ class ColorTab(BaseFrame):
                 command=lambda c=color: self.set_color(c)
             )
             button.grid(
-                row=row, col=col, 
+                row=row, column=col,
                 padx=5, pady=5, sticky="ew"
             )
             
