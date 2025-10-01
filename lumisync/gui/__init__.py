@@ -7,4 +7,4 @@ from .devices_tab import DevicesTab
 from .modes_tab import ModesTab
 from .color_tab import ColorTab
 
-__all__ = ['DevicesTab', 'ModesTab', 'ColorTab']
+__all__ = [DevicesTab, ModesTab, ColorTab]
