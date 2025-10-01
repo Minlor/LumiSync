@@ -106,16 +106,21 @@ class LumiSyncApp(BaseApp):
         logger.info(f"Status: {message}")
 
 
-def main():
-    """Main entry point for the GUI application."""
+def run_gui():
+    """Run the GUI application."""
     logger.info("Starting LumiSync GUI application")
     try:
         app = LumiSyncApp()
         app.run()
         logger.info("LumiSync GUI application closed normally")
     except Exception as e:
-        logger.critical(f"Uncaught exception in GUI application: {str(e)}", exc_info=True)
+        logger.error(f"Error running GUI application: {str(e)}", exc_info=True)
         raise
+
+
+def main():
+    """Main entry point for the GUI application."""
+    run_gui()
 
 
 if __name__ == "__main__":
