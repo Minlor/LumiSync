@@ -4,13 +4,12 @@ This module contains the UI for color management and controls.
 """
 
 import tkinter as tk
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple, Callable
 import colorsys
 import math
 
 import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageTk
-import numpy as np
 
 from ..base import BaseFrame
 from ..styles import MEDIUM_BUTTON, MEDIUM_PAD
@@ -19,11 +18,25 @@ from ..styles import MEDIUM_BUTTON, MEDIUM_PAD
 class ColorWheelWidget(ctk.CTkFrame):
     """Custom color wheel widget for color selection."""
     
-    def __init__(self, master, size=200, callback=None):
+    def __init__(
+        self, 
+        master: ctk.CTkFrame, 
+        size: int = 200, 
+        callback: Optional[Callable[[Tuple[int, int, int]], None]] = None
+    ) -> None:
+        """
+        Initialize the color wheel widget.
+        
+        Args:
+            master: Parent widget
+            size: Size of the color wheel in pixels
+            callback: Function to call when color changes
+        """
         super().__init__(master)
         self.size = size
         self.callback = callback
-        self.current_color = (255, 0, 0)  # Default to red
+        self.current_color: Tuple[int, int, int] = (255, 0, 0)  # Default to red
+        self.wheel_image: Optional[ImageTk.PhotoImage] = None
         
         # Create canvas for color wheel with proper dark theme background
         self.canvas = tk.Canvas(
@@ -38,101 +51,48 @@ class ColorWheelWidget(ctk.CTkFrame):
         self.canvas.pack(padx=10, pady=10)
         
         # Bind mouse events
-        self.canvas.bind("<Button-1>", self.on_click)
-        self.canvas.bind("<B1-Motion>", self.on_drag)
+        self.canvas.bind("<Button-1>", self._on_click)
+        self.canvas.bind("<B1-Motion>", self._on_drag)
         
         # Create the color wheel
-        self.create_color_wheel()
+        self._create_color_wheel()
         
-    def create_color_wheel(self):
+    def _create_color_wheel(self) -> None:
         """Create the color wheel image with high quality and proper background."""
         # Create PIL image for color wheel with higher resolution for better quality
         scale_factor = 2  # Render at 2x resolution for better quality
         high_res_size = self.size * scale_factor
-        img = Image.new('RGBA', (high_res_size, high_res_size), (33, 33, 33, 255))  # Dark background
-        
-        # Use numpy for faster pixel manipulation
-        img_array = np.array(img)
+        img = Image.new('RGB', (high_res_size, high_res_size), (33, 33, 33))  # Dark background
+        draw = ImageDraw.Draw(img)
         
         center = high_res_size // 2
         radius = center - 20 * scale_factor  # Adjust padding for scale
         
-        # Create coordinate arrays
-        y, x = np.ogrid[:high_res_size, :high_res_size]
-        x_centered = x - center
-        y_centered = y - center
-        
-        # Calculate distance and angle for all pixels at once
-        distances = np.sqrt(x_centered**2 + y_centered**2)
-        angles = np.arctan2(y_centered, x_centered)
-        
-        # Convert negative angles to positive
-        angles = np.where(angles < 0, angles + 2 * np.pi, angles)
-        
-        # Create mask for pixels within the wheel
-        mask = distances <= radius
-        
-        # Calculate HSV values
-        hue = angles[mask] / (2 * np.pi)
-        saturation = np.minimum(distances[mask] / radius, 1.0)
-        value = np.ones_like(hue)
-        
-        # Convert HSV to RGB using vectorized operations
-        c = value * saturation
-        x_val = c * (1 - np.abs((hue * 6) % 2 - 1))
-        m = value - c
-        
-        # RGB calculation based on hue sector
-        hue_sector = (hue * 6).astype(int)
-        
-        r = np.zeros_like(hue)
-        g = np.zeros_like(hue)
-        b = np.zeros_like(hue)
-        
-        # Sector 0: red to yellow
-        sector_0 = hue_sector == 0
-        r[sector_0] = c[sector_0]
-        g[sector_0] = x_val[sector_0]
-        
-        # Sector 1: yellow to green
-        sector_1 = hue_sector == 1
-        r[sector_1] = x_val[sector_1]
-        g[sector_1] = c[sector_1]
-        
-        # Sector 2: green to cyan
-        sector_2 = hue_sector == 2
-        g[sector_2] = c[sector_2]
-        b[sector_2] = x_val[sector_2]
-        
-        # Sector 3: cyan to blue
-        sector_3 = hue_sector == 3
-        g[sector_3] = x_val[sector_3]
-        b[sector_3] = c[sector_3]
-        
-        # Sector 4: blue to magenta
-        sector_4 = hue_sector == 4
-        r[sector_4] = x_val[sector_4]
-        b[sector_4] = c[sector_4]
-        
-        # Sector 5: magenta to red
-        sector_5 = hue_sector == 5
-        r[sector_5] = c[sector_5]
-        b[sector_5] = x_val[sector_5]
-        
-        # Add the minimum value and convert to 0-255 range
-        r = ((r + m) * 255).astype(np.uint8)
-        g = ((g + m) * 255).astype(np.uint8)
-        b = ((b + m) * 255).astype(np.uint8)
-        
-        # Set the RGB values in the image array
-        y_coords, x_coords = np.where(mask)
-        img_array[y_coords, x_coords, 0] = r
-        img_array[y_coords, x_coords, 1] = g
-        img_array[y_coords, x_coords, 2] = b
-        img_array[y_coords, x_coords, 3] = 255  # Full alpha
-        
-        # Convert back to PIL Image
-        img = Image.fromarray(img_array, 'RGBA')
+        # Draw color wheel with improved algorithm
+        for angle_deg in range(0, 360, 2):  # Step by 2 for performance
+            for r in range(0, radius, 2):  # Step by 2 for performance
+                # Convert polar to cartesian coordinates
+                angle_rad = math.radians(angle_deg)
+                x = center + int(r * math.cos(angle_rad))
+                y = center + int(r * math.sin(angle_rad))
+                
+                # Calculate hue and saturation
+                hue = angle_deg / 360.0
+                saturation = r / radius
+                value = 1.0
+                
+                # Convert HSV to RGB
+                rgb = colorsys.hsv_to_rgb(hue, saturation, value)
+                color = tuple(int(c * 255) for c in rgb)
+                
+                # Draw multiple pixels for smoother appearance
+                try:
+                    for dx in range(2):
+                        for dy in range(2):
+                            if 0 <= x + dx < high_res_size and 0 <= y + dy < high_res_size:
+                                draw.point((x + dx, y + dy), fill=color)
+                except (IndexError, ValueError):
+                    continue  # Skip invalid coordinates
         
         # Resize back to original size with high-quality resampling
         img = img.resize((self.size, self.size), Image.Resampling.LANCZOS)
@@ -144,24 +104,25 @@ class ColorWheelWidget(ctk.CTkFrame):
         # Draw center circle for brightness with proper dark theme colors
         center_display = self.size // 2
         self.canvas.create_oval(
-            center_display-20, center_display-20, center_display+20, center_display+20,
+            center_display - 20, center_display - 20, 
+            center_display + 20, center_display + 20,
             fill='#404040', outline='#606060', width=2  # Dark theme colors
         )
         
-    def on_click(self, event):
+    def _on_click(self, event: tk.Event) -> None:
         """Handle mouse click on color wheel."""
-        self.update_color_from_position(event.x, event.y)
+        self._update_color_from_position(event.x, event.y)
         
-    def on_drag(self, event):
+    def _on_drag(self, event: tk.Event) -> None:
         """Handle mouse drag on color wheel."""
-        self.update_color_from_position(event.x, event.y)
+        self._update_color_from_position(event.x, event.y)
         
-    def update_color_from_position(self, x, y):
+    def _update_color_from_position(self, x: int, y: int) -> None:
         """Update color based on mouse position."""
         center = self.size // 2
         dx = x - center
         dy = y - center
-        distance = math.sqrt(dx*dx + dy*dy)
+        distance = math.sqrt(dx * dx + dy * dy)
         
         if distance <= center - 20:  # Within wheel bounds
             # Calculate angle and distance
@@ -184,17 +145,44 @@ class ColorWheelWidget(ctk.CTkFrame):
 class ColorTab(BaseFrame):
     """Tab for color controls and management."""
     
-    def __init__(self, master, app, device_controller=None):
+    def __init__(
+        self, 
+        master: ctk.CTkFrame, 
+        app: Any, 
+        device_controller: Optional[Any] = None
+    ) -> None:
+        """
+        Initialize the color tab.
+        
+        Args:
+            master: Parent widget
+            app: Main application instance
+            device_controller: Device controller for managing devices
+        """
         super().__init__(master)
         self.app = app
         self.device_controller = device_controller
         
         # Current color values
-        self.current_rgb = [255, 0, 0]
-        self.current_brightness = 100
+        self.current_rgb: List[int] = [255, 0, 0]
+        self.current_brightness: int = 100
+        
+        # Widget references
+        self.color_wheel: Optional[ColorWheelWidget] = None
+        self.color_preview: Optional[ctk.CTkFrame] = None
+        self.color_preview_label: Optional[ctk.CTkLabel] = None
+        self.red_slider: Optional[ctk.CTkSlider] = None
+        self.green_slider: Optional[ctk.CTkSlider] = None
+        self.blue_slider: Optional[ctk.CTkSlider] = None
+        self.red_value_label: Optional[ctk.CTkLabel] = None
+        self.green_value_label: Optional[ctk.CTkLabel] = None
+        self.blue_value_label: Optional[ctk.CTkLabel] = None
+        self.hex_entry: Optional[ctk.CTkEntry] = None
+        self.brightness_slider: Optional[ctk.CTkSlider] = None
+        self.brightness_value_label: Optional[ctk.CTkLabel] = None
         
         # Predefined colors
-        self.preset_colors = [
+        self.preset_colors: List[Tuple[str, Tuple[int, int, int]]] = [
             ("Red", (255, 0, 0)),
             ("Green", (0, 255, 0)),
             ("Blue", (0, 0, 255)),
@@ -213,13 +201,13 @@ class ColorTab(BaseFrame):
         self.grid_rowconfigure(2, weight=1)
         
         # Create widgets
-        self.create_header()
-        self.create_color_wheel_section()
-        self.create_rgb_controls()
-        self.create_preset_colors()
-        self.create_brightness_control()
+        self._create_header()
+        self._create_color_wheel_section()
+        self._create_rgb_controls()
+        self._create_preset_colors()
+        self._create_brightness_control()
         
-    def create_header(self):
+    def _create_header(self) -> None:
         """Create the header section."""
         header_frame = ctk.CTkFrame(self)
         header_frame.grid(
@@ -232,7 +220,7 @@ class ColorTab(BaseFrame):
         )
         header_label.pack(padx=MEDIUM_PAD, pady=MEDIUM_PAD)
         
-    def create_color_wheel_section(self):
+    def _create_color_wheel_section(self) -> None:
         """Create the color wheel section."""
         wheel_frame = ctk.CTkFrame(self)
         wheel_frame.grid(
@@ -247,7 +235,7 @@ class ColorTab(BaseFrame):
         
         # Color wheel widget
         self.color_wheel = ColorWheelWidget(
-            wheel_frame, size=200, callback=self.on_color_wheel_change
+            wheel_frame, size=200, callback=self._on_color_wheel_change
         )
         self.color_wheel.pack(padx=MEDIUM_PAD, pady=MEDIUM_PAD)
         
@@ -263,7 +251,7 @@ class ColorTab(BaseFrame):
         )
         self.color_preview_label.pack(pady=15)
         
-    def create_rgb_controls(self):
+    def _create_rgb_controls(self) -> None:
         """Create RGB slider controls."""
         rgb_frame = ctk.CTkFrame(self)
         rgb_frame.grid(
@@ -276,70 +264,69 @@ class ColorTab(BaseFrame):
         )
         rgb_label.pack(padx=MEDIUM_PAD, pady=(MEDIUM_PAD, 10))
         
-        # Red slider
-        red_frame = ctk.CTkFrame(rgb_frame)
-        red_frame.pack(padx=MEDIUM_PAD, pady=5, fill="x")
-        
-        ctk.CTkLabel(red_frame, text="Red:", width=50).pack(side="left", padx=5)
-        self.red_slider = ctk.CTkSlider(
-            red_frame, from_=0, to=255, 
-            command=self.on_rgb_change,
-            progress_color="#ff4444"  # Red color for red slider
-        )
-        self.red_slider.pack(side="left", fill="x", expand=True, padx=5)
-        self.red_slider.set(255)
-        
-        self.red_value_label = ctk.CTkLabel(red_frame, text="255", width=30)
-        self.red_value_label.pack(side="right", padx=5)
-        
-        # Green slider
-        green_frame = ctk.CTkFrame(rgb_frame)
-        green_frame.pack(padx=MEDIUM_PAD, pady=5, fill="x")
-        
-        ctk.CTkLabel(green_frame, text="Green:", width=50).pack(side="left", padx=5)
-        self.green_slider = ctk.CTkSlider(
-            green_frame, from_=0, to=255,
-            command=self.on_rgb_change,
-            progress_color="#44ff44"  # Green color for green slider
-        )
-        self.green_slider.pack(side="left", fill="x", expand=True, padx=5)
-        self.green_slider.set(0)
-        
-        self.green_value_label = ctk.CTkLabel(green_frame, text="0", width=30)
-        self.green_value_label.pack(side="right", padx=5)
-        
-        # Blue slider
-        blue_frame = ctk.CTkFrame(rgb_frame)
-        blue_frame.pack(padx=MEDIUM_PAD, pady=5, fill="x")
-        
-        ctk.CTkLabel(blue_frame, text="Blue:", width=50).pack(side="left", padx=5)
-        self.blue_slider = ctk.CTkSlider(
-            blue_frame, from_=0, to=255,
-            command=self.on_rgb_change,
-            progress_color="#4444ff"  # Blue color for blue slider
-        )
-        self.blue_slider.pack(side="left", fill="x", expand=True, padx=5)
-        self.blue_slider.set(0)
-        
-        self.blue_value_label = ctk.CTkLabel(blue_frame, text="0", width=30)
-        self.blue_value_label.pack(side="right", padx=5)
+        # Create RGB sliders
+        self._create_rgb_slider(rgb_frame, "Red", "#ff4444", 255)
+        self._create_rgb_slider(rgb_frame, "Green", "#44ff44", 0)
+        self._create_rgb_slider(rgb_frame, "Blue", "#4444ff", 0)
         
         # Hex color input
-        hex_frame = ctk.CTkFrame(rgb_frame)
+        self._create_hex_input(rgb_frame)
+        
+    def _create_rgb_slider(
+        self, 
+        parent: ctk.CTkFrame, 
+        color_name: str, 
+        color_code: str, 
+        initial_value: int
+    ) -> None:
+        """Create an RGB slider with label and value display."""
+        slider_frame = ctk.CTkFrame(parent)
+        slider_frame.pack(padx=MEDIUM_PAD, pady=5, fill="x")
+        
+        label = ctk.CTkLabel(slider_frame, text=f"{color_name}:", width=50)
+        label.pack(side="left", padx=5)
+        
+        slider = ctk.CTkSlider(
+            slider_frame, from_=0, to=255, 
+            command=self._on_rgb_change,
+            progress_color=color_code
+        )
+        slider.pack(side="left", fill="x", expand=True, padx=5)
+        slider.set(initial_value)
+        
+        value_label = ctk.CTkLabel(slider_frame, text=str(initial_value), width=30)
+        value_label.pack(side="right", padx=5)
+        
+        # Store references
+        if color_name == "Red":
+            self.red_slider = slider
+            self.red_value_label = value_label
+        elif color_name == "Green":
+            self.green_slider = slider
+            self.green_value_label = value_label
+        elif color_name == "Blue":
+            self.blue_slider = slider
+            self.blue_value_label = value_label
+            
+    def _create_hex_input(self, parent: ctk.CTkFrame) -> None:
+        """Create hex color input field."""
+        hex_frame = ctk.CTkFrame(parent)
         hex_frame.pack(padx=MEDIUM_PAD, pady=10, fill="x")
         
-        ctk.CTkLabel(hex_frame, text="Hex:").pack(side="left", padx=5)
+        hex_label = ctk.CTkLabel(hex_frame, text="Hex:")
+        hex_label.pack(side="left", padx=5)
+        
         self.hex_entry = ctk.CTkEntry(hex_frame, placeholder_text="#FF0000")
         self.hex_entry.pack(side="left", fill="x", expand=True, padx=5)
-        self.hex_entry.bind("<Return>", self.on_hex_change)
+        self.hex_entry.bind("<Return>", self._on_hex_change)
         
         hex_button = ctk.CTkButton(
             hex_frame, text="Apply", width=60,
-            command=self.on_hex_change
+            command=self._on_hex_change
         )
         hex_button.pack(side="right", padx=5)
         
-    def create_preset_colors(self):
+    def _create_preset_colors(self) -> None:
         """Create preset color buttons."""
         preset_frame = ctk.CTkFrame(self)
         preset_frame.grid(
@@ -363,26 +350,36 @@ class ColorTab(BaseFrame):
         
         # Create preset color buttons
         for i, (name, color) in enumerate(self.preset_colors):
-            row = i // 5
-            col = i % 5
+            self._create_preset_button(buttons_frame, i, name, color)
             
-            hex_color = f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
+    def _create_preset_button(
+        self, 
+        parent: ctk.CTkFrame, 
+        index: int, 
+        name: str, 
+        color: Tuple[int, int, int]
+    ) -> None:
+        """Create a single preset color button."""
+        row = index // 5
+        col = index % 5
+        
+        hex_color = f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
+        
+        button = ctk.CTkButton(
+            parent,
+            text=name,
+            fg_color=hex_color,
+            hover_color=hex_color,
+            text_color="white" if sum(color) < 400 else "black",
+            command=lambda c=color: self.set_color(c),
+            font=("Segoe UI", 10, "bold")
+        )
+        button.grid(
+            row=row, column=col, 
+            padx=5, pady=5, sticky="ew"
+        )
             
-            button = ctk.CTkButton(
-                buttons_frame,
-                text=name,
-                fg_color=hex_color,
-                hover_color=hex_color,
-                text_color="white" if sum(color) < 400 else "black",
-                command=lambda c=color: self.set_color(c),
-                font=("Segoe UI", 10, "bold")
-            )
-            button.grid(
-                row=row, column=col, 
-                padx=5, pady=5, sticky="ew"
-            )
-            
-    def create_brightness_control(self):
+    def _create_brightness_control(self) -> None:
         """Create brightness control."""
         brightness_frame = ctk.CTkFrame(self)
         brightness_frame.grid(
@@ -400,17 +397,22 @@ class ColorTab(BaseFrame):
         brightness_controls = ctk.CTkFrame(brightness_frame)
         brightness_controls.pack(padx=MEDIUM_PAD, pady=MEDIUM_PAD, fill="x")
         
-        ctk.CTkLabel(brightness_controls, text="Brightness:", width=80).pack(side="left", padx=5)
+        brightness_control_label = ctk.CTkLabel(
+            brightness_controls, text="Brightness:", width=80
+        )
+        brightness_control_label.pack(side="left", padx=5)
         
         self.brightness_slider = ctk.CTkSlider(
             brightness_controls, from_=1, to=100,
-            command=self.on_brightness_change,
+            command=self._on_brightness_change,
             progress_color="#ffaa00"  # Orange color for brightness
         )
         self.brightness_slider.pack(side="left", fill="x", expand=True, padx=5)
         self.brightness_slider.set(100)
         
-        self.brightness_value_label = ctk.CTkLabel(brightness_controls, text="100%", width=40)
+        self.brightness_value_label = ctk.CTkLabel(
+            brightness_controls, text="100%", width=40
+        )
         self.brightness_value_label.pack(side="right", padx=5)
         
         # Apply button
@@ -429,15 +431,18 @@ class ColorTab(BaseFrame):
         )
         apply_button.pack(padx=MEDIUM_PAD, pady=MEDIUM_PAD)
         
-    def on_color_wheel_change(self, color):
+    def _on_color_wheel_change(self, color: Tuple[int, int, int]) -> None:
         """Handle color wheel color change."""
         self.current_rgb = list(color)
-        self.update_rgb_sliders()
-        self.update_color_preview()
-        self.update_hex_display()
+        self._update_rgb_sliders()
+        self._update_color_preview()
+        self._update_hex_display()
         
-    def on_rgb_change(self, value=None):
+    def _on_rgb_change(self, value: Optional[float] = None) -> None:
         """Handle RGB slider changes."""
+        if not all([self.red_slider, self.green_slider, self.blue_slider]):
+            return
+            
         self.current_rgb = [
             int(self.red_slider.get()),
             int(self.green_slider.get()),
@@ -445,15 +450,21 @@ class ColorTab(BaseFrame):
         ]
         
         # Update value labels
-        self.red_value_label.configure(text=str(self.current_rgb[0]))
-        self.green_value_label.configure(text=str(self.current_rgb[1]))
-        self.blue_value_label.configure(text=str(self.current_rgb[2]))
+        if self.red_value_label:
+            self.red_value_label.configure(text=str(self.current_rgb[0]))
+        if self.green_value_label:
+            self.green_value_label.configure(text=str(self.current_rgb[1]))
+        if self.blue_value_label:
+            self.blue_value_label.configure(text=str(self.current_rgb[2]))
         
-        self.update_color_preview()
-        self.update_hex_display()
+        self._update_color_preview()
+        self._update_hex_display()
         
-    def on_hex_change(self, event=None):
+    def _on_hex_change(self, event: Optional[tk.Event] = None) -> None:
         """Handle hex color input change."""
+        if not self.hex_entry:
+            return
+            
         hex_value = self.hex_entry.get().strip()
         if hex_value.startswith('#'):
             hex_value = hex_value[1:]
@@ -469,30 +480,40 @@ class ColorTab(BaseFrame):
         else:
             self.app.set_status("Hex color must be 6 characters")
             
-    def on_brightness_change(self, value):
+    def _on_brightness_change(self, value: float) -> None:
         """Handle brightness slider change."""
         self.current_brightness = int(value)
-        self.brightness_value_label.configure(text=f"{self.current_brightness}%")
+        if self.brightness_value_label:
+            self.brightness_value_label.configure(text=f"{self.current_brightness}%")
         
-    def set_color(self, color):
+    def set_color(self, color: Tuple[int, int, int]) -> None:
         """Set the current color."""
         self.current_rgb = list(color)
-        self.update_rgb_sliders()
-        self.update_color_preview()
-        self.update_hex_display()
+        self._update_rgb_sliders()
+        self._update_color_preview()
+        self._update_hex_display()
         
-    def update_rgb_sliders(self):
+    def _update_rgb_sliders(self) -> None:
         """Update RGB sliders to match current color."""
+        if not all([self.red_slider, self.green_slider, self.blue_slider]):
+            return
+            
         self.red_slider.set(self.current_rgb[0])
         self.green_slider.set(self.current_rgb[1])
         self.blue_slider.set(self.current_rgb[2])
         
-        self.red_value_label.configure(text=str(self.current_rgb[0]))
-        self.green_value_label.configure(text=str(self.current_rgb[1]))
-        self.blue_value_label.configure(text=str(self.current_rgb[2]))
+        if self.red_value_label:
+            self.red_value_label.configure(text=str(self.current_rgb[0]))
+        if self.green_value_label:
+            self.green_value_label.configure(text=str(self.current_rgb[1]))
+        if self.blue_value_label:
+            self.blue_value_label.configure(text=str(self.current_rgb[2]))
         
-    def update_color_preview(self):
+    def _update_color_preview(self) -> None:
         """Update the color preview."""
+        if not self.color_preview or not self.color_preview_label:
+            return
+            
         hex_color = f"#{self.current_rgb[0]:02x}{self.current_rgb[1]:02x}{self.current_rgb[2]:02x}"
         self.color_preview.configure(fg_color=hex_color)
         
@@ -501,13 +522,16 @@ class ColorTab(BaseFrame):
         text_color = "white" if brightness < 127 else "black"
         self.color_preview_label.configure(text_color=text_color)
         
-    def update_hex_display(self):
+    def _update_hex_display(self) -> None:
         """Update the hex color display."""
+        if not self.hex_entry:
+            return
+            
         hex_color = f"#{self.current_rgb[0]:02x}{self.current_rgb[1]:02x}{self.current_rgb[2]:02x}"
         self.hex_entry.delete(0, tk.END)
         self.hex_entry.insert(0, hex_color.upper())
         
-    def apply_color(self):
+    def apply_color(self) -> None:
         """Apply the current color to the device."""
         if self.device_controller and self.device_controller.get_selected_device():
             try:
@@ -520,7 +544,9 @@ class ColorTab(BaseFrame):
                 # Here you would implement the actual device color control
                 # For now, we'll just show a status message
                 hex_color = f"#{adjusted_rgb[0]:02x}{adjusted_rgb[1]:02x}{adjusted_rgb[2]:02x}"
-                self.app.set_status(f"Applied color {hex_color} at {self.current_brightness}% brightness")
+                self.app.set_status(
+                    f"Applied color {hex_color} at {self.current_brightness}% brightness"
+                )
                 
                 # TODO: Implement actual device color control
                 # self.device_controller.set_color(adjusted_rgb)
