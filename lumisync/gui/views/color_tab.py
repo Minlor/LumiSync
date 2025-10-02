@@ -10,6 +10,7 @@ import math
 
 import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageTk
+import numpy as np
 
 from ..base import BaseFrame
 from ..styles import MEDIUM_BUTTON, MEDIUM_PAD
@@ -24,13 +25,15 @@ class ColorWheelWidget(ctk.CTkFrame):
         self.callback = callback
         self.current_color = (255, 0, 0)  # Default to red
         
-        # Create canvas for color wheel
+        # Create canvas for color wheel with proper dark theme background
         self.canvas = tk.Canvas(
             self, 
             width=size, 
             height=size, 
-            bg='#2b2b2b',
-            highlightthickness=0
+            bg='#212121',  # Match CustomTkinter dark theme
+            highlightthickness=0,
+            relief='flat',
+            bd=0
         )
         self.canvas.pack(padx=10, pady=10)
         
@@ -42,43 +45,107 @@ class ColorWheelWidget(ctk.CTkFrame):
         self.create_color_wheel()
         
     def create_color_wheel(self):
-        """Create the color wheel image."""
-        # Create PIL image for color wheel
-        img = Image.new('RGB', (self.size, self.size), 'white')
-        draw = ImageDraw.Draw(img)
+        """Create the color wheel image with high quality and proper background."""
+        # Create PIL image for color wheel with higher resolution for better quality
+        scale_factor = 2  # Render at 2x resolution for better quality
+        high_res_size = self.size * scale_factor
+        img = Image.new('RGBA', (high_res_size, high_res_size), (33, 33, 33, 255))  # Dark background
         
-        center = self.size // 2
-        radius = center - 10
+        # Use numpy for faster pixel manipulation
+        img_array = np.array(img)
         
-        # Draw color wheel
-        for angle in range(360):
-            for r in range(radius):
-                # Convert polar to cartesian coordinates
-                x = center + int(r * math.cos(math.radians(angle)))
-                y = center + int(r * math.sin(math.radians(angle)))
-                
-                # Calculate hue and saturation
-                hue = angle / 360.0
-                saturation = r / radius
-                value = 1.0
-                
-                # Convert HSV to RGB
-                rgb = colorsys.hsv_to_rgb(hue, saturation, value)
-                color = tuple(int(c * 255) for c in rgb)
-                
-                try:
-                    draw.point((x, y), fill=color)
-                except:
-                    pass
+        center = high_res_size // 2
+        radius = center - 20 * scale_factor  # Adjust padding for scale
+        
+        # Create coordinate arrays
+        y, x = np.ogrid[:high_res_size, :high_res_size]
+        x_centered = x - center
+        y_centered = y - center
+        
+        # Calculate distance and angle for all pixels at once
+        distances = np.sqrt(x_centered**2 + y_centered**2)
+        angles = np.arctan2(y_centered, x_centered)
+        
+        # Convert negative angles to positive
+        angles = np.where(angles < 0, angles + 2 * np.pi, angles)
+        
+        # Create mask for pixels within the wheel
+        mask = distances <= radius
+        
+        # Calculate HSV values
+        hue = angles[mask] / (2 * np.pi)
+        saturation = np.minimum(distances[mask] / radius, 1.0)
+        value = np.ones_like(hue)
+        
+        # Convert HSV to RGB using vectorized operations
+        c = value * saturation
+        x_val = c * (1 - np.abs((hue * 6) % 2 - 1))
+        m = value - c
+        
+        # RGB calculation based on hue sector
+        hue_sector = (hue * 6).astype(int)
+        
+        r = np.zeros_like(hue)
+        g = np.zeros_like(hue)
+        b = np.zeros_like(hue)
+        
+        # Sector 0: red to yellow
+        sector_0 = hue_sector == 0
+        r[sector_0] = c[sector_0]
+        g[sector_0] = x_val[sector_0]
+        
+        # Sector 1: yellow to green
+        sector_1 = hue_sector == 1
+        r[sector_1] = x_val[sector_1]
+        g[sector_1] = c[sector_1]
+        
+        # Sector 2: green to cyan
+        sector_2 = hue_sector == 2
+        g[sector_2] = c[sector_2]
+        b[sector_2] = x_val[sector_2]
+        
+        # Sector 3: cyan to blue
+        sector_3 = hue_sector == 3
+        g[sector_3] = x_val[sector_3]
+        b[sector_3] = c[sector_3]
+        
+        # Sector 4: blue to magenta
+        sector_4 = hue_sector == 4
+        r[sector_4] = x_val[sector_4]
+        b[sector_4] = c[sector_4]
+        
+        # Sector 5: magenta to red
+        sector_5 = hue_sector == 5
+        r[sector_5] = c[sector_5]
+        b[sector_5] = x_val[sector_5]
+        
+        # Add the minimum value and convert to 0-255 range
+        r = ((r + m) * 255).astype(np.uint8)
+        g = ((g + m) * 255).astype(np.uint8)
+        b = ((b + m) * 255).astype(np.uint8)
+        
+        # Set the RGB values in the image array
+        y_coords, x_coords = np.where(mask)
+        img_array[y_coords, x_coords, 0] = r
+        img_array[y_coords, x_coords, 1] = g
+        img_array[y_coords, x_coords, 2] = b
+        img_array[y_coords, x_coords, 3] = 255  # Full alpha
+        
+        # Convert back to PIL Image
+        img = Image.fromarray(img_array, 'RGBA')
+        
+        # Resize back to original size with high-quality resampling
+        img = img.resize((self.size, self.size), Image.Resampling.LANCZOS)
         
         # Convert to PhotoImage and display
         self.wheel_image = ImageTk.PhotoImage(img)
-        self.canvas.create_image(center, center, image=self.wheel_image)
+        self.canvas.create_image(self.size//2, self.size//2, image=self.wheel_image)
         
-        # Draw center circle for brightness
+        # Draw center circle for brightness with proper dark theme colors
+        center_display = self.size // 2
         self.canvas.create_oval(
-            center-20, center-20, center+20, center+20,
-            fill='white', outline='black', width=2
+            center_display-20, center_display-20, center_display+20, center_display+20,
+            fill='#404040', outline='#606060', width=2  # Dark theme colors
         )
         
     def on_click(self, event):
@@ -96,14 +163,14 @@ class ColorWheelWidget(ctk.CTkFrame):
         dy = y - center
         distance = math.sqrt(dx*dx + dy*dy)
         
-        if distance <= center - 10:  # Within wheel bounds
+        if distance <= center - 20:  # Within wheel bounds
             # Calculate angle and distance
             angle = math.atan2(dy, dx)
             if angle < 0:
                 angle += 2 * math.pi
                 
             hue = angle / (2 * math.pi)
-            saturation = min(distance / (center - 10), 1.0)
+            saturation = min(distance / (center - 20), 1.0)
             value = 1.0
             
             # Convert to RGB
@@ -184,17 +251,17 @@ class ColorTab(BaseFrame):
         )
         self.color_wheel.pack(padx=MEDIUM_PAD, pady=MEDIUM_PAD)
         
-        # Current color preview
-        self.color_preview = ctk.CTkFrame(wheel_frame, height=40)
+        # Current color preview with improved styling
+        self.color_preview = ctk.CTkFrame(wheel_frame, height=50)
         self.color_preview.pack(
             padx=MEDIUM_PAD, pady=MEDIUM_PAD, fill="x"
         )
         
         self.color_preview_label = ctk.CTkLabel(
             self.color_preview, text="Current Color", 
-            font=("Segoe UI", 10)
+            font=("Segoe UI", 10, "bold")
         )
-        self.color_preview_label.pack(pady=10)
+        self.color_preview_label.pack(pady=15)
         
     def create_rgb_controls(self):
         """Create RGB slider controls."""
@@ -216,7 +283,8 @@ class ColorTab(BaseFrame):
         ctk.CTkLabel(red_frame, text="Red:", width=50).pack(side="left", padx=5)
         self.red_slider = ctk.CTkSlider(
             red_frame, from_=0, to=255, 
-            command=self.on_rgb_change
+            command=self.on_rgb_change,
+            progress_color="#ff4444"  # Red color for red slider
         )
         self.red_slider.pack(side="left", fill="x", expand=True, padx=5)
         self.red_slider.set(255)
@@ -231,7 +299,8 @@ class ColorTab(BaseFrame):
         ctk.CTkLabel(green_frame, text="Green:", width=50).pack(side="left", padx=5)
         self.green_slider = ctk.CTkSlider(
             green_frame, from_=0, to=255,
-            command=self.on_rgb_change
+            command=self.on_rgb_change,
+            progress_color="#44ff44"  # Green color for green slider
         )
         self.green_slider.pack(side="left", fill="x", expand=True, padx=5)
         self.green_slider.set(0)
@@ -246,7 +315,8 @@ class ColorTab(BaseFrame):
         ctk.CTkLabel(blue_frame, text="Blue:", width=50).pack(side="left", padx=5)
         self.blue_slider = ctk.CTkSlider(
             blue_frame, from_=0, to=255,
-            command=self.on_rgb_change
+            command=self.on_rgb_change,
+            progress_color="#4444ff"  # Blue color for blue slider
         )
         self.blue_slider.pack(side="left", fill="x", expand=True, padx=5)
         self.blue_slider.set(0)
@@ -304,10 +374,11 @@ class ColorTab(BaseFrame):
                 fg_color=hex_color,
                 hover_color=hex_color,
                 text_color="white" if sum(color) < 400 else "black",
-                command=lambda c=color: self.set_color(c)
+                command=lambda c=color: self.set_color(c),
+                font=("Segoe UI", 10, "bold")
             )
             button.grid(
-                row=row, column=col,
+                row=row, column=col, 
                 padx=5, pady=5, sticky="ew"
             )
             
@@ -333,7 +404,8 @@ class ColorTab(BaseFrame):
         
         self.brightness_slider = ctk.CTkSlider(
             brightness_controls, from_=1, to=100,
-            command=self.on_brightness_change
+            command=self.on_brightness_change,
+            progress_color="#ffaa00"  # Orange color for brightness
         )
         self.brightness_slider.pack(side="left", fill="x", expand=True, padx=5)
         self.brightness_slider.set(100)
@@ -351,7 +423,9 @@ class ColorTab(BaseFrame):
             command=self.apply_color,
             width=200,
             height=40,
-            font=("Segoe UI", 12, "bold")
+            font=("Segoe UI", 12, "bold"),
+            fg_color="#2196F3",
+            hover_color="#1976D2"
         )
         apply_button.pack(padx=MEDIUM_PAD, pady=MEDIUM_PAD)
         
@@ -421,6 +495,11 @@ class ColorTab(BaseFrame):
         """Update the color preview."""
         hex_color = f"#{self.current_rgb[0]:02x}{self.current_rgb[1]:02x}{self.current_rgb[2]:02x}"
         self.color_preview.configure(fg_color=hex_color)
+        
+        # Update text color based on brightness for better readability
+        brightness = sum(self.current_rgb) / 3
+        text_color = "white" if brightness < 127 else "black"
+        self.color_preview_label.configure(text_color=text_color)
         
     def update_hex_display(self):
         """Update the hex color display."""
