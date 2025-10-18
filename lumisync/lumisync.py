@@ -8,6 +8,8 @@ from colorama import Fore
 
 from . import connection
 from .utils.logging import setup_logger
+import argparse
+from .devices import get_data, power_on, power_off
 
 # Set up logger for main application
 logger = setup_logger("lumisync")
@@ -25,6 +27,50 @@ except ImportError:
 
 def main() -> None:
     """The main function running the program."""
+
+    # ----------------------------
+    # Step 1: Handle CLI arguments
+    # ----------------------------
+    parser = argparse.ArgumentParser(description="LumiSync CLI")
+    parser.add_argument("--power", choices=["on", "off"], help="Turn LED power on or off")
+    args, unknown_args = parser.parse_known_args()  # Allow unknown args to not break menu
+
+    # Ensure colored output works for early-return paths on Windows
+    colorama.init(True)
+
+    if args.power:
+        data = get_data()
+        devices = data.get("devices", [])
+        selected_idx = data.get("selectedDevice", 0)
+
+        # Fallback to discovery if settings are empty or index is invalid
+        if not devices or not (0 <= selected_idx < len(devices)):
+            try:
+                server, discovered = connection.connect()
+                devices = discovered
+                selected_idx = 0
+            except Exception:
+                devices = devices or []
+            finally:
+                try:
+                    server.close()
+                except Exception:
+                    pass
+
+        if not devices:
+            print("⚠️ No devices found.")
+            return
+
+        device = devices[selected_idx]
+        if args.power == "on":
+            power_on(device)
+        else:
+            power_off(device)
+        return
+
+    # -----------------------------------
+    # Step 2: Original menu-driven logic
+    # -----------------------------------
     logger.info("Starting LumiSync application")
     try:
         server, devices = connection.connect()
@@ -46,14 +92,12 @@ def main() -> None:
             case "1" | "2":
                 if mode == "1":
                     from .sync import monitor as sync
-
                     logger.info("Selected Monitor Sync mode")
                 else:
                     from .sync import music as sync
-
                     logger.info("Selected Music Sync mode")
 
-                # NOTE: Right now for testing and development this is limited to 1 device.
+                # NOTE: Limited to 1 device for now
                 thread = Thread(
                     daemon=True,
                     target=sync.start,
@@ -63,16 +107,20 @@ def main() -> None:
                 thread.start()
                 logger.info(f"Started {mode} sync thread")
 
-                # TODO: Remove after development is finished
                 input("Press Enter to exit...")
                 logger.info("User terminated sync")
+
             case "3":
                 print(Fore.GREEN + "Launching GUI...")
                 logger.info("Launching GUI application")
-                run_gui()
+                if not GUI_AVAILABLE:
+                    print(Fore.RED + "GUI is not available. Please install GUI dependencies.")
+                    logger.error("GUI requested but not available (import failed earlier).")
+                else:
+                    run_gui()
 
             case "9":
-                # HACK: For now close server to run tests
+                # Close server for tests
                 server.close()
                 logger.info("Closed server for tests")
 
@@ -81,8 +129,6 @@ def main() -> None:
                     f"{Fore.LIGHTYELLOW_EX}Chose test to run:\n{Fore.YELLOW}"
                     + "\n".join([f"{i}) {x}" for i, x in files])
                 )
-                # TODO: Tests sometimes appear in different order -> Keep the same
-                # TODO: Implement testing framework like pytest/unittest for the tests
                 test = input("Test: ")
                 logger.info(f"Selected test: {test}")
                 for i, x in files:
@@ -107,3 +153,7 @@ def main() -> None:
             server.close()
             logger.info("Server closed")
         logger.info("Application terminated")
+
+
+if __name__ == "__main__":
+    main()

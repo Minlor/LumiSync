@@ -12,6 +12,7 @@ from colorama import Fore
 
 from .connection import connect, listen as connection_listen, parse
 from .utils import write_json, get_logger
+from .connection import switch
 
 # Set up logger for devices module
 logger = get_logger('lumisync_devices')
@@ -102,3 +103,23 @@ def get_data() -> Dict[str, Any]:
         logger.error(error_msg, exc_info=True)
         # Return empty data as fallback
         return {"devices": [], "selectedDevice": 0, "time": time.time()}
+    
+def power_on(device: Dict[str, Any]) -> None:
+    """Turn on the LED device (true power state)."""
+    try:
+        server, _ = connect()
+        switch(server, device, on=True)
+        print(f"{Fore.GREEN}Powered ON: {device.get('mac')}")
+        server.close()
+    except Exception as e:
+        print(f"{Fore.RED}Failed to power ON device: {e}")
+
+def power_off(device: Dict[str, Any]) -> None:
+    """Turn off the LED device (true power state)."""
+    try:
+        server, _ = connect()
+        switch(server, device, on=False)
+        print(f"{Fore.YELLOW}Powered OFF: {device.get('mac')}")
+        server.close()
+    except Exception as e:
+        print(f"{Fore.RED}Failed to power OFF device: {e}")
