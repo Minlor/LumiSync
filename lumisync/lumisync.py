@@ -74,20 +74,21 @@ def main() -> None:
     logger.info("Starting LumiSync application")
     try:
         server, devices = connection.connect()
-        logger.info(f"Found {len(devices)} device(s)")
+        logger.info("Found %d device(s)", len(devices))
 
         colorama.init(True)
-        print(Fore.MAGENTA + f"Welcome to {Fore.LIGHTBLUE_EX}LumiSync!")
+        print(Fore.MAGENTA + Fore.LIGHTBLUE_EX + "Welcome to LumiSync!")
         print(Fore.YELLOW + "Please select a option:")
         print(
-            Fore.GREEN + "1) Monitor Sync"
-            "\n2) Music Sync"
-            "\n3) Launch GUI"
-            "\n9) Run test"
+            Fore.GREEN
+            + "1) Monitor Sync"
+            + "\n2) Music Sync"
+            + "\n3) Launch GUI"
+            + "\n9) Run test"
         )
 
         mode = input("")
-        logger.info(f"User selected mode: {mode}")
+        logger.info("User selected mode: %s", mode)
         match mode:
             case "1" | "2":
                 if mode == "1":
@@ -105,7 +106,7 @@ def main() -> None:
                     kwargs={"server": server, "device": devices[0]},
                 )
                 thread.start()
-                logger.info(f"Started {mode} sync thread")
+                logger.info("Started %s sync thread", mode)
 
                 input("Press Enter to exit...")
                 logger.info("User terminated sync")
@@ -130,24 +131,23 @@ def main() -> None:
                     + "\n".join([f"{i}) {x}" for i, x in files])
                 )
                 test = input("Test: ")
-                logger.info(f"Selected test: {test}")
+                logger.info("Selected test: %s", test)
                 for i, x in files:
                     if i == int(test):
-                        logger.info(f"Running test: {x}")
+                        logger.info("Running test: %s", x)
                         try:
                             subprocess.run(["python", f"tests/{x}"], check=True)
-                            logger.info(f"Test {x} completed successfully")
+                            logger.info("Test %s completed successfully", x)
                         except subprocess.CalledProcessError as e:
                             logger.error(
-                                f"Test {x} failed with exit code {e.returncode}",
-                                exc_info=True,
+                                "Test %s failed with exit code %d", x, e.returncode, exc_info=True
                             )
             case _:
-                logger.warning(f"Invalid option entered: {mode}")
+                logger.warning("Invalid option entered: %s", mode)
                 input(Fore.RED + "Invalid option!\nPress Enter to exit...")
                 sys.exit()
     except Exception as e:
-        logger.critical(f"Critical error in main function: {str(e)}", exc_info=True)
+        logger.critical("Critical error in main function: %s", str(e), exc_info=True)
     finally:
         if "server" in locals():
             server.close()
