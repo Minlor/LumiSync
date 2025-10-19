@@ -17,23 +17,24 @@ from .connection import switch
 # Set up logger for devices module
 logger = get_logger('lumisync_devices')
 
-# Store a global server socket that can be reused
-_global_server = None
+# Store a reusable server socket inside a module-level dict to avoid using
+# the `global` statement which is flagged by linters.
+_global_state = {"server": None}
 
 def request() -> socket.socket:
     """Request device data from the network."""
-    global _global_server
 
     # If we have an existing server, close it properly first
-    if _global_server is not None:
+    if _global_state["server"] is not None:
         try:
-            _global_server.close()
-        except:
+            _global_state["server"].close()
+        except OSError:
+            # Ignore socket close errors
             pass
 
     logger.info("Requesting device data from network")
     server, _ = connect()
-    _global_server = server
+    _global_state["server"] = server
     return server
 
 def listen(server: socket.socket) -> List[str]:
@@ -41,38 +42,44 @@ def listen(server: socket.socket) -> List[str]:
     try:
         logger.info("Listening for device responses")
         messages = connection_listen(server)
-        logger.info(f"Received {len(messages)} device response(s)")
+        logger.info("Received %d device response(s)", len(messages))
         return messages
-    except Exception as e:
-        error_msg = f"Error listening for devices: {str(e)}"
+    except OSError as e:
+        error_msg = "Error listening for devices: %s" % str(e)
         print(f"{Fore.RED}{error_msg}")
         logger.error(error_msg, exc_info=True)
         return []
 
-def parseMessages(messages: List[str]) -> Dict[str, Any]:
+def parse_messages(messages: List[str]) -> Dict[str, Any]:
     """Parse messages from devices."""
-    logger.info(f"Parsing {len(messages)} device message(s)")
-    devices = parse(messages)
+    logger.info("Parsing %d device message(s)", len(messages))
+    devices_list = parse(messages)
 
     settings = {
-        "devices": devices,
+        "devices": devices_list,
         "selectedDevice": 0,
-        "time": time.time()
+        "time": time.time(),
     }
 
-    logger.info(f"Found {len(devices)} device(s)")
+    logger.info("Found %d device(s)", len(devices_list))
     return settings
 
-def writeJSON(settings: Dict[str, Any]) -> None:
+# Backwards-compatible alias for callers using the original CamelCase name
+parseMessages = parse_messages
+
+def write_json_file(settings: Dict[str, Any]) -> None:
     """Write settings to a JSON file."""
     logger.info("Writing settings to JSON file")
     write_json(settings)
+
+# Preserve original name for compatibility
+writeJSON = write_json_file
 
 def get_data() -> Dict[str, Any]:
     """Get device data from settings file or by requesting new data."""
     try:
         logger.info("Attempting to load device data from settings.json")
-        with open("settings.json", "r") as f:
+        with open("settings.json", "r", encoding="utf-8") as f:
             data = json.load(f)
 
         if time.time() - data.get("time", 0) > 86400:
@@ -84,11 +91,11 @@ def get_data() -> Dict[str, Any]:
             server.close()
             writeJSON(settings)
             return settings
-        logger.info(f"Loaded data with {len(data.get('devices', []))} device(s) from settings.json")
+        logger.info("Loaded data with %d device(s) from settings.json", len(data.get("devices", [])))
         return data
 
     except (FileNotFoundError, json.JSONDecodeError) as e:
-        error_msg = f"Settings.json not found or invalid, requesting new data... ({str(e)})"
+        error_msg = "Settings.json not found or invalid, requesting new data... (%s)" % str(e)
         print(error_msg)
         logger.info(error_msg)
         server = request()
@@ -97,8 +104,8 @@ def get_data() -> Dict[str, Any]:
         server.close()
         writeJSON(settings)
         return settings
-    except Exception as e:
-        error_msg = f"Error getting device data: {str(e)}"
+    except OSError as e:
+        error_msg = "Error getting device data: %s" % str(e)
         print(f"{Fore.RED}{error_msg}")
         logger.error(error_msg, exc_info=True)
         # Return empty data as fallback
@@ -109,17 +116,17 @@ def power_on(device: Dict[str, Any]) -> None:
     try:
         server, _ = connect()
         switch(server, device, on=True)
-        print(f"{Fore.GREEN}Powered ON: {device.get('mac')}")
+        print(Fore.GREEN + "Powered ON: %s" % device.get("mac"))
         server.close()
-    except Exception as e:
-        print(f"{Fore.RED}Failed to power ON device: {e}")
+    except (OSError, socket.error) as e:
+        print(Fore.RED + "Failed to power ON device: %s" % str(e))
 
 def power_off(device: Dict[str, Any]) -> None:
     """Turn off the LED device (true power state)."""
     try:
         server, _ = connect()
         switch(server, device, on=False)
-        print(f"{Fore.YELLOW}Powered OFF: {device.get('mac')}")
+        print(Fore.YELLOW + "Powered OFF: %s" % device.get("mac"))
         server.close()
-    except Exception as e:
-        print(f"{Fore.RED}Failed to power OFF device: {e}")
+    except (OSError, socket.error) as e:
+        print(Fore.RED + "Failed to power OFF device: %s" % str(e))
