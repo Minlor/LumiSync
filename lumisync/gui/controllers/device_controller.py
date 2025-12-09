@@ -149,6 +149,146 @@ class DeviceController:
             return self.devices[self.selected_device_index]
         return None
 
+    def add_device_manually(
+        self,
+        ip: str,
+        model: str = "Manual Device",
+        mac: str = None,
+        port: int = 4003,
+        callback: Callable[[List[Dict[str, Any]]], None] = None
+    ) -> bool:
+        """
+        Manually add a device bypassing automatic discovery.
+
+        Args:
+            ip: IP address of the device
+            model: Model name/identifier for the device
+            mac: MAC address (optional, will be generated if not provided)
+            port: Port number (default: 4003)
+            callback: Callback function to be called after device is added
+
+        Returns:
+            True if device was added successfully, False otherwise
+        """
+        try:
+            # Validate IP address
+            try:
+                socket.inet_aton(ip)
+            except socket.error:
+                self.set_status(f"Invalid IP address: {ip}")
+                return False
+
+            # Generate a MAC address if not provided (using IP as base)
+            if not mac:
+                ip_parts = ip.split('.')
+                mac = f"00:00:{ip_parts[0]:0>2}:{ip_parts[1]:0>2}:{ip_parts[2]:0>2}:{ip_parts[3]:0>2}"
+
+            # Check if device with same IP or MAC already exists
+            for existing_device in self.devices:
+                if existing_device.get("ip") == ip:
+                    self.set_status(f"Device with IP {ip} already exists")
+                    return False
+                if existing_device.get("mac") == mac:
+                    self.set_status(f"Device with MAC {mac} already exists")
+                    return False
+
+            # Create the new device
+            new_device = {
+                "mac": mac,
+                "model": model,
+                "ip": ip,
+                "port": port,
+                "manual": True  # Flag to indicate this was manually added
+            }
+
+            # Add to device list
+            self.devices.append(new_device)
+
+            # Update settings file
+            try:
+                settings = devices.get_data()
+                settings["devices"] = self.devices
+                devices.writeJSON(settings)
+            except Exception:
+                # If get_data fails, create new settings
+                settings = {
+                    "devices": self.devices,
+                    "selectedDevice": self.selected_device_index,
+                    "time": __import__('time').time()
+                }
+                devices.writeJSON(settings)
+
+            self.set_status(f"Manually added device: {model} ({ip})")
+
+            # Call callback if provided
+            if callback:
+                callback(self.devices)
+
+            return True
+
+        except Exception as e:
+            self.set_status(f"Error adding device manually: {str(e)}")
+            return False
+
+    def remove_device(
+        self,
+        index: int,
+        callback: Callable[[List[Dict[str, Any]]], None] = None
+    ) -> bool:
+        """
+        Remove a device by index.
+
+        Args:
+            index: Index of the device to remove
+            callback: Callback function to be called after device is removed
+
+        Returns:
+            True if device was removed successfully, False otherwise
+        """
+        try:
+            if not (0 <= index < len(self.devices)):
+                self.set_status("Invalid device index")
+                return False
+
+            removed_device = self.devices.pop(index)
+
+            # Adjust selected device index if needed
+            if self.selected_device_index >= len(self.devices):
+                self.selected_device_index = max(0, len(self.devices) - 1)
+            elif self.selected_device_index > index:
+                self.selected_device_index -= 1
+
+            # Update settings file
+            try:
+                settings = devices.get_data()
+                settings["devices"] = self.devices
+                settings["selectedDevice"] = self.selected_device_index
+                devices.writeJSON(settings)
+            except Exception:
+                settings = {
+                    "devices": self.devices,
+                    "selectedDevice": self.selected_device_index,
+                    "time": __import__('time').time()
+                }
+                devices.writeJSON(settings)
+
+            self.set_status(f"Removed device: {removed_device.get('model', 'Unknown')}")
+
+            # Update sync controller if available
+            if self.sync_controller:
+                selected_device = self.get_selected_device()
+                self.sync_controller.set_device(selected_device)
+
+            # Call callback if provided
+            if callback:
+                callback(self.devices)
+
+            return True
+
+        except Exception as e:
+            self.set_status(f"Error removing device: {str(e)}")
+            return False
+
     def set_sync_controller(self, controller):
         """Set the sync controller reference for coordinating device selection."""
         self.sync_controller = controller

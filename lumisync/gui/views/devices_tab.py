@@ -5,6 +5,7 @@ This module contains the UI for device discovery and management.
 
 import os
 import tkinter as tk
+from tkinter import messagebox
 from typing import Any, Dict, List
 
 import customtkinter as ctk
@@ -13,6 +14,7 @@ from PIL import Image
 from ...gui.controllers.device_controller import DeviceController
 from ...gui.resources import get_resource_path
 from ..base import BaseFrame
+from ..dialogs import AddDeviceDialog
 from ..styles import MEDIUM_BUTTON, MEDIUM_PAD
 
 
@@ -159,8 +161,8 @@ class DevicesTab(BaseFrame):
             row=1, column=0, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="ew"
         )
 
-        # Configure grid
-        actions_frame.grid_columnconfigure((0, 1, 2), weight=1)
+        # Configure grid for 5 columns
+        actions_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
 
         # Create buttons
         discover_button = ctk.CTkButton(
@@ -178,6 +180,28 @@ class DevicesTab(BaseFrame):
         )
         discover_button.grid(row=0, column=0, padx=MEDIUM_PAD, pady=MEDIUM_PAD)
 
+        # Add Device Manually button
+        add_manual_button = ctk.CTkButton(
+            actions_frame,
+            text="Add Manual",
+            command=self.show_add_device_dialog,
+            width=MEDIUM_BUTTON[0],
+            height=MEDIUM_BUTTON[1],
+        )
+        add_manual_button.grid(row=0, column=1, padx=MEDIUM_PAD, pady=MEDIUM_PAD)
+
+        # Remove Device button
+        remove_button = ctk.CTkButton(
+            actions_frame,
+            text="Remove",
+            command=self.remove_selected_device,
+            width=MEDIUM_BUTTON[0],
+            height=MEDIUM_BUTTON[1],
+            fg_color="#E74C3C",
+            hover_color="#C0392B",
+        )
+        remove_button.grid(row=0, column=2, padx=MEDIUM_PAD, pady=MEDIUM_PAD)
+
         turn_on_button = ctk.CTkButton(
             actions_frame,
             text="Turn On",
@@ -191,7 +215,7 @@ class DevicesTab(BaseFrame):
             ),
             compound="left",
         )
-        turn_on_button.grid(row=0, column=1, padx=MEDIUM_PAD, pady=MEDIUM_PAD)
+        turn_on_button.grid(row=0, column=3, padx=MEDIUM_PAD, pady=MEDIUM_PAD)
 
         turn_off_button = ctk.CTkButton(
             actions_frame,
@@ -206,7 +230,46 @@ class DevicesTab(BaseFrame):
             ),
             compound="left",
         )
-        turn_off_button.grid(row=0, column=2, padx=MEDIUM_PAD, pady=MEDIUM_PAD)
+        turn_off_button.grid(row=0, column=4, padx=MEDIUM_PAD, pady=MEDIUM_PAD)
+
+    def show_add_device_dialog(self):
+        """Show the dialog for manually adding a device."""
+        def on_add(ip, model, mac, port):
+            return self.device_controller.add_device_manually(
+                ip=ip,
+                model=model,
+                mac=mac,
+                port=port,
+                callback=self.update_device_list
+            )
+
+        dialog = AddDeviceDialog(self.app, on_add_callback=on_add)
+        self.wait_window(dialog)
+
+    def remove_selected_device(self):
+        """Remove the currently selected device."""
+        selection = self.device_listbox.curselection()
+        if not selection:
+            messagebox.showwarning(
+                "No Selection",
+                "Please select a device to remove."
+            )
+            return
+
+        index = selection[0]
+        device = self.device_controller.devices[index]
+        device_name = device.get('model', 'Unknown')
+        device_ip = device.get('ip', 'Unknown')
+
+        # Confirm removal
+        if messagebox.askyesno(
+            "Confirm Removal",
+            f"Are you sure you want to remove '{device_name}' ({device_ip})?"
+        ):
+            self.device_controller.remove_device(
+                index=index,
+                callback=self.update_device_list
+            )
 
     def create_device_list(self):
         """Create the device list section."""
@@ -306,6 +369,16 @@ class DevicesTab(BaseFrame):
             row=4, column=1, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="w"
         )
 
+        source_label = ctk.CTkLabel(details_frame, text="Source:")
+        source_label.grid(
+            row=5, column=0, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="w"
+        )
+
+        self.source_value = ctk.CTkLabel(details_frame, text="-")
+        self.source_value.grid(
+            row=5, column=1, padx=MEDIUM_PAD, pady=(0, MEDIUM_PAD), sticky="w"
+        )
+
     def load_devices(self):
         """Load devices from settings."""
         devices = self.device_controller.get_devices()
@@ -321,8 +394,10 @@ class DevicesTab(BaseFrame):
 
         for i, device in enumerate(devices):
             # Use lowercase key names that match our connection.py implementation
+            # Add [M] prefix for manually added devices
+            prefix = "[M] " if device.get("manual") else ""
             self.device_listbox.insert(
-                tk.END, f"{device.get('model', '-')} ({device.get('ip', '-')})"
+                tk.END, f"{prefix}{device.get('model', '-')} ({device.get('ip', '-')})"
             )
 
             # Select the currently selected device
@@ -347,3 +422,6 @@ class DevicesTab(BaseFrame):
         self.mac_value.configure(text=device.get("mac", "-"))
         self.ip_value.configure(text=device.get("ip", "-"))
         self.port_value.configure(text=str(device.get("port", "-")))
+        self.source_value.configure(
+            text="Manual" if device.get("manual") else "Auto-discovered"
+        )
