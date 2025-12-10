@@ -25,13 +25,13 @@
 ## Key Features
 
 * Easy to use - Simple UI that allows you to easily control your lights.
-* Syncing - Sync your lights to your monitor or music, potential custom sync in the future. (WIP)
+* Syncing - Sync your lights to your monitor (Windows, X11 or Linux) or music, potential custom sync in the future. (WIP)
 * Compatability - Available for Windows. Linux and MacOS (WIP).
 * Open Source - Open source and free to use.
 
 ## TODO
 
-* [ ] Make display sync work for Linux and macOS (WIP).
+* [ ] Make display sync work for Linux (Wayland) and macOS (WIP).
 * [ ] Add additional sync modes.
 * [ ] Add support for multiple devices (WIP).
 * [ ] Add documentation
