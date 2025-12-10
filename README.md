@@ -25,7 +25,7 @@
 ## Key Features
 
 * Easy to use - Simple UI that allows you to easily control your lights.
-* Syncing - Sync your lights to your monitor (Windows, X11 or Linux) or music, potential custom sync in the future. (WIP)
+* Syncing - Sync your lights to your monitor (Windows, X11 on Linux) or music, potential custom sync in the future. (WIP)
 * Compatability - Available for Windows. Linux and MacOS (WIP).
 * Open Source - Open source and free to use.
 
