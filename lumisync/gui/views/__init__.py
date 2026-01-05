@@ -1,4 +1,8 @@
 """
-Views package for the LumiSync GUI.
-This package contains views for displaying the application's user interface.
+Views for the LumiSync GUI.
 """
+
+from .devices_view import DevicesView
+from .modes_view import ModesView
+
+__all__ = ['DevicesView', 'ModesView']

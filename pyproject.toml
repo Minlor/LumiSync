@@ -28,7 +28,8 @@ dependencies = [
   "pillow>=11.1.0",
   "soundcard>=0.4.4",
   "webcolors>=24.11.1",
-  "customtkinter>=5.2.2",
+  "PyQt6>=6.6.0",
+  "qt-material>=2.14",
   "pywin32>=310; sys_platform == 'win32'",
   "mss>=10.1.0; sys_platform != 'win32'",
 ]

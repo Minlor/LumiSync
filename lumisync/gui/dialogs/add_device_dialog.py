@@ -1,299 +1,171 @@
 """
-Dialog for manually adding a device.
-This dialog allows users to add devices by IP address when automatic discovery fails.
+Add Device Dialog for the LumiSync GUI.
+This module provides a dialog for manually adding devices.
 """
 
-import re
-import tkinter as tk
-from typing import Callable, Dict, Any, Optional
-
-import customtkinter as ctk
-
-from ..styles import (
-    DEFAULT_FONT,
-    HEADER_FONT,
-    MEDIUM_PAD,
-    SMALL_PAD,
-    ERROR_COLOR,
-    SUCCESS_COLOR,
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QFormLayout, QDialogButtonBox
 )
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QFont
+
+from ..utils.validators import IPAddressValidator, MACAddressValidator, PortValidator
 
 
-class AddDeviceDialog(ctk.CTkToplevel):
+class AddDeviceDialog(QDialog):
     """Dialog for manually adding a device."""
 
-    def __init__(
-        self,
-        parent,
-        on_add_callback: Callable[[str, str, Optional[str], int], bool],
-        **kwargs
-    ):
-        """
-        Initialize the add device dialog.
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add Device Manually")
+        self.setModal(True)
+        self.setMinimumWidth(400)
 
-        Args:
-            parent: Parent window
-            on_add_callback: Callback function to add the device.
-                            Takes (ip, model, mac, port) and returns True if successful.
-        """
-        super().__init__(parent, **kwargs)
+        # Set up the UI
+        self.setup_ui()
 
-        self.on_add_callback = on_add_callback
-        self.result = None
+        # Center on parent
+        if parent:
+            self.move(
+                parent.window().geometry().center() - self.rect().center()
+            )
 
-        # Configure dialog
-        self.title("Add Device Manually")
-        self.geometry("450x380")
-        self.resizable(False, False)
-
-        # Make dialog modal
-        self.transient(parent)
-        self.grab_set()
-
-        # Center the dialog on parent
-        self.update_idletasks()
-        parent_x = parent.winfo_rootx()
-        parent_y = parent.winfo_rooty()
-        parent_width = parent.winfo_width()
-        parent_height = parent.winfo_height()
-        dialog_width = self.winfo_width()
-        dialog_height = self.winfo_height()
-        x = parent_x + (parent_width - dialog_width) // 2
-        y = parent_y + (parent_height - dialog_height) // 2
-        self.geometry(f"+{x}+{y}")
-
-        self._create_widgets()
-
-        # Focus on IP entry
-        self.ip_entry.focus_set()
-
-        # Bind Enter key to add button
-        self.bind("<Return>", lambda e: self._on_add())
-        self.bind("<Escape>", lambda e: self._on_cancel())
-
-    def _create_widgets(self):
-        """Create the dialog widgets."""
-        # Main container
-        main_frame = ctk.CTkFrame(self)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=MEDIUM_PAD, pady=MEDIUM_PAD)
+    def setup_ui(self):
+        """Set up the user interface."""
+        layout = QVBoxLayout(self)
 
         # Header
-        header_label = ctk.CTkLabel(
-            main_frame,
-            text="Add Device Manually",
-            font=HEADER_FONT,
-        )
-        header_label.pack(pady=(SMALL_PAD, MEDIUM_PAD))
+        header = QLabel("Add Device Manually")
+        header_font = QFont()
+        header_font.setPointSize(14)
+        header_font.setBold(True)
+        header.setFont(header_font)
+        layout.addWidget(header)
 
         # Description
-        desc_label = ctk.CTkLabel(
-            main_frame,
-            text="If automatic discovery doesn't find your device,\nyou can add it manually using its IP address.",
-            font=DEFAULT_FONT,
-            text_color="gray",
+        desc = QLabel(
+            "Enter the device information below. IP address is required.\n"
+            "Other fields are optional and will be auto-generated if not provided."
         )
-        desc_label.pack(pady=(0, MEDIUM_PAD))
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
 
-        # Form frame
-        form_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        form_frame.pack(fill=tk.X, padx=MEDIUM_PAD, pady=SMALL_PAD)
+        layout.addSpacing(10)
+
+        # Form layout
+        form = QFormLayout()
 
         # IP Address (required)
-        ip_frame = ctk.CTkFrame(form_frame, fg_color="transparent")
-        ip_frame.pack(fill=tk.X, pady=SMALL_PAD)
+        self.ip_entry = QLineEdit()
+        self.ip_entry.setPlaceholderText("e.g., 192.168.1.100")
+        self.ip_entry.setValidator(IPAddressValidator())
+        form.addRow("IP Address *:", self.ip_entry)
 
-        ip_label = ctk.CTkLabel(
-            ip_frame,
-            text="IP Address *",
-            font=DEFAULT_FONT,
-            anchor="w",
-            width=120,
-        )
-        ip_label.pack(side=tk.LEFT)
-
-        self.ip_entry = ctk.CTkEntry(
-            ip_frame,
-            placeholder_text="e.g., 192.168.1.100",
-            width=250,
-        )
-        self.ip_entry.pack(side=tk.LEFT, padx=(SMALL_PAD, 0))
-
-        # Model Name (optional)
-        model_frame = ctk.CTkFrame(form_frame, fg_color="transparent")
-        model_frame.pack(fill=tk.X, pady=SMALL_PAD)
-
-        model_label = ctk.CTkLabel(
-            model_frame,
-            text="Device Name",
-            font=DEFAULT_FONT,
-            anchor="w",
-            width=120,
-        )
-        model_label.pack(side=tk.LEFT)
-
-        self.model_entry = ctk.CTkEntry(
-            model_frame,
-            placeholder_text="e.g., Living Room Light",
-            width=250,
-        )
-        self.model_entry.pack(side=tk.LEFT, padx=(SMALL_PAD, 0))
+        # Device Name (optional)
+        self.model_entry = QLineEdit()
+        self.model_entry.setPlaceholderText("e.g., Govee H6199")
+        form.addRow("Device Name:", self.model_entry)
 
         # MAC Address (optional)
-        mac_frame = ctk.CTkFrame(form_frame, fg_color="transparent")
-        mac_frame.pack(fill=tk.X, pady=SMALL_PAD)
-
-        mac_label = ctk.CTkLabel(
-            mac_frame,
-            text="MAC Address",
-            font=DEFAULT_FONT,
-            anchor="w",
-            width=120,
-        )
-        mac_label.pack(side=tk.LEFT)
-
-        self.mac_entry = ctk.CTkEntry(
-            mac_frame,
-            placeholder_text="Optional (auto-generated)",
-            width=250,
-        )
-        self.mac_entry.pack(side=tk.LEFT, padx=(SMALL_PAD, 0))
+        self.mac_entry = QLineEdit()
+        self.mac_entry.setPlaceholderText("e.g., 00:11:22:33:44:55")
+        self.mac_entry.setValidator(MACAddressValidator())
+        form.addRow("MAC Address:", self.mac_entry)
 
         # Port (optional)
-        port_frame = ctk.CTkFrame(form_frame, fg_color="transparent")
-        port_frame.pack(fill=tk.X, pady=SMALL_PAD)
+        self.port_entry = QLineEdit()
+        self.port_entry.setPlaceholderText("Default: 4003")
+        self.port_entry.setValidator(PortValidator())
+        form.addRow("Port:", self.port_entry)
 
-        port_label = ctk.CTkLabel(
-            port_frame,
-            text="Port",
-            font=DEFAULT_FONT,
-            anchor="w",
-            width=120,
+        layout.addLayout(form)
+
+        # Status label
+        self.status_label = QLabel("")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        layout.addSpacing(10)
+
+        # Buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        port_label.pack(side=tk.LEFT)
+        button_box.accepted.connect(self.validate_and_accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
 
-        self.port_entry = ctk.CTkEntry(
-            port_frame,
-            placeholder_text="Default: 4003",
-            width=250,
-        )
-        self.port_entry.pack(side=tk.LEFT, padx=(SMALL_PAD, 0))
+        # Set focus to IP entry
+        self.ip_entry.setFocus()
 
-        # Error/Status label
-        self.status_label = ctk.CTkLabel(
-            main_frame,
-            text="",
-            font=DEFAULT_FONT,
-            text_color=ERROR_COLOR,
-        )
-        self.status_label.pack(pady=SMALL_PAD)
+        # Connect Enter key to accept
+        self.ip_entry.returnPressed.connect(self.validate_and_accept)
+        self.model_entry.returnPressed.connect(self.validate_and_accept)
+        self.mac_entry.returnPressed.connect(self.validate_and_accept)
+        self.port_entry.returnPressed.connect(self.validate_and_accept)
 
-        # Button frame
-        button_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        button_frame.pack(fill=tk.X, pady=MEDIUM_PAD)
+    def validate_and_accept(self):
+        """Validate input and accept dialog if valid."""
+        # Clear previous status
+        self.status_label.setText("")
+        self.status_label.setStyleSheet("")
 
-        # Cancel button
-        cancel_btn = ctk.CTkButton(
-            button_frame,
-            text="Cancel",
-            command=self._on_cancel,
-            width=120,
-            fg_color="gray",
-            hover_color="darkgray",
-        )
-        cancel_btn.pack(side=tk.RIGHT, padx=SMALL_PAD)
-
-        # Add button
-        add_btn = ctk.CTkButton(
-            button_frame,
-            text="Add Device",
-            command=self._on_add,
-            width=120,
-        )
-        add_btn.pack(side=tk.RIGHT, padx=SMALL_PAD)
-
-    def _validate_ip(self, ip: str) -> bool:
-        """Validate IP address format."""
-        pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
-        if not re.match(pattern, ip):
-            return False
-        parts = ip.split('.')
-        return all(0 <= int(part) <= 255 for part in parts)
-
-    def _validate_mac(self, mac: str) -> bool:
-        """Validate MAC address format (if provided)."""
-        if not mac:
-            return True  # Optional field
-        # Accept formats: XX:XX:XX:XX:XX:XX or XX-XX-XX-XX-XX-XX
-        pattern = r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$'
-        return bool(re.match(pattern, mac))
-
-    def _validate_port(self, port_str: str) -> tuple[bool, int]:
-        """Validate port number."""
-        if not port_str:
-            return True, 4003  # Default port
-        try:
-            port = int(port_str)
-            if 1 <= port <= 65535:
-                return True, port
-            return False, 0
-        except ValueError:
-            return False, 0
-
-    def _on_add(self):
-        """Handle add button click."""
-        ip = self.ip_entry.get().strip()
-        model = self.model_entry.get().strip() or "Manual Device"
-        mac = self.mac_entry.get().strip() or None
-        port_str = self.port_entry.get().strip()
-
-        # Validate IP
+        # Check IP address (required)
+        ip = self.ip_entry.text().strip()
         if not ip:
-            self.status_label.configure(text="IP address is required", text_color=ERROR_COLOR)
-            self.ip_entry.focus_set()
+            self.show_error("IP address is required")
+            self.ip_entry.setFocus()
             return
 
-        if not self._validate_ip(ip):
-            self.status_label.configure(text="Invalid IP address format", text_color=ERROR_COLOR)
-            self.ip_entry.focus_set()
+        # Validate IP format
+        validator = self.ip_entry.validator()
+        state, _, _ = validator.validate(ip, 0)
+        if state != validator.State.Acceptable:
+            self.show_error("Invalid IP address format")
+            self.ip_entry.setFocus()
             return
 
         # Validate MAC if provided
-        if mac and not self._validate_mac(mac):
-            self.status_label.configure(
-                text="Invalid MAC address format (use XX:XX:XX:XX:XX:XX)",
-                text_color=ERROR_COLOR
-            )
-            self.mac_entry.focus_set()
-            return
+        mac = self.mac_entry.text().strip()
+        if mac:
+            validator = self.mac_entry.validator()
+            state, _, _ = validator.validate(mac, 0)
+            if state != validator.State.Acceptable:
+                self.show_error("Invalid MAC address format")
+                self.mac_entry.setFocus()
+                return
 
-        # Validate port
-        port_valid, port = self._validate_port(port_str)
-        if not port_valid:
-            self.status_label.configure(
-                text="Invalid port number (1-65535)",
-                text_color=ERROR_COLOR
-            )
-            self.port_entry.focus_set()
-            return
+        # Validate port if provided
+        port = self.port_entry.text().strip()
+        if port:
+            validator = self.port_entry.validator()
+            state, _, _ = validator.validate(port, 0)
+            if state != validator.State.Acceptable:
+                self.show_error("Invalid port number (must be 1-65535)")
+                self.port_entry.setFocus()
+                return
 
-        # Try to add the device
-        self.status_label.configure(text="Adding device...", text_color="gray")
-        self.update()
+        # All validation passed
+        self.accept()
 
-        success = self.on_add_callback(ip, model, mac, port)
+    def show_error(self, message: str):
+        """Show error message in status label.
 
-        if success:
-            self.status_label.configure(text="Device added successfully!", text_color=SUCCESS_COLOR)
-            self.result = {"ip": ip, "model": model, "mac": mac, "port": port}
-            self.after(500, self.destroy)  # Close after brief delay
+        Args:
+            message: Error message to display
+        """
+        self.status_label.setText(f"❌ {message}")
+        self.status_label.setStyleSheet("color: #E74C3C;")  # Red color
+
+    def keyPressEvent(self, event):
+        """Handle key press events.
+
+        Args:
+            event: Key event
+        """
+        # Handle Escape key to close dialog
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
         else:
-            self.status_label.configure(
-                text="Failed to add device (may already exist)",
-                text_color=ERROR_COLOR
-            )
-
-    def _on_cancel(self):
-        """Handle cancel button click."""
-        self.result = None
-        self.destroy()
-
+            super().keyPressEvent(event)

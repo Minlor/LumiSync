@@ -1,9 +1,7 @@
 """
-Dialogs module for the LumiSync GUI.
-Contains dialog windows for various user interactions.
+Dialogs for the LumiSync GUI.
 """
 
 from .add_device_dialog import AddDeviceDialog
 
-__all__ = ["AddDeviceDialog"]
-
+__all__ = ['AddDeviceDialog']
