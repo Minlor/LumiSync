@@ -348,7 +348,17 @@ class SyncController(QObject):
 
     def stop_sync(self):
         """Stop any active synchronization."""
-        if self.sync_thread and self.sync_thread.isRunning():
+        if self.sync_thread is None:
+            return
+
+        try:
+            is_running = self.sync_thread.isRunning()
+        except RuntimeError:
+            # Thread was already deleted
+            self.sync_thread = None
+            return
+
+        if is_running:
             self.stop_event.set()
             mode = self.current_sync_mode or "sync"
             self.status_updated.emit(f"Stopping {mode}...")
@@ -358,14 +368,20 @@ class SyncController(QObject):
             self.sync_thread.wait(2000)  # Wait up to 2 seconds
 
             # If thread is still running after timeout
-            if self.sync_thread.isRunning():
-                self.status_updated.emit(
-                    f"Warning: {mode} thread did not stop cleanly"
-                )
+            try:
+                if self.sync_thread.isRunning():
+                    self.status_updated.emit(
+                        f"Warning: {mode} thread did not stop cleanly"
+                    )
+            except RuntimeError:
+                pass
 
             self.current_sync_mode = None
             self.sync_stopped.emit()
             self.status_updated.emit("Sync stopped")
+
+        # Clear the reference to allow garbage collection
+        self.sync_thread = None
 
     def get_current_sync_mode(self) -> Optional[str]:
         """Get the current synchronization mode.
@@ -381,7 +397,14 @@ class SyncController(QObject):
         Returns:
             True if sync is running, False otherwise
         """
-        return self.sync_thread is not None and self.sync_thread.isRunning()
+        if self.sync_thread is None:
+            return False
+
+        try:
+            return self.sync_thread.isRunning()
+        except RuntimeError:
+            # Thread was deleted (C/C++ object has been deleted)
+            return False
 
     def _ensure_server(self):
         """Ensure server socket exists."""
