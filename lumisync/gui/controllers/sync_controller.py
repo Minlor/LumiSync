@@ -26,12 +26,12 @@ class MonitorSyncWorker(QObject):
     status_updated = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, server, device, stop_event, brightness):
+    def __init__(self, server, device, stop_event, controller):
         super().__init__()
         self.server = server
         self.device = device
         self.stop_event = stop_event
-        self.brightness = brightness
+        self.controller = controller
 
     def run(self):
         """Run monitor sync loop."""
@@ -78,8 +78,8 @@ class MonitorSyncWorker(QObject):
                     img = screen.crop((int((width / 4 * 3)), top, width, bottom))
                     colors.append(img.getpixel(point))
 
-                    # Apply brightness to colors
-                    colors = monitor.apply_brightness(colors, self.brightness)
+                    # Apply brightness to colors (using current brightness value from controller)
+                    colors = monitor.apply_brightness(colors, self.controller.get_monitor_brightness())
 
                     # Apply smooth transition
                     monitor.smooth_transition(
@@ -104,12 +104,12 @@ class MusicSyncWorker(QObject):
     status_updated = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, server, device, stop_event, brightness):
+    def __init__(self, server, device, stop_event, controller):
         super().__init__()
         self.server = server
         self.device = device
         self.stop_event = stop_event
-        self.brightness = brightness
+        self.controller = controller
 
     def run(self):
         """Run music sync loop."""
@@ -151,9 +151,9 @@ class MusicSyncWorker(QObject):
 
                         COLORS.current.pop(0)
 
-                        # Apply brightness to colors
+                        # Apply brightness to colors (using current brightness value from controller)
                         adjusted_colors = music.apply_brightness(
-                            COLORS.current, self.brightness
+                            COLORS.current, self.controller.get_music_brightness()
                         )
 
                         # Convert colors and send to device
@@ -289,7 +289,7 @@ class SyncController(QObject):
         # Create thread and worker
         self.sync_thread = QThread()
         self.sync_worker = MonitorSyncWorker(
-            self.server, device, self.stop_event, self.monitor_brightness
+            self.server, device, self.stop_event, self
         )
         self.sync_worker.moveToThread(self.sync_thread)
 
@@ -328,7 +328,7 @@ class SyncController(QObject):
         # Create thread and worker
         self.sync_thread = QThread()
         self.sync_worker = MusicSyncWorker(
-            self.server, device, self.stop_event, self.music_brightness
+            self.server, device, self.stop_event, self
         )
         self.sync_worker.moveToThread(self.sync_thread)
 

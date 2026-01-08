@@ -104,7 +104,7 @@ class ModesView(QWidget):
 
         # Start button
         self.monitor_start_button = QPushButton("Start Monitor Sync")
-        self.monitor_start_button.setIcon(ResourceManager.get_icon("screen.png"))
+        self.monitor_start_button.setIcon(ResourceManager.get_icon("screen.svg"))
         self.monitor_start_button.setIconSize(QSize(20, 20))
         self.monitor_start_button.clicked.connect(self.on_monitor_start_clicked)
         layout.addWidget(self.monitor_start_button)
@@ -150,7 +150,7 @@ class ModesView(QWidget):
 
         # Start button
         self.music_start_button = QPushButton("Start Music Sync")
-        self.music_start_button.setIcon(ResourceManager.get_icon("music.png"))
+        self.music_start_button.setIcon(ResourceManager.get_icon("music.svg"))
         self.music_start_button.setIconSize(QSize(20, 20))
         self.music_start_button.clicked.connect(self.on_music_start_clicked)
         layout.addWidget(self.music_start_button)
@@ -174,7 +174,7 @@ class ModesView(QWidget):
 
         # Stop button
         self.stop_button = QPushButton("Stop Sync")
-        self.stop_button.setIcon(ResourceManager.get_icon("stop.png"))
+        self.stop_button.setIcon(ResourceManager.get_icon("stop.svg"))
         self.stop_button.setIconSize(QSize(20, 20))
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.on_stop_clicked)

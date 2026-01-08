@@ -50,13 +50,13 @@ class DevicesView(QWidget):
         button_layout = QHBoxLayout()
 
         self.discover_button = QPushButton("Discover Devices")
-        self.discover_button.setIcon(ResourceManager.get_icon("refresh.png"))
+        self.discover_button.setIcon(ResourceManager.get_icon("refresh.svg"))
         self.discover_button.setIconSize(QSize(20, 20))
         self.discover_button.clicked.connect(self.on_discover_clicked)
         button_layout.addWidget(self.discover_button)
 
         self.add_button = QPushButton("Add Manual")
-        self.add_button.setIcon(ResourceManager.get_icon("network.png"))
+        self.add_button.setIcon(ResourceManager.get_icon("network.svg"))
         self.add_button.setIconSize(QSize(20, 20))
         self.add_button.clicked.connect(self.on_add_manual_clicked)
         button_layout.addWidget(self.add_button)
@@ -67,14 +67,14 @@ class DevicesView(QWidget):
         button_layout.addWidget(self.remove_button)
 
         self.turn_on_button = QPushButton("Turn On")
-        self.turn_on_button.setIcon(ResourceManager.get_icon("power.png"))
+        self.turn_on_button.setIcon(ResourceManager.get_icon("power.svg"))
         self.turn_on_button.setIconSize(QSize(20, 20))
         self.turn_on_button.setEnabled(False)
         self.turn_on_button.clicked.connect(lambda: self.controller.turn_on_off(True))
         button_layout.addWidget(self.turn_on_button)
 
         self.turn_off_button = QPushButton("Turn Off")
-        self.turn_off_button.setIcon(ResourceManager.get_icon("power.png"))
+        self.turn_off_button.setIcon(ResourceManager.get_icon("power.svg"))
         self.turn_off_button.setIconSize(QSize(20, 20))
         self.turn_off_button.setEnabled(False)
         self.turn_off_button.clicked.connect(lambda: self.controller.turn_on_off(False))

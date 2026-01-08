@@ -5,13 +5,20 @@ This module contains the main application window and entry point for the PyQt6 G
 
 import sys
 from PyQt6.QtWidgets import (
-    QMainWindow, QTabWidget, QMessageBox, QApplication
+    QMainWindow, QMessageBox, QApplication
 )
 from PyQt6.QtCore import Qt, QSettings
-from PyQt6.QtGui import QAction
 from qt_material import apply_stylesheet
 
-from .resources import ResourceManager
+from .resources.icons import IconKey, icon as app_icon
+from .widgets import NavigationShell
+from .dialogs.settings_dialog import SettingsDialog
+from .utils import (
+    apply_qt_translucent_background,
+    enable_windows_dwm_blur,
+    enable_windows_backdrop,
+    WindowsBackdropType,
+)
 from ..utils.logging import setup_logger
 
 # Import controllers (will be enhanced with signals)
@@ -34,6 +41,9 @@ class LumiSyncMainWindow(QMainWindow):
         self.setMinimumSize(800, 500)
         self.resize(900, 600)
 
+        # Remove classic menu bar (we expose actions via sidebar/settings)
+        self.setMenuBar(None)
+
         # Settings for saving window state
         self.settings = QSettings("Minlor", "LumiSync")
 
@@ -50,7 +60,6 @@ class LumiSyncMainWindow(QMainWindow):
 
         # Set up UI
         self.setup_ui()
-        self.setup_menus()
         self.setup_status_bar()
 
         # Set window icon
@@ -58,6 +67,9 @@ class LumiSyncMainWindow(QMainWindow):
 
         # Restore window geometry
         self.restore_geometry()
+
+        # Optional modern effects (safe no-op on non-Windows)
+        self._apply_window_effects()
 
         logger.info("LumiSync PyQt6 GUI application initialized successfully")
 
@@ -85,10 +97,6 @@ class LumiSyncMainWindow(QMainWindow):
         """Set up the user interface."""
         logger.debug("Setting up user interface")
 
-        # Create tab widget as central widget
-        self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
-
         # Import views here to avoid circular imports
         from .views.devices_view import DevicesView
         from .views.modes_view import ModesView
@@ -97,49 +105,86 @@ class LumiSyncMainWindow(QMainWindow):
         self.devices_view = DevicesView(self.device_controller)
         self.modes_view = ModesView(self.sync_controller)
 
-        # Add tabs
-        self.tabs.addTab(self.devices_view, "Devices")
-        self.tabs.addTab(self.modes_view, "Modes")
+        # Icon-only navigation rail
+        self.nav_shell = NavigationShell(title="LumiSync", icon_only=True)
+        self.setCentralWidget(self.nav_shell)
+
+        self.nav_shell.add_page(
+            key="devices",
+            title="Devices",
+            icon=app_icon(IconKey.NETWORK),
+            widget=self.devices_view,
+        )
+        self.nav_shell.set_page_svg("devices", "network.svg")
+
+        self.nav_shell.add_page(
+            key="modes",
+            title="Sync Modes",
+            icon=app_icon(IconKey.SCREEN),
+            widget=self.modes_view,
+        )
+        self.nav_shell.set_page_svg("modes", "screen.svg")
+
+        # Bottom settings cog
+        self.nav_shell.set_settings(
+            icon_name="settings.svg",
+            callback=self.show_settings,
+        )
 
         logger.debug("User interface created")
 
-    def setup_menus(self):
-        """Set up the menu bar."""
-        logger.debug("Setting up menu bar")
-        menubar = self.menuBar()
+    def show_settings(self) -> None:
+        dlg = SettingsDialog(self.settings, self)
+        if dlg.exec():
+            # Apply theme
+            saved_theme = self.settings.value("theme", "dark_blue.xml")
+            if saved_theme != self._current_theme:
+                self._current_theme = str(saved_theme)
+                apply_stylesheet(QApplication.instance(), theme=self._current_theme)
 
-        # File menu
-        file_menu = menubar.addMenu("&File")
+            # Re-apply effects right away after changing toggles
+            self._apply_window_effects()
 
-        exit_action = QAction("E&xit", self)
-        exit_action.setShortcut("Ctrl+Q")
-        exit_action.setStatusTip("Exit application")
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
+    def _apply_window_effects(self) -> None:
+        """Apply optional translucency / backdrop effects."""
 
-        # View menu
-        view_menu = menubar.addMenu("&View")
+        enable_translucency = bool(self.settings.value("ui/translucent", True, type=bool))
 
-        theme_action = QAction("Toggle &Theme", self)
-        theme_action.setShortcut("Ctrl+T")
-        theme_action.setStatusTip("Switch between dark and light themes")
-        theme_action.triggered.connect(self.toggle_theme)
-        view_menu.addAction(theme_action)
+        # Override qt-material's opaque background if effects are on
+        if enable_translucency:
+            self.setStyleSheet("QMainWindow { background: transparent; }")
+        else:
+            self.setStyleSheet("") # Restore theme default
 
-        # Help menu
-        help_menu = menubar.addMenu("&Help")
+        if enable_translucency:
+            try:
+                apply_qt_translucent_background(self)
+            except Exception as e:
+                logger.debug(f"Failed to enable translucent background: {e}")
 
-        about_action = QAction("&About", self)
-        about_action.setStatusTip("About LumiSync")
-        about_action.triggered.connect(self.show_about)
-        help_menu.addAction(about_action)
-
-        logger.debug("Menu bar created")
+        # Modern Windows backdrop (Win11+) - preferred
+        enable_backdrop = bool(self.settings.value("ui/windows_backdrop", False, type=bool))
+        if enable_backdrop:
+            backdrop_type = str(self.settings.value("ui/windows_backdrop_type", "mica"))
+            desired = WindowsBackdropType.MICA if backdrop_type == "mica" else WindowsBackdropType.TABBED
+            try:
+                hwnd = int(self.winId())
+                ok = enable_windows_backdrop(hwnd, desired)
+                if not ok:
+                    # fallback to legacy blur
+                    ok = enable_windows_dwm_blur(hwnd)
+                logger.debug(f"Windows backdrop enabled: {ok} (type={backdrop_type})")
+            except Exception as e:
+                logger.debug(f"Failed to enable Windows backdrop: {e}")
 
     def setup_status_bar(self):
         """Set up the status bar."""
-        self.statusBar().showMessage("Ready")
-        logger.debug("Status bar created")
+        # Optional: hide status bar for a cleaner UI; keep message logging.
+        show_status = bool(self.settings.value("ui/status_bar", False, type=bool))
+        self.statusBar().setVisible(show_status)
+        if show_status:
+            self.statusBar().showMessage("Ready")
+        logger.debug("Status bar configured")
 
     def show_status(self, message: str, timeout: int = 5000):
         """Display status message in the status bar.
@@ -188,9 +233,9 @@ class LumiSyncMainWindow(QMainWindow):
     def set_icon(self):
         """Set the application icon if available."""
         try:
-            icon = ResourceManager.get_icon("lightbulb-on.png")
-            if not icon.isNull():
-                self.setWindowIcon(icon)
+            ico = app_icon(IconKey.APP)
+            if not ico.isNull():
+                self.setWindowIcon(ico)
                 logger.debug("Application icon set")
             else:
                 logger.debug("Icon file not found")

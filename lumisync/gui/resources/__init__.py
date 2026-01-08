@@ -48,7 +48,7 @@ class ResourceManager:
         """Get the full path to an icon file.
 
         Args:
-            name: Icon filename (e.g., 'refresh.png')
+            name: Icon filename (e.g., 'refresh.svg')
 
         Returns:
             Path to the icon file if it exists, None otherwise
@@ -69,7 +69,7 @@ class ResourceManager:
         """Load an icon from the resources directory.
 
         Args:
-            name: Icon filename (e.g., 'refresh.png')
+            name: Icon filename (e.g., 'refresh.svg')
             size: Optional QSize for the icon
 
         Returns:
@@ -89,7 +89,7 @@ class ResourceManager:
         """Load a pixmap from the resources directory.
 
         Args:
-            name: Image filename (e.g., 'lightbulb-on.png')
+            name: Image filename (e.g., 'lightbulb-on.svg')
             width: Optional width for scaling
             height: Optional height for scaling
             smooth: Use smooth transformation when scaling
@@ -120,7 +120,7 @@ class ResourceManager:
         if not icons_dir.exists():
             return []
 
-        return [f.name for f in icons_dir.glob('*.png')]
+        return [f.name for f in icons_dir.glob('*.svg')]
 
 
 def get_resource_path(filename: str) -> Optional[str]:

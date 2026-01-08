@@ -2,4 +2,6 @@
 Custom widgets for the LumiSync GUI.
 """
 
-__all__ = []
+from .navigation_shell import NavigationShell, NavItem
+
+__all__ = ["NavigationShell", "NavItem"]
