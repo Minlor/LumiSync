@@ -38,7 +38,7 @@ dependencies = [
 include = ["lumisync*"]
 
 [tool.setuptools.package-data]
-"lumisync.gui.resources" = ["*.ico", "*.svg"]
+"lumisync.gui.resources" = ["icons/*.svg", "*.ico"]
 
 [tool.setuptools.dynamic]
 version = { attr = "lumisync.__version__" }

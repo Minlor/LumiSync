@@ -13,12 +13,6 @@ from qt_material import apply_stylesheet
 from .resources.icons import IconKey, icon as app_icon
 from .widgets import NavigationShell
 from .dialogs.settings_dialog import SettingsDialog
-from .utils import (
-    apply_qt_translucent_background,
-    enable_windows_dwm_blur,
-    enable_windows_backdrop,
-    WindowsBackdropType,
-)
 from ..utils.logging import setup_logger
 
 # Import controllers (will be enhanced with signals)
@@ -68,9 +62,6 @@ class LumiSyncMainWindow(QMainWindow):
         # Restore window geometry
         self.restore_geometry()
 
-        # Optional modern effects (safe no-op on non-Windows)
-        self._apply_window_effects()
-
         logger.info("LumiSync PyQt6 GUI application initialized successfully")
 
     def setup_controller_connections(self):
@@ -109,6 +100,14 @@ class LumiSyncMainWindow(QMainWindow):
         self.nav_shell = NavigationShell(title="LumiSync", icon_only=True)
         self.setCentralWidget(self.nav_shell)
 
+        # Initialize monitor display selection from settings
+        try:
+            display_index = int(self.settings.value("sync/monitor_display", 0))
+        except Exception:
+            display_index = 0
+        self.sync_controller.set_monitor_display(display_index)
+
+
         self.nav_shell.add_page(
             key="devices",
             title="Devices",
@@ -125,57 +124,32 @@ class LumiSyncMainWindow(QMainWindow):
         )
         self.nav_shell.set_page_svg("modes", "screen.svg")
 
-        # Bottom settings cog
-        self.nav_shell.set_settings(
-            icon_name="settings.svg",
-            callback=self.show_settings,
+        # Add settings as a bottom tab
+        from .views.settings_page import SettingsPage
+        self.settings_page = SettingsPage(self.settings, self)
+        self.nav_shell.add_page(
+            key="settings",
+            title="Settings",
+            icon=app_icon(IconKey.SETTINGS),
+            widget=self.settings_page,
+            bottom=True,
         )
+        self.nav_shell.set_page_svg("settings", "settings.svg")
+
 
         logger.debug("User interface created")
 
     def show_settings(self) -> None:
         dlg = SettingsDialog(self.settings, self)
         if dlg.exec():
-            # Apply theme
-            saved_theme = self.settings.value("theme", "dark_blue.xml")
-            if saved_theme != self._current_theme:
-                self._current_theme = str(saved_theme)
-                apply_stylesheet(QApplication.instance(), theme=self._current_theme)
+            self.apply_theme()
 
-            # Re-apply effects right away after changing toggles
-            self._apply_window_effects()
-
-    def _apply_window_effects(self) -> None:
-        """Apply optional translucency / backdrop effects."""
-
-        enable_translucency = bool(self.settings.value("ui/translucent", True, type=bool))
-
-        # Override qt-material's opaque background if effects are on
-        if enable_translucency:
-            self.setStyleSheet("QMainWindow { background: transparent; }")
-        else:
-            self.setStyleSheet("") # Restore theme default
-
-        if enable_translucency:
-            try:
-                apply_qt_translucent_background(self)
-            except Exception as e:
-                logger.debug(f"Failed to enable translucent background: {e}")
-
-        # Modern Windows backdrop (Win11+) - preferred
-        enable_backdrop = bool(self.settings.value("ui/windows_backdrop", False, type=bool))
-        if enable_backdrop:
-            backdrop_type = str(self.settings.value("ui/windows_backdrop_type", "mica"))
-            desired = WindowsBackdropType.MICA if backdrop_type == "mica" else WindowsBackdropType.TABBED
-            try:
-                hwnd = int(self.winId())
-                ok = enable_windows_backdrop(hwnd, desired)
-                if not ok:
-                    # fallback to legacy blur
-                    ok = enable_windows_dwm_blur(hwnd)
-                logger.debug(f"Windows backdrop enabled: {ok} (type={backdrop_type})")
-            except Exception as e:
-                logger.debug(f"Failed to enable Windows backdrop: {e}")
+    def apply_theme(self) -> None:
+        """Apply theme from settings immediately."""
+        saved_theme = str(self.settings.value("theme", "dark_blue.xml"))
+        self._current_theme = saved_theme
+        apply_stylesheet(QApplication.instance(), theme=self._current_theme)
+        logger.info(f"Theme applied: {self._current_theme}")
 
     def setup_status_bar(self):
         """Set up the status bar."""

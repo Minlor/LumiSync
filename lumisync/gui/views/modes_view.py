@@ -5,13 +5,15 @@ This module provides the synchronization modes interface.
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QSlider, QGroupBox, QGridLayout
+    QPushButton, QSlider, QGroupBox, QGridLayout,
+    QFrame, QScrollArea, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QTimer, QSize
+from PyQt6.QtCore import Qt, QTimer, QSize, QSettings, QPropertyAnimation, QParallelAnimationGroup
 from PyQt6.QtGui import QFont
 
 from ..resources import ResourceManager
 from ..controllers.sync_controller import SyncController
+from ..widgets.led_mapping_widget import LedMappingWidget
 
 
 class ModesView(QWidget):
@@ -102,6 +104,38 @@ class ModesView(QWidget):
 
         layout.addLayout(brightness_layout)
 
+        # LED Mapping section with toggle
+        mapping_header_layout = QHBoxLayout()
+        
+        self.mapping_toggle_button = QPushButton("LED Mapping ▶")
+        self.mapping_toggle_button.setFlat(True)
+        self.mapping_toggle_button.setStyleSheet(
+            "QPushButton { text-align: left; font-weight: bold; padding: 4px; }"
+            "QPushButton:hover { background-color: rgba(128, 128, 128, 0.2); }"
+        )
+        self.mapping_toggle_button.clicked.connect(self._toggle_led_mapping)
+        mapping_header_layout.addWidget(self.mapping_toggle_button)
+        mapping_header_layout.addStretch()
+        layout.addLayout(mapping_header_layout)
+
+        # LED Mapping widget (initially hidden)
+        self.led_mapping_container = QFrame()
+        self.led_mapping_container.setMaximumHeight(0)
+        self.led_mapping_container.setVisible(False)
+        mapping_container_layout = QVBoxLayout(self.led_mapping_container)
+        mapping_container_layout.setContentsMargins(0, 8, 0, 0)
+        
+        settings = QSettings("Minlor", "LumiSync")
+        self.led_mapping_widget = LedMappingWidget(settings, sync_controller=self.controller)
+        self.led_mapping_widget.mapping_changed.connect(self._on_led_mapping_changed)
+        mapping_container_layout.addWidget(self.led_mapping_widget)
+        
+        layout.addWidget(self.led_mapping_container)
+        
+        self._mapping_expanded = False
+        self._sync_was_running = False  # Track if sync was running before opening LED mapping
+        self._sync_mode_before = None   # Track which mode was running
+
         # Start button
         self.monitor_start_button = QPushButton("Start Monitor Sync")
         self.monitor_start_button.setIcon(ResourceManager.get_icon("screen.svg"))
@@ -110,6 +144,47 @@ class ModesView(QWidget):
         layout.addWidget(self.monitor_start_button)
 
         return group
+    
+    def _toggle_led_mapping(self):
+        """Toggle the LED mapping section visibility."""
+        self._mapping_expanded = not self._mapping_expanded
+        
+        if self._mapping_expanded:
+            self.mapping_toggle_button.setText("LED Mapping ▼")
+            self.led_mapping_container.setVisible(True)
+            # Animate expansion
+            self.led_mapping_container.setMaximumHeight(400)
+            
+            # Pause any running sync while LED mapping is open
+            if self.controller.is_syncing():
+                self._sync_was_running = True
+                self._sync_mode_before = self.controller.get_current_sync_mode()
+                self.controller.stop_sync()
+            
+            # Auto-start test mode when expanded
+            self.led_mapping_widget.start_test_mode_if_not_active()
+        else:
+            self.mapping_toggle_button.setText("LED Mapping ▶")
+            self.led_mapping_container.setMaximumHeight(0)
+            self.led_mapping_container.setVisible(False)
+            
+            # Stop test mode when collapsed
+            self.led_mapping_widget.stop_test_mode_if_active()
+            
+            # Resume sync if it was running before
+            if self._sync_was_running:
+                self._sync_was_running = False
+                if self._sync_mode_before == "monitor":
+                    self.controller.start_monitor_sync()
+                elif self._sync_mode_before == "music":
+                    self.controller.start_music_sync()
+                self._sync_mode_before = None
+    
+    def _on_led_mapping_changed(self, mapping):
+        """Handle LED mapping changes."""
+        # The controller will pick up the new mapping from settings
+        # when it next reads the configuration
+        pass
 
     def create_music_sync_group(self):
         """Create the music sync control group."""

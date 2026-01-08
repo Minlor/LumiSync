@@ -16,18 +16,53 @@ class ScreenGrab:
     different platforms and compositors (the latter for Unix).
     """
 
-    def __init__(self) -> None:
+    # Track the current dxcam instance so we can release it when switching displays
+    _dxcam_instance = None
+    _dxcam_output_idx = None
+
+    def __init__(self, *, display_index: int = 0) -> None:
+        self.display_index = int(display_index)
         if GENERAL.platform == "Windows":
             import dxcam
 
-            self.camera = dxcam.create()
+            # dxcam caches camera instances globally. We must delete the old
+            # instance before creating one for a different output.
+            if (
+                ScreenGrab._dxcam_instance is not None
+                and ScreenGrab._dxcam_output_idx != self.display_index
+            ):
+                try:
+                    del ScreenGrab._dxcam_instance
+                except Exception:
+                    pass
+                ScreenGrab._dxcam_instance = None
+                ScreenGrab._dxcam_output_idx = None
+
+            if ScreenGrab._dxcam_instance is None:
+                try:
+                    self.camera = dxcam.create(output_idx=self.display_index)
+                except TypeError:
+                    try:
+                        self.camera = dxcam.create(device_idx=0, output_idx=self.display_index)
+                    except TypeError:
+                        self.camera = dxcam.create()
+                ScreenGrab._dxcam_instance = self.camera
+                ScreenGrab._dxcam_output_idx = self.display_index
+            else:
+                self.camera = ScreenGrab._dxcam_instance
+
             self.capture_method = self.camera.grab
         else:
             if GENERAL.compositor == "x11":
                 import mss
 
                 self.camera = mss.mss()
-                self.capture_method = partial(self.camera.grab, self.camera.monitors[0])
+
+                # mss.monitors[0] is the virtual bounding box; [1..n] are real monitors
+                monitor_idx = self.display_index + 1
+                if monitor_idx < 1 or monitor_idx >= len(self.camera.monitors):
+                    monitor_idx = 1 if len(self.camera.monitors) > 1 else 0
+                self.capture_method = partial(self.camera.grab, self.camera.monitors[monitor_idx])
             else:
                 # TODO: Implement Wayland support
                 raise NotImplementedError("Wayland support is not yet implemented in ScreenGrab.")
