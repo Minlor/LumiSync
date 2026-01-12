@@ -6,7 +6,7 @@ This module provides the device management interface.
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QListWidget, QGroupBox, QGridLayout,
-    QMessageBox, QSizePolicy
+    QMessageBox, QSizePolicy, QColorDialog
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont
@@ -79,6 +79,13 @@ class DevicesView(QWidget):
         self.turn_off_button.setEnabled(False)
         self.turn_off_button.clicked.connect(lambda: self.controller.turn_on_off(False))
         button_layout.addWidget(self.turn_off_button)
+
+        self.set_color_button = QPushButton("Set Color")
+        self.set_color_button.setIcon(ResourceManager.get_icon("lightbulb-on.svg"))
+        self.set_color_button.setIconSize(QSize(20, 20))
+        self.set_color_button.setEnabled(False)
+        self.set_color_button.clicked.connect(self.on_set_color_clicked)
+        button_layout.addWidget(self.set_color_button)
 
         button_layout.addStretch()
         layout.addLayout(button_layout)
@@ -169,6 +176,12 @@ class DevicesView(QWidget):
         if reply == QMessageBox.StandardButton.Yes:
             self.controller.remove_device(current_row)
 
+    def on_set_color_clicked(self):
+        """Handle set color button click."""
+        color = QColorDialog.getColor()
+        if color.isValid():
+            self.controller.set_device_color(color.red(), color.green(), color.blue())
+
     def on_device_selection_changed(self, current, previous):
         """Handle device list selection change."""
         if current:
@@ -179,10 +192,12 @@ class DevicesView(QWidget):
             self.remove_button.setEnabled(True)
             self.turn_on_button.setEnabled(True)
             self.turn_off_button.setEnabled(True)
+            self.set_color_button.setEnabled(True)
         else:
             self.remove_button.setEnabled(False)
             self.turn_on_button.setEnabled(False)
             self.turn_off_button.setEnabled(False)
+            self.set_color_button.setEnabled(False)
 
     def on_devices_discovered(self, devices):
         """Handle devices discovered signal."""

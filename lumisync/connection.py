@@ -62,7 +62,7 @@ def connect() -> Tuple[socket.socket, List[Dict[str, Any]]]:
     server.bind(("", CONNECTION.default.listen_port))
     server.settimeout(CONNECTION.default.timeout)
     server.sendto(
-        b'{"msg":{"cmd":"scan","data":{"account_topic":"GA/123456789"}}}',
+        b'{"msg":{"cmd":"scan","data":{"account_topic":"reserve"}}}',
         (CONNECTION.default.multicast, CONNECTION.default.port),
     )
     return server, parse(listen(server))
@@ -94,4 +94,23 @@ def switch_razer(
         server,
         device,
         {"msg": {"cmd": "razer", "data": {"pt": "uwABsQEK" if on else "uwABsgEJ"}}},
+    )
+
+
+def set_color(
+    server: socket.socket, device: Dict[str, Any], r: int, g: int, b: int
+) -> None:
+    """Sets the device color."""
+    send(
+        server,
+        device,
+        {
+            "msg": {
+                "cmd": "colorwc",
+                "data": {
+                    "color": {"r": r, "g": g, "b": b},
+                    "colorTemInKelvin": 0
+                },
+            }
+        },
     )
