@@ -314,8 +314,6 @@ class SyncController(QObject):
         Returns:
             Selected device dictionary or None
         """
-        if self.selected_device is None:
-            self._init_device()
         return self.selected_device
 
     def start_monitor_sync(self):

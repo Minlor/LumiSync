@@ -32,6 +32,11 @@ class DevicesView(QWidget):
         # Initial update
         self.update_device_list()
 
+        # Update details if a device is already selected
+        device = self.controller.get_selected_device()
+        if device:
+            self.update_device_details(device)
+
     def setup_ui(self):
         """Set up the user interface."""
         # Main layout

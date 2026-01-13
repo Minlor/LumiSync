@@ -513,14 +513,13 @@ class LedMappingWidget(QWidget):
             if not self.sync_controller:
                 return
             
-            self.sync_controller._ensure_server()
             device = self.sync_controller.get_selected_device()
             if not device:
-                self.sync_controller._init_device()
-                device = self.sync_controller.get_selected_device()
-            
+                return
+
+            self.sync_controller._ensure_server()
             server = self.sync_controller.server
-            if device and server:
+            if server:
                 connection.switch_razer(server, device, True)
                 self._razer_mode_enabled = True
         except Exception:
@@ -562,18 +561,15 @@ class LedMappingWidget(QWidget):
             if not self.sync_controller:
                 return
                 
-            # Ensure server is initialized
-            self.sync_controller._ensure_server()
-            
             # Make sure we have a device
             device = self.sync_controller.get_selected_device()
             if not device:
-                # Try to re-initialize device
-                self.sync_controller._init_device()
-                device = self.sync_controller.get_selected_device()
-            
+                return
+
+            # Ensure server is initialized
+            self.sync_controller._ensure_server()
             server = self.sync_controller.server
-            if device and server:
+            if server:
                 # Only enable razer mode if not already enabled (prevents white flash)
                 if not skip_razer_enable and not self._razer_mode_enabled:
                     connection.switch_razer(server, device, True)
