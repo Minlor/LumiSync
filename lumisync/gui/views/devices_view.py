@@ -245,6 +245,8 @@ class DevicesView(QWidget):
 
     def update_device_list(self):
         """Update the device list widget."""
+        # Block signals to prevent triggering select_device during list rebuild
+        self.device_list.blockSignals(True)
         self.device_list.clear()
 
         for device in self.controller.devices:
@@ -256,6 +258,14 @@ class DevicesView(QWidget):
         # Select the current device if any
         if self.controller.devices and 0 <= self.controller.selected_device_index < len(self.controller.devices):
             self.device_list.setCurrentRow(self.controller.selected_device_index)
+            # Enable controls for the selected device
+            self.remove_button.setEnabled(True)
+            self.turn_on_button.setEnabled(True)
+            self.turn_off_button.setEnabled(True)
+            self.set_color_button.setEnabled(True)
+            self.brightness_slider.setEnabled(True)
+
+        self.device_list.blockSignals(False)
 
     def update_device_details(self, device):
         """Update the device details panel.

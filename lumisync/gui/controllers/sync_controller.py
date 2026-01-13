@@ -259,21 +259,7 @@ class SyncController(QObject):
 
         # Monitor display selection (0-based)
         self.monitor_display_index = 0
-
-        # Initialize with available device if any
-        self._init_device()
-
-    def _init_device(self):
-        """Initialize with available device if any."""
-        try:
-            settings = devices.get_data()
-            if settings["devices"] and len(settings["devices"]) > 0:
-                self.selected_device = settings["devices"][settings["selectedDevice"]]
-                self.status_updated.emit(
-                    f"Selected device: {self.selected_device.get('model', 'Unknown')}"
-                )
-        except Exception as e:
-            self.status_updated.emit(f"Error initializing device: {str(e)}")
+        # Device is set via set_device() signal from DeviceController
 
     def set_monitor_brightness(self, value: float):
         """Set brightness for monitor sync mode.
