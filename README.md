@@ -25,7 +25,8 @@
 |---------|-------------|
 | 🖥️ **Monitor Sync** | Sample colors from screen regions and sync to your LED strip in real-time |
 | 🎵 **Music Sync** | React to audio with dynamic color patterns |
-| 🎨 **Modern GUI** | PyQt6 interface with Windows 11-style navigation and theme support |
+| 🎨 **Color Control** | Set custom colors and brightness directly from the app |
+| 🖌️ **Modern GUI** | PyQt6 interface with Windows 11-style navigation and theme support |
 | 🔍 **Auto-Discovery** | Automatically finds Govee devices on your LAN via UDP broadcast |
 | ⚡ **Low Latency** | Direct LAN communication, no cloud required |
 
@@ -71,7 +72,8 @@ Select option `3` to launch the GUI, or choose `1` (Monitor Sync) / `2` (Music S
 
 1. **Discover devices** - Click "Discover Devices" in the Devices tab
 2. **Select your LED strip** - Click on the discovered device
-3. **Start syncing** - Go to Sync Modes and click "Start Monitor Sync" or "Start Music Sync"
+3. **Control your lights** - Use "Set Color" to pick a color, adjust brightness with the slider, or toggle power on/off
+4. **Start syncing** - Go to Sync Modes and click "Start Monitor Sync" or "Start Music Sync"
 
 ### Configuration
 
@@ -117,7 +119,7 @@ python tests/test_color.py
 
 - [ ] Multi-device support
 - [ ] Wayland & macOS screen capture
-- [ ] Basic color control mode
+- [x] Basic color control mode
 - [ ] Custom sync algorithms
 - [ ] Plugin system for community extensions
 
