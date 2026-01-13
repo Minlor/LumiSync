@@ -114,3 +114,27 @@ def set_color(
             }
         },
     )
+
+
+def set_brightness(
+    server: socket.socket, device: Dict[str, Any], brightness: int
+) -> None:
+    """Sets the device brightness.
+
+    Args:
+        server: Socket server
+        device: Device dictionary
+        brightness: Brightness value (0-100)
+    """
+    send(
+        server,
+        device,
+        {
+            "msg": {
+                "cmd": "brightness",
+                "data": {
+                    "value": max(0, min(100, brightness))
+                },
+            }
+        },
+    )
