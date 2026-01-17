@@ -24,7 +24,7 @@ if GENERAL.platform != "Windows":
 # and only use the settings.json on restart?
 CONNECTION = SimpleNamespace(
     default=SimpleNamespace(
-        multicast="255.255.255.255",
+        multicast="239.255.255.250",
         port=4001,
         listen_port=4002,
         timeout=1,

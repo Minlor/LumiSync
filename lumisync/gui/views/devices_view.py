@@ -6,7 +6,7 @@ This module provides the device management interface.
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QListWidget, QGroupBox, QGridLayout,
-    QMessageBox, QSizePolicy
+    QMessageBox, QSizePolicy, QColorDialog, QSlider
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont
@@ -31,6 +31,11 @@ class DevicesView(QWidget):
 
         # Initial update
         self.update_device_list()
+
+        # Update details if a device is already selected
+        device = self.controller.get_selected_device()
+        if device:
+            self.update_device_details(device)
 
     def setup_ui(self):
         """Set up the user interface."""
@@ -80,8 +85,34 @@ class DevicesView(QWidget):
         self.turn_off_button.clicked.connect(lambda: self.controller.turn_on_off(False))
         button_layout.addWidget(self.turn_off_button)
 
+        self.set_color_button = QPushButton("Set Color")
+        self.set_color_button.setIcon(ResourceManager.get_icon("lightbulb-on.svg"))
+        self.set_color_button.setIconSize(QSize(20, 20))
+        self.set_color_button.setEnabled(False)
+        self.set_color_button.clicked.connect(self.on_set_color_clicked)
+        button_layout.addWidget(self.set_color_button)
+
         button_layout.addStretch()
         layout.addLayout(button_layout)
+
+        # Device controls (brightness)
+        controls_group = QGroupBox("Device Controls")
+        controls_layout = QHBoxLayout(controls_group)
+
+        controls_layout.addWidget(QLabel("Brightness:"))
+
+        self.brightness_slider = QSlider(Qt.Orientation.Horizontal)
+        self.brightness_slider.setRange(0, 100)
+        self.brightness_slider.setValue(100)
+        self.brightness_slider.setEnabled(False)
+        self.brightness_slider.valueChanged.connect(self.on_brightness_changed)
+        controls_layout.addWidget(self.brightness_slider)
+
+        self.brightness_label = QLabel("100%")
+        self.brightness_label.setMinimumWidth(40)
+        controls_layout.addWidget(self.brightness_label)
+
+        layout.addWidget(controls_group)
 
         # Content area with device list and details
         content_layout = QHBoxLayout()
@@ -169,20 +200,35 @@ class DevicesView(QWidget):
         if reply == QMessageBox.StandardButton.Yes:
             self.controller.remove_device(current_row)
 
+    def on_set_color_clicked(self):
+        """Handle set color button click."""
+        color = QColorDialog.getColor()
+        if color.isValid():
+            self.controller.set_device_color(color.red(), color.green(), color.blue())
+
+    def on_brightness_changed(self, value):
+        """Handle brightness slider change."""
+        self.brightness_label.setText(f"{value}%")
+        self.controller.set_device_brightness(value)
+
     def on_device_selection_changed(self, current, previous):
         """Handle device list selection change."""
         if current:
             index = self.device_list.row(current)
             self.controller.select_device(index)
 
-            # Enable/disable buttons
+            # Enable/disable buttons and controls
             self.remove_button.setEnabled(True)
             self.turn_on_button.setEnabled(True)
             self.turn_off_button.setEnabled(True)
+            self.set_color_button.setEnabled(True)
+            self.brightness_slider.setEnabled(True)
         else:
             self.remove_button.setEnabled(False)
             self.turn_on_button.setEnabled(False)
             self.turn_off_button.setEnabled(False)
+            self.set_color_button.setEnabled(False)
+            self.brightness_slider.setEnabled(False)
 
     def on_devices_discovered(self, devices):
         """Handle devices discovered signal."""
@@ -204,6 +250,8 @@ class DevicesView(QWidget):
 
     def update_device_list(self):
         """Update the device list widget."""
+        # Block signals to prevent triggering select_device during list rebuild
+        self.device_list.blockSignals(True)
         self.device_list.clear()
 
         for device in self.controller.devices:
@@ -215,6 +263,14 @@ class DevicesView(QWidget):
         # Select the current device if any
         if self.controller.devices and 0 <= self.controller.selected_device_index < len(self.controller.devices):
             self.device_list.setCurrentRow(self.controller.selected_device_index)
+            # Enable controls for the selected device
+            self.remove_button.setEnabled(True)
+            self.turn_on_button.setEnabled(True)
+            self.turn_off_button.setEnabled(True)
+            self.set_color_button.setEnabled(True)
+            self.brightness_slider.setEnabled(True)
+
+        self.device_list.blockSignals(False)
 
     def update_device_details(self, device):
         """Update the device details panel.

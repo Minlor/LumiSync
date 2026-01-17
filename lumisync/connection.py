@@ -53,7 +53,11 @@ def parse(messages: List[str]) -> List[Dict[str, Any]]:
 
 
 def connect() -> Tuple[socket.socket, List[Dict[str, Any]]]:
-    """Creates a server listening for devices."""
+    """Creates a server listening for devices.
+
+    Tries both multicast addresses (239.255.255.250 and 255.255.255.255)
+    for improved compatibility across different network configurations.
+    """
     print(f"{Fore.LIGHTGREEN_EX}Searching for devices...")
     server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -61,10 +65,18 @@ def connect() -> Tuple[socket.socket, List[Dict[str, Any]]]:
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(("", CONNECTION.default.listen_port))
     server.settimeout(CONNECTION.default.timeout)
-    server.sendto(
-        b'{"msg":{"cmd":"scan","data":{"account_topic":"GA/123456789"}}}',
-        (CONNECTION.default.multicast, CONNECTION.default.port),
-    )
+
+    # Try both multicast addresses for better compatibility
+    multicast_addresses = ["239.255.255.250", "255.255.255.255"]
+    scan_message = b'{"msg":{"cmd":"scan","data":{"account_topic":"reserve"}}}'
+
+    for addr in multicast_addresses:
+        try:
+            server.sendto(scan_message, (addr, CONNECTION.default.port))
+            print(f"{Fore.LIGHTGREEN_EX}Sent discovery to {addr}")
+        except Exception as e:
+            print(f"{Fore.YELLOW}Failed to send to {addr}: {e}")
+
     return server, parse(listen(server))
 
 
@@ -94,4 +106,47 @@ def switch_razer(
         server,
         device,
         {"msg": {"cmd": "razer", "data": {"pt": "uwABsQEK" if on else "uwABsgEJ"}}},
+    )
+
+
+def set_color(
+    server: socket.socket, device: Dict[str, Any], r: int, g: int, b: int
+) -> None:
+    """Sets the device color."""
+    send(
+        server,
+        device,
+        {
+            "msg": {
+                "cmd": "colorwc",
+                "data": {
+                    "color": {"r": r, "g": g, "b": b},
+                    "colorTemInKelvin": 0
+                },
+            }
+        },
+    )
+
+
+def set_brightness(
+    server: socket.socket, device: Dict[str, Any], brightness: int
+) -> None:
+    """Sets the device brightness.
+
+    Args:
+        server: Socket server
+        device: Device dictionary
+        brightness: Brightness value (0-100)
+    """
+    send(
+        server,
+        device,
+        {
+            "msg": {
+                "cmd": "brightness",
+                "data": {
+                    "value": max(0, min(100, brightness))
+                },
+            }
+        },
     )

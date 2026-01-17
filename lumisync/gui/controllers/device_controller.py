@@ -342,6 +342,44 @@ class DeviceController(QObject):
         except Exception as e:
             self.status_updated.emit(f"Error: {str(e)}")
 
+    def set_device_color(self, r: int, g: int, b: int):
+        """Set the color of the selected device.
+
+        Args:
+            r: Red component (0-255)
+            g: Green component (0-255)
+            b: Blue component (0-255)
+        """
+        try:
+            device = self.get_selected_device()
+            if not device:
+                self.status_updated.emit("No device selected")
+                return
+
+            self._ensure_server()
+            connection.set_color(self.server, device, r, g, b)
+            self.status_updated.emit(f"Set color to ({r}, {g}, {b})")
+        except Exception as e:
+            self.status_updated.emit(f"Error: {str(e)}")
+
+    def set_device_brightness(self, brightness: int):
+        """Set the brightness of the selected device.
+
+        Args:
+            brightness: Brightness value (0-100)
+        """
+        try:
+            device = self.get_selected_device()
+            if not device:
+                self.status_updated.emit("No device selected")
+                return
+
+            self._ensure_server()
+            connection.set_brightness(self.server, device, brightness)
+            self.status_updated.emit(f"Set brightness to {brightness}%")
+        except Exception as e:
+            self.status_updated.emit(f"Error: {str(e)}")
+
     def _ensure_server(self):
         """Ensure server socket exists."""
         if self.server is None:

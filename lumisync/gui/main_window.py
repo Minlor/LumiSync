@@ -82,6 +82,11 @@ class LumiSyncMainWindow(QMainWindow):
             self.show_status
         )
 
+        # Sync current device state (signal was emitted before connection was made)
+        device = self.device_controller.get_selected_device()
+        if device:
+            self.sync_controller.set_device(device)
+
         logger.debug("Controller connections established")
 
     def setup_ui(self):

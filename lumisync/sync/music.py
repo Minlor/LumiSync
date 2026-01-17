@@ -1,27 +1,43 @@
 import socket
+import sys
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
+
+# Patch for soundcard compatibility with NumPy 2.0+
+# soundcard uses numpy.fromstring binary mode which was removed in NumPy 2.0
+if np.lib.NumpyVersion(np.__version__) >= '2.0.0':
+    np.fromstring = np.frombuffer
+
 import soundcard as sc
 
 from .. import connection, utils
 from ..config.options import GENERAL, AUDIO, COLORS, BRIGHTNESS
 
 def start(server: socket.socket, device: Dict[str, Any]) -> None:
-    connection.switch_razer(server, device, True)
-    COLORS.current = [(0, 0, 0)] * GENERAL.nled
-    while True:
-        with sc.get_microphone(
-            id=str(sc.default_speaker().name), include_loopback=True
-        ).recorder(samplerate=AUDIO.sample_rate) as mic:
+    # Initialize COM on Windows (required for soundcard library in threads)
+    if sys.platform == "win32":
+        import pythoncom
+        pythoncom.CoInitialize()
 
-            # NOTE: Try and except due to a soundcard error when no audio is playing
-            try:
-                data = mic.record(numframes=int(AUDIO.duration * AUDIO.sample_rate))
-            except TypeError:
-                data = None
-            amp = get_amplitude(data)
-            wave_color(server, device, amp)
+    try:
+        connection.switch_razer(server, device, True)
+        COLORS.current = [(0, 0, 0)] * GENERAL.nled
+        while True:
+            with sc.get_microphone(
+                id=str(sc.default_speaker().name), include_loopback=True
+            ).recorder(samplerate=AUDIO.sample_rate) as mic:
+
+                # NOTE: Try and except due to a soundcard error when no audio is playing
+                try:
+                    data = mic.record(numframes=int(AUDIO.duration * AUDIO.sample_rate))
+                except TypeError:
+                    data = None
+                amp = get_amplitude(data)
+                wave_color(server, device, amp)
+    finally:
+        if sys.platform == "win32":
+            pythoncom.CoUninitialize()
 
 
 def get_amplitude(mic_data=None) -> float:
