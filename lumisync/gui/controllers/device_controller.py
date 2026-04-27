@@ -380,6 +380,50 @@ class DeviceController(QObject):
         except Exception as e:
             self.status_updated.emit(f"Error: {str(e)}")
 
+    # --- Per-index variants (used by multi-device card UI) ------------------
+    # These act on a specific device without changing the "primary" selection.
+
+    def _device_at(self, index: int) -> Optional[Dict[str, Any]]:
+        if 0 <= index < len(self.devices):
+            return self.devices[index]
+        return None
+
+    def turn_on_off_at(self, index: int, on: bool = True) -> None:
+        device = self._device_at(index)
+        if not device:
+            return
+        try:
+            self._ensure_server()
+            connection.switch(self.server, device, on)
+            self.status_updated.emit(
+                f"{device.get('model', 'Device')} turned {'on' if on else 'off'}"
+            )
+        except Exception as e:
+            self.status_updated.emit(f"Error: {str(e)}")
+
+    def set_color_at(self, index: int, r: int, g: int, b: int) -> None:
+        device = self._device_at(index)
+        if not device:
+            return
+        try:
+            self._ensure_server()
+            connection.set_color(self.server, device, r, g, b)
+            self.status_updated.emit(
+                f"{device.get('model', 'Device')}: color ({r}, {g}, {b})"
+            )
+        except Exception as e:
+            self.status_updated.emit(f"Error: {str(e)}")
+
+    def set_brightness_at(self, index: int, brightness: int) -> None:
+        device = self._device_at(index)
+        if not device:
+            return
+        try:
+            self._ensure_server()
+            connection.set_brightness(self.server, device, brightness)
+        except Exception as e:
+            self.status_updated.emit(f"Error: {str(e)}")
+
     def _ensure_server(self):
         """Ensure server socket exists."""
         if self.server is None:

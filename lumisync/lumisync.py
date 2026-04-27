@@ -1,3 +1,11 @@
+"""LumiSync entry point.
+
+Default behavior (no args): launch the GUI.
+Use `--cli` for the legacy interactive terminal menu.
+Direct subcommands (`--monitor`, `--music`, `--test`) bypass the menu.
+"""
+
+import argparse
 import os
 import subprocess
 import sys
@@ -9,51 +17,111 @@ from colorama import Fore
 from . import connection
 from .utils.logging import setup_logger
 
-# Set up logger for main application
 logger = setup_logger("lumisync")
 
-# Import GUI module
-try:
-    from .gui import run_gui
 
-    GUI_AVAILABLE = True
-    logger.info("GUI module loaded successfully")
-except ImportError:
-    GUI_AVAILABLE = False
-    logger.error("Failed to load GUI module", exc_info=True)
-
-
-def main() -> None:
-    """The main function running the program."""
-    logger.info("Starting LumiSync application")
+def _launch_gui() -> int:
+    """Import and run the GUI. Imported lazily so CLI mode skips GUI deps."""
     try:
-        server, devices = connection.connect()
-        logger.info(f"Found {len(devices)} device(s)")
+        from .gui import run_gui
+    except ImportError as e:
+        logger.error("Failed to load GUI module", exc_info=True)
+        print(f"{Fore.RED}GUI module failed to load: {e}")
+        print("Run with --cli to use the terminal menu instead.")
+        return 1
+    run_gui()
+    return 0
+
+
+def _connect_for_cli():
+    """Connect and return (server, devices) for CLI sync paths."""
+    server, devices = connection.connect()
+    logger.info(f"Found {len(devices)} device(s)")
+    return server, devices
+
+
+def _start_sync(mode: str) -> int:
+    """Start monitor or music sync in a thread; block on Enter."""
+    server = None
+    try:
+        server, devices = _connect_for_cli()
+        if not devices:
+            print(f"{Fore.RED}No devices found.")
+            return 1
+
+        if mode == "monitor":
+            from .sync import monitor as sync
+        else:
+            from .sync import music as sync
+
+        thread = Thread(
+            daemon=True,
+            target=sync.start,
+            name="sync",
+            kwargs={"server": server, "device": devices[0]},
+        )
+        thread.start()
+        logger.info(f"Started {mode} sync")
+        input(f"{Fore.GREEN}{mode.capitalize()} sync running. Press Enter to exit...")
+        return 0
+    except Exception as e:
+        logger.critical(f"Sync error: {e}", exc_info=True)
+        return 1
+    finally:
+        if server is not None:
+            try:
+                server.close()
+            except Exception:
+                pass
+
+
+def _run_tests() -> int:
+    """List tests and run the chosen one."""
+    files = list(enumerate(os.listdir("tests"), 1))
+    print(
+        f"{Fore.LIGHTYELLOW_EX}Choose test to run:\n{Fore.YELLOW}"
+        + "\n".join([f"{i}) {x}" for i, x in files])
+    )
+    test = input("Test: ")
+    try:
+        choice = int(test)
+    except ValueError:
+        print(f"{Fore.RED}Invalid selection")
+        return 1
+    for i, x in files:
+        if i == choice:
+            try:
+                subprocess.run(["python", f"tests/{x}"], check=True)
+                return 0
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Test {x} failed (exit {e.returncode})", exc_info=True)
+                return e.returncode
+    print(f"{Fore.RED}No test with that number")
+    return 1
+
+
+def _run_cli_menu() -> int:
+    """The legacy interactive terminal menu (--cli)."""
+    server = None
+    try:
+        server, devices = _connect_for_cli()
 
         colorama.init(True)
         print(Fore.MAGENTA + f"Welcome to {Fore.LIGHTBLUE_EX}LumiSync!")
         print(Fore.YELLOW + "Please select a option:")
-        print(
-            Fore.GREEN + "1) Monitor Sync"
-            "\n2) Music Sync"
-            "\n3) Launch GUI"
-            "\n9) Run test"
-        )
+        print(Fore.GREEN + "1) Monitor Sync\n2) Music Sync\n3) Launch GUI\n9) Run test")
 
         mode = input("")
         logger.info(f"User selected mode: {mode}")
         match mode:
             case "1" | "2":
+                if not devices:
+                    print(f"{Fore.RED}No devices found.")
+                    return 1
                 if mode == "1":
                     from .sync import monitor as sync
-
-                    logger.info("Selected Monitor Sync mode")
                 else:
                     from .sync import music as sync
-
-                    logger.info("Selected Music Sync mode")
-
-                # NOTE: Right now for testing and development this is limited to 1 device.
                 thread = Thread(
                     daemon=True,
                     target=sync.start,
@@ -61,49 +129,62 @@ def main() -> None:
                     kwargs={"server": server, "device": devices[0]},
                 )
                 thread.start()
-                logger.info(f"Started {mode} sync thread")
-
-                # TODO: Remove after development is finished
                 input("Press Enter to exit...")
-                logger.info("User terminated sync")
+                return 0
             case "3":
-                print(Fore.GREEN + "Launching GUI...")
-                logger.info("Launching GUI application")
-                run_gui()
-
+                # Close discovery server before handing off to the GUI
+                if server is not None:
+                    server.close()
+                    server = None
+                return _launch_gui()
             case "9":
-                # HACK: For now close server to run tests
-                server.close()
-                logger.info("Closed server for tests")
-
-                files = list(enumerate(os.listdir("tests"), 1))
-                print(
-                    f"{Fore.LIGHTYELLOW_EX}Chose test to run:\n{Fore.YELLOW}"
-                    + "\n".join([f"{i}) {x}" for i, x in files])
-                )
-                # TODO: Tests sometimes appear in different order -> Keep the same
-                # TODO: Implement testing framework like pytest/unittest for the tests
-                test = input("Test: ")
-                logger.info(f"Selected test: {test}")
-                for i, x in files:
-                    if i == int(test):
-                        logger.info(f"Running test: {x}")
-                        try:
-                            subprocess.run(["python", f"tests/{x}"], check=True)
-                            logger.info(f"Test {x} completed successfully")
-                        except subprocess.CalledProcessError as e:
-                            logger.error(
-                                f"Test {x} failed with exit code {e.returncode}",
-                                exc_info=True,
-                            )
+                if server is not None:
+                    server.close()
+                    server = None
+                return _run_tests()
             case _:
-                logger.warning(f"Invalid option entered: {mode}")
                 input(Fore.RED + "Invalid option!\nPress Enter to exit...")
-                sys.exit()
+                return 1
     except Exception as e:
-        logger.critical(f"Critical error in main function: {str(e)}", exc_info=True)
+        logger.critical(f"Critical error in CLI: {e}", exc_info=True)
+        return 1
     finally:
-        if "server" in locals():
-            server.close()
-            logger.info("Server closed")
-        logger.info("Application terminated")
+        if server is not None:
+            try:
+                server.close()
+            except Exception:
+                pass
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="lumisync",
+        description="Sync Govee lights with your screen and audio. Default: launch GUI.",
+    )
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--cli", "-c", action="store_true", help="Open the interactive terminal menu instead of the GUI.")
+    g.add_argument("--monitor", action="store_true", help="Start monitor sync directly (headless).")
+    g.add_argument("--music", action="store_true", help="Start music sync directly (headless).")
+    g.add_argument("--test", action="store_true", help="Run the test selector.")
+    return p
+
+
+def main() -> None:
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    if args.cli:
+        sys.exit(_run_cli_menu())
+    if args.monitor:
+        sys.exit(_start_sync("monitor"))
+    if args.music:
+        sys.exit(_start_sync("music"))
+    if args.test:
+        sys.exit(_run_tests())
+
+    # Default: GUI. No discovery here — the GUI handles its own.
+    sys.exit(_launch_gui())
+
+
+if __name__ == "__main__":
+    main()

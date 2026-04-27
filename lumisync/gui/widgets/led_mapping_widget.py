@@ -21,6 +21,8 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
 )
 
+from ..theme import qcolor
+
 if TYPE_CHECKING:
     from ..controllers.sync_controller import SyncController
 
@@ -95,7 +97,11 @@ class ScreenRegionPreview(QFrame):
         self.setMinimumSize(280, 180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setFrameShape(QFrame.Shape.Box)
-        self.setStyleSheet("background-color: #1a1a2e; border: 2px solid #4a4a6a; border-radius: 4px;")
+        self.setStyleSheet(
+            f"background-color: {qcolor('surface').name()};"
+            f"border: 1px solid {qcolor('border').name()};"
+            f"border-radius: 8px;"
+        )
 
         self._led_mapping: List[Tuple[int, int]] = list(DEFAULT_LED_MAPPING)
         self._hover_region: Optional[Tuple[int, int]] = None
@@ -251,22 +257,28 @@ class ScreenRegionPreview(QFrame):
                     else:
                         border_color = fill_color.darker(150)
                 else:
-                    # Non-test mode colors
+                    # Non-test mode colors — use theme accent for active states
+                    accent = qcolor("accent")
                     if is_drag_source:
-                        fill_color = QColor(100, 80, 40, 200)
-                        border_color = QColor(255, 200, 100)
+                        fc = QColor(accent); fc.setAlpha(110)
+                        fill_color = fc
+                        border_color = qcolor("accent_bright")
                     elif is_drag_target:
-                        fill_color = QColor(60, 120, 60, 200)
-                        border_color = QColor(100, 255, 100)
+                        s = qcolor("success"); fc = QColor(s); fc.setAlpha(140)
+                        fill_color = fc
+                        border_color = qcolor("success")
                     elif self._hover_region == region:
-                        fill_color = QColor(80, 80, 120, 180)
-                        border_color = QColor(150, 150, 200)
+                        fc = QColor(accent); fc.setAlpha(60)
+                        fill_color = fc
+                        border_color = qcolor("accent_bright")
                     elif led_index is not None:
-                        fill_color = QColor(60, 100, 60, 150)
-                        border_color = QColor(100, 180, 100)
+                        fc = QColor(accent); fc.setAlpha(40)
+                        fill_color = fc
+                        border_color = qcolor("border_strong")
                     else:
-                        fill_color = QColor(40, 40, 60, 100)
-                        border_color = QColor(80, 80, 100)
+                        fc = qcolor("surface_alt"); fc = QColor(fc); fc.setAlpha(160)
+                        fill_color = fc
+                        border_color = qcolor("border")
 
                 painter.setPen(QPen(border_color, 3 if is_drag_source or is_drag_target else 2))
                 painter.setBrush(QBrush(fill_color))
@@ -290,7 +302,7 @@ class ScreenRegionPreview(QFrame):
             self._get_region_rect(1, 2).right() - self._get_region_rect(1, 1).left(),
             self._get_region_rect(1, 1).height()
         )
-        painter.setPen(QColor(100, 100, 140))
+        painter.setPen(qcolor("text_dim"))
         font = QFont()
         font.setPointSize(11)
         painter.setFont(font)
@@ -352,7 +364,7 @@ class LedMappingWidget(QWidget):
             "Drag regions to swap LED positions. Colors show on your LED strip."
         )
         instructions.setWordWrap(True)
-        instructions.setStyleSheet("color: #aaa; font-size: 11px;")
+        instructions.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
         layout.addWidget(instructions)
 
         # Screen region preview (main interaction area)
@@ -361,7 +373,9 @@ class LedMappingWidget(QWidget):
 
         # Current status info
         self.selection_label = QLabel("Drag a region to swap LED positions")
-        self.selection_label.setStyleSheet("color: #888; font-style: italic;")
+        self.selection_label.setStyleSheet(
+            f"color: {qcolor('text_disabled').name()}; font-style: italic;"
+        )
         layout.addWidget(self.selection_label)
 
         # Buttons

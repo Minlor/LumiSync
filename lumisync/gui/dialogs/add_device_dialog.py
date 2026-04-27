@@ -150,13 +150,11 @@ class AddDeviceDialog(QDialog):
         self.accept()
 
     def show_error(self, message: str):
-        """Show error message in status label.
-
-        Args:
-            message: Error message to display
-        """
-        self.status_label.setText(f"❌ {message}")
-        self.status_label.setStyleSheet("color: #E74C3C;")  # Red color
+        """Show error message in status label."""
+        self.status_label.setText(f"⚠ {message}")
+        self.status_label.setProperty("state", "error")
+        self.status_label.style().unpolish(self.status_label)
+        self.status_label.style().polish(self.status_label)
 
     def keyPressEvent(self, event):
         """Handle key press events.

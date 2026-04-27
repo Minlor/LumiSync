@@ -1,294 +1,302 @@
-"""
-Devices view for the LumiSync GUI.
-This module provides the device management interface.
-"""
+"""Devices view — multi-device card grid."""
 
+from __future__ import annotations
+
+from typing import Set
+
+from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QListWidget, QGroupBox, QGridLayout,
-    QMessageBox, QSizePolicy, QColorDialog, QSlider
+    QColorDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QFont
 
-from ..resources import ResourceManager
 from ..controllers.device_controller import DeviceController
 from ..dialogs.add_device_dialog import AddDeviceDialog
+from ..theme import qcolor
+from ..utils.animations import animate_height
+from ..utils.flow_layout import FlowLayout
+from ..widgets.device_card import DeviceCard
 
 
 class DevicesView(QWidget):
-    """View for managing devices."""
+    """Card grid of devices with multi-select and bulk actions."""
 
     def __init__(self, device_controller: DeviceController):
         super().__init__()
         self.controller = device_controller
 
-        # Set up the UI
-        self.setup_ui()
+        self._cards: list[DeviceCard] = []
+        self._selected: Set[int] = set()
 
-        # Connect controller signals to view updates
-        self.connect_signals()
+        self._build()
+        self._connect_signals()
+        self._rebuild_cards()
 
-        # Initial update
-        self.update_device_list()
+    # ------------------------------------------------------------------ build
 
-        # Update details if a device is already selected
-        device = self.controller.get_selected_device()
-        if device:
-            self.update_device_details(device)
-
-    def setup_ui(self):
-        """Set up the user interface."""
-        # Main layout
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+    def _build(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(14)
 
         # Header
-        header = QLabel("Device Management")
-        header_font = QFont()
-        header_font.setPointSize(16)
-        header_font.setBold(True)
-        header.setFont(header_font)
-        layout.addWidget(header)
+        header = QLabel("Devices")
+        header.setProperty("role", "header")
+        f = QFont()
+        f.setPointSize(18)
+        f.setBold(True)
+        header.setFont(f)
+        root.addWidget(header)
 
-        # Action buttons
-        button_layout = QHBoxLayout()
+        # Toolbar row
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
 
         self.discover_button = QPushButton("Discover Devices")
-        self.discover_button.setIcon(ResourceManager.get_icon("refresh.svg"))
-        self.discover_button.setIconSize(QSize(20, 20))
-        self.discover_button.clicked.connect(self.on_discover_clicked)
-        button_layout.addWidget(self.discover_button)
+        self.discover_button.setObjectName("Primary")
+        self.discover_button.setProperty("role", "primary")
+        self.discover_button.clicked.connect(self.controller.discover_devices)
+        toolbar.addWidget(self.discover_button)
 
-        self.add_button = QPushButton("Add Manual")
-        self.add_button.setIcon(ResourceManager.get_icon("network.svg"))
-        self.add_button.setIconSize(QSize(20, 20))
-        self.add_button.clicked.connect(self.on_add_manual_clicked)
-        button_layout.addWidget(self.add_button)
+        self.add_button = QPushButton("Add Manually")
+        self.add_button.clicked.connect(self._on_add_manual)
+        toolbar.addWidget(self.add_button)
 
-        self.remove_button = QPushButton("Remove")
-        self.remove_button.setEnabled(False)
-        self.remove_button.clicked.connect(self.on_remove_clicked)
-        button_layout.addWidget(self.remove_button)
+        toolbar.addSpacing(8)
+        toolbar.addStretch(1)
 
-        self.turn_on_button = QPushButton("Turn On")
-        self.turn_on_button.setIcon(ResourceManager.get_icon("power.svg"))
-        self.turn_on_button.setIconSize(QSize(20, 20))
-        self.turn_on_button.setEnabled(False)
-        self.turn_on_button.clicked.connect(lambda: self.controller.turn_on_off(True))
-        button_layout.addWidget(self.turn_on_button)
+        self.summary_label = QLabel("")
+        self.summary_label.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
+        toolbar.addWidget(self.summary_label)
 
-        self.turn_off_button = QPushButton("Turn Off")
-        self.turn_off_button.setIcon(ResourceManager.get_icon("power.svg"))
-        self.turn_off_button.setIconSize(QSize(20, 20))
-        self.turn_off_button.setEnabled(False)
-        self.turn_off_button.clicked.connect(lambda: self.controller.turn_on_off(False))
-        button_layout.addWidget(self.turn_off_button)
+        self.select_all_button = QPushButton("Select all")
+        self.select_all_button.setObjectName("LinkButton")
+        self.select_all_button.clicked.connect(self._select_all)
+        toolbar.addWidget(self.select_all_button)
 
-        self.set_color_button = QPushButton("Set Color")
-        self.set_color_button.setIcon(ResourceManager.get_icon("lightbulb-on.svg"))
-        self.set_color_button.setIconSize(QSize(20, 20))
-        self.set_color_button.setEnabled(False)
-        self.set_color_button.clicked.connect(self.on_set_color_clicked)
-        button_layout.addWidget(self.set_color_button)
+        self.clear_select_button = QPushButton("Clear")
+        self.clear_select_button.setObjectName("LinkButton")
+        self.clear_select_button.clicked.connect(self._clear_selection)
+        toolbar.addWidget(self.clear_select_button)
 
-        button_layout.addStretch()
-        layout.addLayout(button_layout)
+        root.addLayout(toolbar)
 
-        # Device controls (brightness)
-        controls_group = QGroupBox("Device Controls")
-        controls_layout = QHBoxLayout(controls_group)
+        # Bulk action bar (animated, hidden until selection)
+        self.bulk_bar = QFrame()
+        self.bulk_bar.setObjectName("BulkBar")
+        self.bulk_bar.setMaximumHeight(0)
+        bulk_layout = QHBoxLayout(self.bulk_bar)
+        bulk_layout.setContentsMargins(12, 8, 12, 8)
+        bulk_layout.setSpacing(8)
 
-        controls_layout.addWidget(QLabel("Brightness:"))
+        self.bulk_label = QLabel("")
+        self.bulk_label.setStyleSheet(f"color: {qcolor('text').name()}; font-weight: 600;")
+        bulk_layout.addWidget(self.bulk_label)
+        bulk_layout.addStretch(1)
 
-        self.brightness_slider = QSlider(Qt.Orientation.Horizontal)
-        self.brightness_slider.setRange(0, 100)
-        self.brightness_slider.setValue(100)
-        self.brightness_slider.setEnabled(False)
-        self.brightness_slider.valueChanged.connect(self.on_brightness_changed)
-        controls_layout.addWidget(self.brightness_slider)
+        self.bulk_on = QPushButton("Turn On")
+        self.bulk_on.clicked.connect(lambda: self._bulk_power(True))
+        bulk_layout.addWidget(self.bulk_on)
 
-        self.brightness_label = QLabel("100%")
-        self.brightness_label.setMinimumWidth(40)
-        controls_layout.addWidget(self.brightness_label)
+        self.bulk_off = QPushButton("Turn Off")
+        self.bulk_off.clicked.connect(lambda: self._bulk_power(False))
+        bulk_layout.addWidget(self.bulk_off)
 
-        layout.addWidget(controls_group)
+        self.bulk_color = QPushButton("Set Color")
+        self.bulk_color.clicked.connect(self._bulk_color)
+        bulk_layout.addWidget(self.bulk_color)
 
-        # Content area with device list and details
-        content_layout = QHBoxLayout()
+        self.bulk_remove = QPushButton("Remove")
+        self.bulk_remove.setObjectName("DangerButton")
+        self.bulk_remove.setProperty("role", "danger")
+        self.bulk_remove.clicked.connect(self._bulk_remove)
+        bulk_layout.addWidget(self.bulk_remove)
 
-        # Device list
-        list_group = QGroupBox("Devices")
-        list_layout = QVBoxLayout(list_group)
+        root.addWidget(self.bulk_bar)
 
-        self.device_list = QListWidget()
-        self.device_list.currentItemChanged.connect(self.on_device_selection_changed)
-        list_layout.addWidget(self.device_list)
+        # Card grid (FlowLayout in a scroll area)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
 
-        content_layout.addWidget(list_group, 1)
+        self.grid_host = QWidget()
+        self.grid_layout = FlowLayout(self.grid_host, h_spacing=14, v_spacing=14)
+        self.grid_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Device details
-        details_group = QGroupBox("Device Details")
-        details_layout = QGridLayout(details_group)
+        self.scroll.setWidget(self.grid_host)
+        root.addWidget(self.scroll, 1)
 
-        # Detail labels
-        details_layout.addWidget(QLabel("Model:"), 0, 0)
-        self.model_label = QLabel("N/A")
-        details_layout.addWidget(self.model_label, 0, 1)
+        # Empty state label
+        self.empty_label = QLabel(
+            "No devices yet.\n\nClick “Discover Devices” to find Govee lights on your "
+            "network, or “Add Manually” to add one by IP."
+        )
+        self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_label.setWordWrap(True)
+        self.empty_label.setStyleSheet(
+            f"color: {qcolor('text_dim').name()}; font-size: 11pt; padding: 40px;"
+        )
+        self.empty_label.setVisible(False)
+        root.addWidget(self.empty_label)
 
-        details_layout.addWidget(QLabel("MAC:"), 1, 0)
-        self.mac_label = QLabel("N/A")
-        details_layout.addWidget(self.mac_label, 1, 1)
+    # ------------------------------------------------------------------ wiring
 
-        details_layout.addWidget(QLabel("IP:"), 2, 0)
-        self.ip_label = QLabel("N/A")
-        details_layout.addWidget(self.ip_label, 2, 1)
+    def _connect_signals(self) -> None:
+        self.controller.devices_discovered.connect(lambda *_: self._rebuild_cards())
+        self.controller.device_added.connect(lambda *_: self._rebuild_cards())
+        self.controller.device_removed.connect(lambda *_: self._rebuild_cards())
+        self.controller.discovery_started.connect(self._on_discovery_started)
+        self.controller.discovery_finished.connect(self._on_discovery_finished)
 
-        details_layout.addWidget(QLabel("Port:"), 3, 0)
-        self.port_label = QLabel("N/A")
-        details_layout.addWidget(self.port_label, 3, 1)
+    def _on_discovery_started(self) -> None:
+        self.discover_button.setEnabled(False)
+        self.discover_button.setText("Discovering…")
 
-        details_layout.addWidget(QLabel("Source:"), 4, 0)
-        self.source_label = QLabel("N/A")
-        details_layout.addWidget(self.source_label, 4, 1)
+    def _on_discovery_finished(self) -> None:
+        self.discover_button.setEnabled(True)
+        self.discover_button.setText("Discover Devices")
 
-        details_layout.setRowStretch(5, 1)  # Add stretch at bottom
+    # ------------------------------------------------------------------ cards
 
-        content_layout.addWidget(details_group, 1)
+    def _rebuild_cards(self) -> None:
+        # Wipe existing
+        while self.grid_layout.count():
+            item = self.grid_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._cards.clear()
+        # Reconcile selection: drop indices that no longer exist
+        max_idx = len(self.controller.devices) - 1
+        self._selected = {i for i in self._selected if 0 <= i <= max_idx}
 
-        layout.addLayout(content_layout, 1)
+        for idx, device in enumerate(self.controller.devices):
+            card = DeviceCard(idx, device, self.grid_host)
+            card.set_checked(idx in self._selected)
+            card.set_primary(idx == self.controller.selected_device_index)
+            card.selection_changed.connect(self._on_card_selection_changed)
+            card.primary_clicked.connect(self._on_card_primary_clicked)
+            card.power_clicked.connect(self.controller.turn_on_off_at)
+            card.color_picked.connect(self._on_card_color_picked)
+            card.brightness_changed.connect(self.controller.set_brightness_at)
+            card.remove_requested.connect(self._on_card_remove)
+            self._cards.append(card)
+            self.grid_layout.addWidget(card)
 
-    def connect_signals(self):
-        """Connect controller signals to view updates."""
-        self.controller.devices_discovered.connect(self.on_devices_discovered)
-        self.controller.device_selected.connect(self.on_device_selected)
-        self.controller.discovery_started.connect(self.on_discovery_started)
-        self.controller.discovery_finished.connect(self.on_discovery_finished)
+        self._update_summary()
+        self._update_empty_state()
 
-    def on_discover_clicked(self):
-        """Handle discover button click."""
-        self.controller.discover_devices()
+    def _update_empty_state(self) -> None:
+        empty = not self.controller.devices
+        self.empty_label.setVisible(empty)
+        self.scroll.setVisible(not empty)
+        # Hide selection actions when there's only 1 or 0 devices
+        multi = len(self.controller.devices) > 1
+        self.select_all_button.setVisible(multi)
+        self.clear_select_button.setVisible(multi)
 
-    def on_add_manual_clicked(self):
-        """Handle add manual button click."""
+    def _update_summary(self) -> None:
+        total = len(self.controller.devices)
+        if total == 0:
+            self.summary_label.setText("")
+        elif self._selected:
+            self.summary_label.setText(f"{len(self._selected)} of {total} selected")
+        else:
+            self.summary_label.setText(f"{total} device{'s' if total != 1 else ''}")
+        self._update_bulk_bar()
+
+    def _update_bulk_bar(self) -> None:
+        n = len(self._selected)
+        target = 56 if n > 0 else 0
+        self.bulk_label.setText(f"{n} selected" if n else "")
+        if self.bulk_bar.maximumHeight() != target:
+            animate_height(self.bulk_bar, target, duration=180)
+
+    # ------------------------------------------------------------------ card slots
+
+    def _on_card_selection_changed(self, index: int, selected: bool) -> None:
+        if selected:
+            self._selected.add(index)
+        else:
+            self._selected.discard(index)
+        self._update_summary()
+
+    def _on_card_primary_clicked(self, index: int) -> None:
+        self.controller.select_device(index)
+        for card in self._cards:
+            card.set_primary(card._index == index)
+
+    def _on_card_color_picked(self, index: int, color: QColor) -> None:
+        self.controller.set_color_at(index, color.red(), color.green(), color.blue())
+
+    def _on_card_remove(self, index: int) -> None:
+        device = self.controller.devices[index]
+        reply = QMessageBox.question(
+            self, "Remove device",
+            f"Remove '{device.get('model', 'Unknown')}' ({device.get('ip', '?')})?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.controller.remove_device(index)
+
+    # ------------------------------------------------------------------ bulk
+
+    def _select_all(self) -> None:
+        self._selected = set(range(len(self.controller.devices)))
+        for card in self._cards:
+            card.set_checked(True)
+        self._update_summary()
+
+    def _clear_selection(self) -> None:
+        self._selected.clear()
+        for card in self._cards:
+            card.set_checked(False)
+        self._update_summary()
+
+    def _bulk_power(self, on: bool) -> None:
+        for idx in sorted(self._selected):
+            self.controller.turn_on_off_at(idx, on)
+
+    def _bulk_color(self) -> None:
+        if not self._selected:
+            return
+        color = QColorDialog.getColor(QColor("#7C5CFF"), self, "Choose color")
+        if not color.isValid():
+            return
+        for idx in sorted(self._selected):
+            self.controller.set_color_at(idx, color.red(), color.green(), color.blue())
+
+    def _bulk_remove(self) -> None:
+        if not self._selected:
+            return
+        reply = QMessageBox.question(
+            self, "Remove devices",
+            f"Remove {len(self._selected)} selected device(s)?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        # Remove from highest index down to keep lower indices valid
+        for idx in sorted(self._selected, reverse=True):
+            self.controller.remove_device(idx)
+        self._selected.clear()
+
+    # ------------------------------------------------------------------ misc
+
+    def _on_add_manual(self) -> None:
         dialog = AddDeviceDialog(self)
         if dialog.exec():
-            # Dialog was accepted, get values
             ip = dialog.ip_entry.text()
             model = dialog.model_entry.text() or "Manual Device"
             mac = dialog.mac_entry.text() or None
             port = int(dialog.port_entry.text()) if dialog.port_entry.text() else 4003
-
-            # Add device
             self.controller.add_device_manually(ip, model, mac, port)
-
-    def on_remove_clicked(self):
-        """Handle remove button click."""
-        current_row = self.device_list.currentRow()
-        if current_row < 0:
-            return
-
-        # Get device info for confirmation
-        device = self.controller.devices[current_row]
-        reply = QMessageBox.question(
-            self,
-            "Confirm Removal",
-            f"Are you sure you want to remove '{device.get('model', 'Unknown')}' ({device.get('ip', 'Unknown')})?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-
-        if reply == QMessageBox.StandardButton.Yes:
-            self.controller.remove_device(current_row)
-
-    def on_set_color_clicked(self):
-        """Handle set color button click."""
-        color = QColorDialog.getColor()
-        if color.isValid():
-            self.controller.set_device_color(color.red(), color.green(), color.blue())
-
-    def on_brightness_changed(self, value):
-        """Handle brightness slider change."""
-        self.brightness_label.setText(f"{value}%")
-        self.controller.set_device_brightness(value)
-
-    def on_device_selection_changed(self, current, previous):
-        """Handle device list selection change."""
-        if current:
-            index = self.device_list.row(current)
-            self.controller.select_device(index)
-
-            # Enable/disable buttons and controls
-            self.remove_button.setEnabled(True)
-            self.turn_on_button.setEnabled(True)
-            self.turn_off_button.setEnabled(True)
-            self.set_color_button.setEnabled(True)
-            self.brightness_slider.setEnabled(True)
-        else:
-            self.remove_button.setEnabled(False)
-            self.turn_on_button.setEnabled(False)
-            self.turn_off_button.setEnabled(False)
-            self.set_color_button.setEnabled(False)
-            self.brightness_slider.setEnabled(False)
-
-    def on_devices_discovered(self, devices):
-        """Handle devices discovered signal."""
-        self.update_device_list()
-
-    def on_device_selected(self, device):
-        """Handle device selected signal."""
-        self.update_device_details(device)
-
-    def on_discovery_started(self):
-        """Handle discovery started signal."""
-        self.discover_button.setEnabled(False)
-        self.discover_button.setText("Discovering...")
-
-    def on_discovery_finished(self):
-        """Handle discovery finished signal."""
-        self.discover_button.setEnabled(True)
-        self.discover_button.setText("Discover Devices")
-
-    def update_device_list(self):
-        """Update the device list widget."""
-        # Block signals to prevent triggering select_device during list rebuild
-        self.device_list.blockSignals(True)
-        self.device_list.clear()
-
-        for device in self.controller.devices:
-            model = device.get('model', 'Unknown')
-            ip = device.get('ip', 'Unknown')
-            item_text = f"{model} ({ip})"
-            self.device_list.addItem(item_text)
-
-        # Select the current device if any
-        if self.controller.devices and 0 <= self.controller.selected_device_index < len(self.controller.devices):
-            self.device_list.setCurrentRow(self.controller.selected_device_index)
-            # Enable controls for the selected device
-            self.remove_button.setEnabled(True)
-            self.turn_on_button.setEnabled(True)
-            self.turn_off_button.setEnabled(True)
-            self.set_color_button.setEnabled(True)
-            self.brightness_slider.setEnabled(True)
-
-        self.device_list.blockSignals(False)
-
-    def update_device_details(self, device):
-        """Update the device details panel.
-
-        Args:
-            device: Device dictionary
-        """
-        if device:
-            self.model_label.setText(device.get('model', 'Unknown'))
-            self.mac_label.setText(device.get('mac', 'Unknown'))
-            self.ip_label.setText(device.get('ip', 'Unknown'))
-            self.port_label.setText(str(device.get('port', 'Unknown')))
-
-            source = "Manual" if device.get('manual', False) else "Discovered"
-            self.source_label.setText(source)
-        else:
-            self.model_label.setText("N/A")
-            self.mac_label.setText("N/A")
-            self.ip_label.setText("N/A")
-            self.port_label.setText("N/A")
-            self.source_label.setText("N/A")
