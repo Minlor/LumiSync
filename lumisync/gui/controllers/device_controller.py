@@ -93,29 +93,50 @@ class DeviceController(QObject):
         except Exception as e:
             self.status_updated.emit(f"Error loading devices: {str(e)}")
 
+    def _discovery_running(self) -> bool:
+        """Safe check that handles a stale Python ref to a deleted QThread."""
+        if self.discovery_thread is None:
+            return False
+        try:
+            return self.discovery_thread.isRunning()
+        except RuntimeError:
+            self.discovery_thread = None
+            self.discovery_worker = None
+            return False
+
+    def _clear_discovery_refs(self) -> None:
+        self.discovery_thread = None
+        self.discovery_worker = None
+
     def discover_devices(self):
         """Start device discovery in background thread."""
-        if self.discovery_thread and self.discovery_thread.isRunning():
+        if self._discovery_running():
             self.status_updated.emit("Discovery already in progress...")
             return
 
         self.discovery_started.emit()
         self.status_updated.emit("Discovering devices...")
 
-        # Create thread and worker
-        self.discovery_thread = QThread()
-        self.discovery_worker = DeviceDiscoveryWorker()
-        self.discovery_worker.moveToThread(self.discovery_thread)
+        thread = QThread()
+        worker = DeviceDiscoveryWorker()
+        worker.moveToThread(thread)
 
-        # Connect signals
-        self.discovery_thread.started.connect(self.discovery_worker.run)
-        self.discovery_worker.finished.connect(self._on_discovery_finished)
-        self.discovery_worker.error.connect(self._on_discovery_error)
-        self.discovery_worker.finished.connect(self.discovery_thread.quit)
-        self.discovery_thread.finished.connect(self.discovery_thread.deleteLater)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_discovery_finished)
+        worker.error.connect(self._on_discovery_error)
 
-        # Start thread
-        self.discovery_thread.start()
+        # Cleanup chain: worker done (success or error) → thread.quit() → both
+        # objects are deleteLater'd → Python refs zeroed so a re-click sees
+        # a clean slate.
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_discovery_refs)
+
+        self.discovery_thread = thread
+        self.discovery_worker = worker
+        thread.start()
 
     def _on_discovery_finished(self, discovered_devices: List[Dict], selected_index: int):
         """Handle discovery completion.
