@@ -133,14 +133,91 @@ class SettingsPage(QWidget):
         desc.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
         layout.addWidget(desc)
 
+        self.update_status_label = QLabel("Updates have not been checked yet.")
+        self.update_status_label.setProperty("role", "subtle")
+        self.update_status_label.setWordWrap(True)
+        layout.addWidget(self.update_status_label)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+
+        self.check_updates_button = QPushButton("Check for updates")
+        self.check_updates_button.clicked.connect(self._check_for_updates)
+        buttons.addWidget(self.check_updates_button)
+
+        self.open_release_button = QPushButton("Open Release")
+        self.open_release_button.setObjectName("LinkButton")
+        self.open_release_button.setVisible(False)
+        self.open_release_button.clicked.connect(self._open_latest_release)
+        buttons.addWidget(self.open_release_button)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+
         link = QPushButton("Open GitHub Repository")
         link.setObjectName("LinkButton")
         link.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://github.com/Minlor/LumiSync")))
         layout.addWidget(link, alignment=Qt.AlignmentFlag.AlignLeft)
 
+        self._latest_release_url = None
+        self._connect_update_controller()
+
         return group
 
     # ---------------------------------------------------------------- helpers
+
+    def _connect_update_controller(self) -> None:
+        controller = getattr(self._main_window, "update_controller", None)
+        if controller is None:
+            self.check_updates_button.setEnabled(False)
+            self.update_status_label.setText("Update checks are unavailable.")
+            return
+
+        controller.check_started.connect(self._on_update_check_started)
+        controller.check_finished.connect(self._on_update_check_finished)
+        if controller.last_result is not None:
+            self._on_update_check_finished(controller.last_result)
+
+    def _set_update_status(self, text: str, state: str | None = None) -> None:
+        self.update_status_label.setText(text)
+        self.update_status_label.setProperty("state", state or "")
+        self.update_status_label.style().unpolish(self.update_status_label)
+        self.update_status_label.style().polish(self.update_status_label)
+
+    def _check_for_updates(self) -> None:
+        controller = getattr(self._main_window, "update_controller", None)
+        if controller is not None:
+            controller.check_now()
+
+    def _open_latest_release(self) -> None:
+        if self._latest_release_url:
+            QDesktopServices.openUrl(QUrl(self._latest_release_url))
+
+    def _on_update_check_started(self) -> None:
+        self.check_updates_button.setEnabled(False)
+        self.open_release_button.setVisible(False)
+        self._set_update_status("Checking GitHub releases...")
+
+    def _on_update_check_finished(self, result) -> None:
+        self.check_updates_button.setEnabled(True)
+
+        if result.error:
+            self._latest_release_url = None
+            self.open_release_button.setVisible(False)
+            self._set_update_status(f"Update check failed: {result.error}", "error")
+            return
+
+        if result.is_update_available and result.latest_version:
+            self._latest_release_url = result.release_url
+            self.open_release_button.setVisible(bool(result.release_url))
+            self._set_update_status(
+                f"Update available: v{result.latest_version}",
+                "active",
+            )
+            return
+
+        self._latest_release_url = None
+        self.open_release_button.setVisible(False)
+        self._set_update_status("LumiSync is up to date.", "idle")
 
     def _populate_displays(self) -> None:
         self.display_combo.clear()

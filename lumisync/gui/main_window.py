@@ -4,7 +4,8 @@ Main application window for the LumiSync GUI.
 
 import sys
 from PyQt6.QtWidgets import QMainWindow, QMessageBox, QApplication
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import QSettings, QTimer, QUrl
+from PyQt6.QtGui import QDesktopServices
 
 from .resources.icons import IconKey, icon as app_icon
 from .widgets import NavigationShell
@@ -13,6 +14,7 @@ from ..utils.logging import setup_logger
 
 from .controllers.device_controller import DeviceController
 from .controllers.sync_controller import SyncController
+from .controllers.update_controller import UpdateController
 
 logger = setup_logger('lumisync_gui')
 
@@ -34,6 +36,7 @@ class LumiSyncMainWindow(QMainWindow):
         logger.info("Creating controllers")
         self.device_controller = DeviceController()
         self.sync_controller = SyncController()
+        self.update_controller = UpdateController()
 
         self.setup_controller_connections()
         self.setup_ui()
@@ -47,6 +50,8 @@ class LumiSyncMainWindow(QMainWindow):
         self.device_controller.device_selected.connect(self.sync_controller.set_device)
         self.device_controller.status_updated.connect(self.show_status)
         self.sync_controller.status_updated.connect(self.show_status)
+        self.update_controller.status_updated.connect(self.show_status)
+        self.update_controller.update_available.connect(self._on_update_available)
 
         device = self.device_controller.get_selected_device()
         if device:
@@ -99,13 +104,38 @@ class LumiSyncMainWindow(QMainWindow):
         logger.info(f"Status: {message}")
 
     def show_about(self):
+        from .. import __version__ as _version
+
         QMessageBox.about(
             self, "About LumiSync",
             "<h2>LumiSync</h2>"
             "<p>Sync your Govee lights with your screen and audio.</p>"
-            "<p><b>Version:</b> 0.4.1</p>"
+            f"<p><b>Version:</b> {_version}</p>"
             "<p><a href='https://github.com/Minlor/LumiSync'>GitHub Repository</a></p>"
         )
+
+    def check_for_updates_on_startup(self) -> None:
+        self.update_controller.check_now()
+
+    def _on_update_available(self, result) -> None:
+        release_url = result.release_url or "https://github.com/Minlor/LumiSync/releases"
+        latest = result.latest_version or "a newer version"
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("LumiSync Update Available")
+        box.setText(f"LumiSync v{latest} is available.")
+        box.setInformativeText(
+            f"You are running v{result.current_version}. "
+            "Open the GitHub release page to download the update."
+        )
+        open_button = box.addButton("Open Release", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Later", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(open_button)
+
+        box.exec()
+        if box.clickedButton() is open_button:
+            QDesktopServices.openUrl(QUrl(release_url))
 
     def set_icon(self):
         try:
@@ -149,6 +179,7 @@ def main():
 
         window = LumiSyncMainWindow()
         window.show()
+        QTimer.singleShot(1000, window.check_for_updates_on_startup)
 
         exit_code = app.exec()
         logger.info(f"LumiSync GUI closed (exit {exit_code})")

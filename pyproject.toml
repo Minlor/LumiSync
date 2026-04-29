@@ -25,6 +25,7 @@ dependencies = [
   "dxcam>=0.0.5",
   "matplotlib>=3.10.1",
   "numpy>=2.2.4",
+  "packaging>=24.0",
   "pillow>=11.1.0",
   "soundcard>=0.4.5",
   "webcolors>=24.11.1",
