@@ -154,6 +154,7 @@ class DevicesView(QWidget):
         self.controller.devices_discovered.connect(lambda *_: self._rebuild_cards())
         self.controller.device_added.connect(lambda *_: self._rebuild_cards())
         self.controller.device_removed.connect(lambda *_: self._rebuild_cards())
+        self.controller.device_state_updated.connect(self._on_device_state_updated)
         self.controller.discovery_started.connect(self._on_discovery_started)
         self.controller.discovery_finished.connect(self._on_discovery_finished)
 
@@ -183,9 +184,10 @@ class DevicesView(QWidget):
             card = DeviceCard(idx, device, self.grid_host)
             card.set_checked(idx in self._selected)
             card.set_primary(idx == self.controller.selected_device_index)
+            card.set_state(self.controller.get_device_state_at(idx))
             card.selection_changed.connect(self._on_card_selection_changed)
             card.primary_clicked.connect(self._on_card_primary_clicked)
-            card.power_clicked.connect(self.controller.turn_on_off_at)
+            card.power_clicked.connect(self.controller.toggle_power_at)
             card.color_picked.connect(self._on_card_color_picked)
             card.brightness_changed.connect(self.controller.set_brightness_at)
             card.remove_requested.connect(self._on_card_remove)
@@ -194,6 +196,7 @@ class DevicesView(QWidget):
 
         self._update_summary()
         self._update_empty_state()
+        self.controller.refresh_device_states()
 
     def _update_empty_state(self) -> None:
         empty = not self.controller.devices
@@ -237,6 +240,10 @@ class DevicesView(QWidget):
 
     def _on_card_color_picked(self, index: int, color: QColor) -> None:
         self.controller.set_color_at(index, color.red(), color.green(), color.blue())
+
+    def _on_device_state_updated(self, index: int, state: dict) -> None:
+        if 0 <= index < len(self._cards):
+            self._cards[index].set_state(state)
 
     def _on_card_remove(self, index: int) -> None:
         device = self.controller.devices[index]

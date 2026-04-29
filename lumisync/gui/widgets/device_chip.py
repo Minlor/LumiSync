@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 from ..theme import qcolor
 
 
-def _device_id(device: Dict[str, Any]) -> str:
+def device_id(device: Dict[str, Any]) -> str:
     """Stable identifier for a device — MAC if available, else IP."""
     return str(device.get("mac") or device.get("ip") or device.get("model") or "?")
 
@@ -68,27 +68,27 @@ class DeviceChipStrip(QFrame):
 
     # ------------------------------------------------------------------ public
 
-    def set_devices(self, devices: List[Dict[str, Any]]) -> None:
+    def set_devices(self, devices: List[Dict[str, Any]], default_ids: Optional[List[str]] = None) -> None:
         self._devices = list(devices)
-        # Keep selection only for ids that still exist; if empty, default to all
-        valid_ids = {_device_id(d) for d in self._devices}
+        # Keep selection only for ids that still exist; if empty, use caller
+        # defaults so new mode selections start conservatively.
+        valid_ids = {device_id(d) for d in self._devices}
         self._selected_ids = {sid for sid in self._selected_ids if sid in valid_ids}
         if not self._selected_ids and self._devices:
-            self._selected_ids = set(valid_ids)
+            defaults = [sid for sid in (default_ids or []) if sid in valid_ids]
+            self._selected_ids = set(defaults or [device_id(self._devices[0])])
         self._refresh_chips()
 
     def set_selected_ids(self, ids: List[str]) -> None:
-        valid_ids = {_device_id(d) for d in self._devices}
+        valid_ids = {device_id(d) for d in self._devices}
         self._selected_ids = {sid for sid in ids if sid in valid_ids}
-        if not self._selected_ids and self._devices:
-            self._selected_ids = {_device_id(d) for d in self._devices}
         self._refresh_chips()
 
     def selected_ids(self) -> List[str]:
-        return [sid for sid in (_device_id(d) for d in self._devices) if sid in self._selected_ids]
+        return [sid for sid in (device_id(d) for d in self._devices) if sid in self._selected_ids]
 
     def selected_devices(self) -> List[Dict[str, Any]]:
-        return [d for d in self._devices if _device_id(d) in self._selected_ids]
+        return [d for d in self._devices if device_id(d) in self._selected_ids]
 
     # ------------------------------------------------------------------ render
 
@@ -141,7 +141,7 @@ class DeviceChipStrip(QFrame):
         menu = QMenu(self)
         actions = []
         for d in self._devices:
-            sid = _device_id(d)
+            sid = device_id(d)
             label = f"{d.get('model', '?')}  ({d.get('ip', '?')})"
             act = menu.addAction(label)
             act.setCheckable(True)
@@ -157,7 +157,7 @@ class DeviceChipStrip(QFrame):
             return
 
         if chosen is all_act:
-            self._selected_ids = {_device_id(d) for d in self._devices}
+            self._selected_ids = {device_id(d) for d in self._devices}
         elif chosen is none_act:
             self._selected_ids = set()
         else:
@@ -173,4 +173,4 @@ class DeviceChipStrip(QFrame):
         self.selection_changed.emit(self.selected_ids())
 
 
-__all__ = ["DeviceChipStrip"]
+__all__ = ["DeviceChipStrip", "device_id"]

@@ -22,7 +22,7 @@ from ..controllers.sync_controller import SyncController
 from ..theme import qcolor
 from ..utils.animations import animate_height
 from ..widgets.active_sync_row import ActiveSyncRow
-from ..widgets.device_chip import DeviceChipStrip
+from ..widgets.device_chip import DeviceChipStrip, device_id
 from ..widgets.led_mapping_widget import LedMappingWidget
 
 
@@ -125,7 +125,7 @@ class ModesView(QWidget):
         self.monitor_start_button = QPushButton("Start Monitor Sync")
         self.monitor_start_button.setObjectName("Primary")
         self.monitor_start_button.setProperty("role", "primary")
-        self.monitor_start_button.clicked.connect(self.controller.start_monitor_sync)
+        self.monitor_start_button.clicked.connect(self._start_monitor_sync)
         layout.addWidget(self.monitor_start_button)
 
         return group
@@ -165,7 +165,7 @@ class ModesView(QWidget):
         self.music_start_button = QPushButton("Start Music Sync")
         self.music_start_button.setObjectName("Primary")
         self.music_start_button.setProperty("role", "primary")
-        self.music_start_button.clicked.connect(self.controller.start_music_sync)
+        self.music_start_button.clicked.connect(self._start_music_sync)
         layout.addWidget(self.music_start_button)
 
         return group
@@ -198,6 +198,7 @@ class ModesView(QWidget):
             self.device_controller.devices_discovered.connect(lambda *_: self._refresh_chip_strips())
             self.device_controller.device_added.connect(lambda *_: self._refresh_chip_strips())
             self.device_controller.device_removed.connect(lambda *_: self._refresh_chip_strips())
+            self.device_controller.device_selected.connect(lambda *_: self._refresh_chip_strips())
 
     # ------------------------------------------------------------------ chips
 
@@ -206,10 +207,13 @@ class ModesView(QWidget):
             return
         devs = self.device_controller.devices
         settings = QSettings("Minlor", "LumiSync")
+        default_ids: List[str] = []
+        if devs and 0 <= self.device_controller.selected_device_index < len(devs):
+            default_ids = [device_id(devs[self.device_controller.selected_device_index])]
         for mode, strip in (("monitor", self.monitor_chips), ("music", self.music_chips)):
-            strip.set_devices(devs)
+            strip.set_devices(devs, default_ids=default_ids)
             saved = settings.value(f"sync/{mode}/devices", None)
-            if saved:
+            if saved is not None:
                 if isinstance(saved, str):
                     ids = [s for s in saved.split(",") if s]
                 else:
@@ -248,9 +252,9 @@ class ModesView(QWidget):
             if self._sync_was_running:
                 self._sync_was_running = False
                 if self._sync_mode_before == "monitor":
-                    self.controller.start_monitor_sync()
+                    self._start_monitor_sync()
                 elif self._sync_mode_before == "music":
-                    self.controller.start_music_sync()
+                    self._start_music_sync()
                 self._sync_mode_before = None
 
     # ------------------------------------------------------------------ brightness
@@ -269,6 +273,14 @@ class ModesView(QWidget):
         elif mode == "music":
             self.music_brightness_slider.setValue(int(value * 100))
 
+    # ------------------------------------------------------------------ start helpers
+
+    def _start_monitor_sync(self) -> None:
+        self.controller.start_monitor_sync(self.monitor_chips.selected_devices())
+
+    def _start_music_sync(self) -> None:
+        self.controller.start_music_sync(self.music_chips.selected_devices())
+
     # ------------------------------------------------------------------ active syncs
 
     def _refresh_active_syncs(self) -> None:
@@ -286,11 +298,10 @@ class ModesView(QWidget):
             self.empty_active_label.setVisible(True)
             return
 
-        # Currently the backend is single-device — just show the selected device
-        device_names: List[str] = []
-        device = self.controller.get_selected_device()
-        if device:
-            device_names.append(device.get("model", "Device"))
+        device_names = [
+            device.get("model", "Device")
+            for device in self.controller.get_selected_devices()
+        ]
 
         row = ActiveSyncRow(mode, device_names, self)
         row.stop_requested.connect(lambda _m: self.controller.stop_sync())

@@ -36,7 +36,7 @@ class DeviceCard(QFrame):
     Signals:
         selection_changed(index, selected)
         primary_clicked(index)         emitted when card body is clicked, used to set primary device
-        power_clicked(index, on)
+        power_clicked(index)
         color_picked(index, QColor)
         brightness_changed(index, value)
         remove_requested(index)
@@ -44,7 +44,7 @@ class DeviceCard(QFrame):
 
     selection_changed = pyqtSignal(int, bool)
     primary_clicked = pyqtSignal(int)
-    power_clicked = pyqtSignal(int, bool)
+    power_clicked = pyqtSignal(int)
     color_picked = pyqtSignal(int, QColor)
     brightness_changed = pyqtSignal(int, int)
     remove_requested = pyqtSignal(int)
@@ -54,6 +54,7 @@ class DeviceCard(QFrame):
         self._index = index
         self._device = dict(device)
         self._current_color = QColor("#7C5CFF")
+        self._power_on: Optional[bool] = None
         self._is_primary = False
         self._is_selected = False
 
@@ -122,6 +123,31 @@ class DeviceCard(QFrame):
         sub.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
         root.addWidget(sub)
 
+        state_row = QHBoxLayout()
+        state_row.setSpacing(8)
+
+        self.primary_label = QLabel("Primary")
+        self.primary_label.setProperty("role", "pill")
+        self.primary_label.setStyleSheet(
+            f"background: {qcolor('accent_dim').name()};"
+            f"color: {qcolor('text').name()};"
+            "border-radius: 8px; padding: 2px 7px; font-size: 8pt;"
+        )
+        self.primary_label.setVisible(False)
+        state_row.addWidget(self.primary_label)
+
+        self.power_state_label = QLabel("Power unknown")
+        self.power_state_label.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
+        state_row.addWidget(self.power_state_label)
+
+        state_row.addStretch(1)
+
+        self.state_detail_label = QLabel("Status pending")
+        self.state_detail_label.setStyleSheet(f"color: {qcolor('text_disabled').name()}; font-size: 9pt;")
+        state_row.addWidget(self.state_detail_label)
+
+        root.addLayout(state_row)
+
         # Brightness row
         bright_row = QHBoxLayout()
         bright_row.setSpacing(8)
@@ -142,18 +168,14 @@ class DeviceCard(QFrame):
         bright_row.addWidget(self.brightness_value)
         root.addLayout(bright_row)
 
-        # Action row: power / color
+        # Action row: smart power toggle / color
         actions = QHBoxLayout()
         actions.setSpacing(6)
 
-        self.on_button = QPushButton("On")
-        self.on_button.setProperty("role", "primary")
-        self.on_button.clicked.connect(lambda: self.power_clicked.emit(self._index, True))
-        actions.addWidget(self.on_button)
-
-        self.off_button = QPushButton("Off")
-        self.off_button.clicked.connect(lambda: self.power_clicked.emit(self._index, False))
-        actions.addWidget(self.off_button)
+        self.power_button = QPushButton("Turn On")
+        self.power_button.setProperty("role", "primary")
+        self.power_button.clicked.connect(lambda: self.power_clicked.emit(self._index))
+        actions.addWidget(self.power_button)
 
         actions.addStretch(1)
 
@@ -167,9 +189,12 @@ class DeviceCard(QFrame):
         root.addLayout(actions)
 
     def _format_subline(self) -> str:
-        ip = self._device.get("ip", "?")
+        ip = self._device.get("ip")
+        if not ip:
+            return "No LAN IP · Offline/Stale"
+
         port = self._device.get("port", "?")
-        source = "Manual" if self._device.get("manual") else "Discovered"
+        source = "Manual" if self._device.get("manual") else "LAN"
         return f"{ip} · :{port} · {source}"
 
     # ------------------------------------------------------------------ events
@@ -225,7 +250,9 @@ class DeviceCard(QFrame):
 
     def set_primary(self, primary: bool) -> None:
         self._is_primary = bool(primary)
-        self.status_dot.set_active(self._is_primary)
+        self.setProperty("primary", self._is_primary)
+        self.primary_label.setVisible(self._is_primary)
+        self._repolish()
 
     def set_checked(self, checked: bool) -> None:
         if self.checkbox.isChecked() != checked:
@@ -233,6 +260,61 @@ class DeviceCard(QFrame):
 
     def device(self) -> Dict[str, Any]:
         return dict(self._device)
+
+    def set_state(self, state: Dict[str, Any]) -> None:
+        """Render current or optimistic LAN state for this device."""
+        if not state:
+            return
+
+        online = bool(state.get("online"))
+        stale = bool(state.get("stale"))
+        error = state.get("last_error")
+        self.status_dot.set_active(online and not stale)
+
+        power = state.get("power_on")
+        if power is True:
+            self._power_on = True
+            self.power_state_label.setText("Power on")
+            self.power_button.setText("Turn Off")
+        elif power is False:
+            self._power_on = False
+            self.power_state_label.setText("Power off")
+            self.power_button.setText("Turn On")
+        else:
+            self._power_on = None
+            self.power_state_label.setText("Power unknown")
+            self.power_button.setText("Turn On")
+
+        if error:
+            self.state_detail_label.setText("Stale")
+            self.state_detail_label.setToolTip(str(error))
+        elif stale:
+            self.state_detail_label.setText("Refreshing")
+            self.state_detail_label.setToolTip("Waiting for device status confirmation.")
+        elif online:
+            self.state_detail_label.setText("Online")
+            self.state_detail_label.setToolTip("")
+        else:
+            self.state_detail_label.setText("Offline")
+            self.state_detail_label.setToolTip("")
+
+        brightness = state.get("brightness")
+        if isinstance(brightness, int):
+            was_blocked = self.brightness_slider.blockSignals(True)
+            self.brightness_slider.setValue(max(0, min(100, brightness)))
+            self.brightness_slider.blockSignals(was_blocked)
+            self.brightness_value.setText(f"{max(0, min(100, brightness))}%")
+
+        color = state.get("color")
+        if isinstance(color, (tuple, list)) and len(color) >= 3:
+            self._current_color = QColor(int(color[0]), int(color[1]), int(color[2]))
+            self._refresh_swatch()
+
+        color_temp = state.get("color_temp")
+        if color_temp:
+            self.color_swatch.setToolTip(f"Current color · {color_temp}K")
+        else:
+            self.color_swatch.setToolTip("Current color")
 
     def _refresh_swatch(self) -> None:
         c = self._current_color

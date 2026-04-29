@@ -3,7 +3,6 @@ import time
 from functools import partial
 from typing import Any, Dict, List, Tuple
 
-import colour
 import numpy as np
 from PIL import Image
 
@@ -84,9 +83,8 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
     connection.switch_razer(server, device, True)
     screen_grab = ScreenGrab()
 
-    # TODO: Initialise this in config?
-    # NOTE: Initialises with black colors
-    previous_colors = [(0, 0, 0)] * 10
+    segment_count = connection.get_segment_count(device, default=10)
+    previous_colors = [(0, 0, 0)] * segment_count
     while True:
         colors = []
         try:
@@ -101,25 +99,22 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
 
         top, bottom = int(height / 4 * 2), int(height / 4 * 3)
         for x in range(4):
-            img = screen.crop((int(width / 4 * x), 0, int(width / 4 * (x + 1)), top))
-            point = (int(img.size[0] / 2), int(img.size[1] / 2))
-            colors.append(img.getpixel(point))
+            x1 = int(width / 4 * x)
+            x2 = int(width / 4 * (x + 1))
+            colors.append(screen.getpixel(((x1 + x2) // 2, top // 2)))
 
         colors.reverse()
-        img = screen.crop((0, top, int(width / 4), bottom))
-        point = (int(img.size[0] / 2), int(img.size[1] / 2))
-        colors.append(img.getpixel(point))
+        colors.append(screen.getpixel((int(width / 8), (top + bottom) // 2)))
         for x in range(4):
-            img = screen.crop(
-                (int(width / 4 * x), bottom, int(width / 4 * (x + 1)), height)
-            )
-            point = (int(img.size[0] / 2), int(img.size[1] / 2))
-            colors.append(img.getpixel(point))
-        img = screen.crop((int((width / 4 * 3)), top, width, bottom))
-        colors.append(img.getpixel(point))
+            x1 = int(width / 4 * x)
+            x2 = int(width / 4 * (x + 1))
+            colors.append(screen.getpixel(((x1 + x2) // 2, (bottom + height) // 2)))
+        colors.append(screen.getpixel((int(width / 8 * 7), (top + bottom) // 2)))
 
         # Apply brightness setting to colors
         colors = apply_brightness(colors, BRIGHTNESS.monitor)
+        colors = utils.fit_colors_to_count(colors, segment_count)
+        previous_colors = utils.fit_colors_to_count(previous_colors, segment_count)
 
         smooth_transition(server, device, previous_colors, colors)
         previous_colors = colors
@@ -156,21 +151,17 @@ def smooth_transition(
     delay: float = 0.01,
 ) -> None:
     """Computes a smooth transition of the colors and sends it to a device."""
-    prev_colors = [
-        colour.Color(rgb=(c[0] / 255, c[1] / 255, c[2] / 255)) for c in previous_colors
-    ]
-    next_colors = [
-        colour.Color(rgb=(c[0] / 255, c[1] / 255, c[2] / 255)) for c in colors
-    ]
-
-    # TODO: There is probably a quicker way to do this with the numpy package or so -> Check
-    for step in range(steps):
-        interpolated_colors = []
-        for i in range(len(colors)):
-            r = utils.lerp(prev_colors[i].red, next_colors[i].red, step / steps)
-            g = utils.lerp(prev_colors[i].green, next_colors[i].green, step / steps)
-            b = utils.lerp(prev_colors[i].blue, next_colors[i].blue, step / steps)
-            interpolated_colors.append((int(r * 255), int(g * 255), int(b * 255)))
+    previous_colors = utils.fit_colors_to_count(previous_colors, len(colors))
+    for step in range(1, steps + 1):
+        t = step / steps
+        interpolated_colors = [
+            (
+                int(prev[0] + (cur[0] - prev[0]) * t),
+                int(prev[1] + (cur[1] - prev[1]) * t),
+                int(prev[2] + (cur[2] - prev[2]) * t),
+            )
+            for prev, cur in zip(previous_colors, colors)
+        ]
 
         connection.send_razer_data(
             server, device, utils.convert_colors(interpolated_colors)

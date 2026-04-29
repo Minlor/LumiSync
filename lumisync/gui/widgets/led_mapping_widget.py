@@ -527,14 +527,15 @@ class LedMappingWidget(QWidget):
             if not self.sync_controller:
                 return
             
-            device = self.sync_controller.get_selected_device()
-            if not device:
+            devices = self.sync_controller.get_selected_devices()
+            if not devices:
                 return
 
             self.sync_controller._ensure_server()
             server = self.sync_controller.server
             if server:
-                connection.switch_razer(server, device, True)
+                for device in devices:
+                    connection.switch_razer(server, device, True)
                 self._razer_mode_enabled = True
         except Exception:
             pass
@@ -575,9 +576,9 @@ class LedMappingWidget(QWidget):
             if not self.sync_controller:
                 return
                 
-            # Make sure we have a device
-            device = self.sync_controller.get_selected_device()
-            if not device:
+            # Make sure we have at least one selected device.
+            devices = self.sync_controller.get_selected_devices()
+            if not devices:
                 return
 
             # Ensure server is initialized
@@ -586,9 +587,12 @@ class LedMappingWidget(QWidget):
             if server:
                 # Only enable razer mode if not already enabled (prevents white flash)
                 if not skip_razer_enable and not self._razer_mode_enabled:
-                    connection.switch_razer(server, device, True)
+                    for device in devices:
+                        connection.switch_razer(server, device, True)
                     self._razer_mode_enabled = True
-                connection.send_razer_data(server, device, convert_colors(led_colors))
+                payload = convert_colors(led_colors)
+                for device in devices:
+                    connection.send_razer_data(server, device, payload)
         except Exception as e:
             if self._test_mode_active:
                 self.selection_label.setText(f"Connection error: {str(e)[:30]}")
