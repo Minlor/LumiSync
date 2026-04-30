@@ -117,7 +117,7 @@ python tests/test_color.py
 
 ## 🗺️ Roadmap
 
-- [ ] Multi-device support
+- [x] Multi-device support
 - [ ] Wayland & macOS screen capture
 - [x] Basic color control mode
 - [ ] Custom sync algorithms
