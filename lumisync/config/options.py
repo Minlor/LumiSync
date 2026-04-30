@@ -26,6 +26,7 @@ CONNECTION = SimpleNamespace(
     default=SimpleNamespace(
         multicast="239.255.255.250",
         port=4001,
+        control_port=4003,
         listen_port=4002,
         timeout=1,
     ),

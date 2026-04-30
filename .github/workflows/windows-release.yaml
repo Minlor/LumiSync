@@ -1,0 +1,42 @@
+name: Build Windows Release
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Build Windows artifacts
+        shell: pwsh
+        run: .\tools\build_windows.ps1 -Clean -RunTests -PythonCommand python -PythonVersion ""
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: LumiSync-Windows-x64
+          path: |
+            dist/LumiSync-Windows-x64-portable.zip
+            dist/LumiSync-Windows-x64-onefile.exe
+
+      - name: Attach artifacts to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/LumiSync-Windows-x64-portable.zip
+            dist/LumiSync-Windows-x64-onefile.exe

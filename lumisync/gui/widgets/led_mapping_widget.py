@@ -1,48 +1,33 @@
-"""LED-to-screen region mapping widget.
-
-Provides a visual interface for users to assign screen regions to LED positions.
-"""
+"""LED-to-screen content mapping widget."""
 
 from __future__ import annotations
 
-import json
+import math
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
-from PyQt6.QtCore import Qt, QRect, QPoint, pyqtSignal, QSettings, QTimer
-from PyQt6.QtGui import QColor, QPainter, QPen, QBrush, QFont, QMouseEvent
+from PyQt6.QtCore import QPoint, QRect, QSettings, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen, QBrush
 from PyQt6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QComboBox,
-    QFrame,
     QSizePolicy,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
 )
+
+from ... import connection, led_mapping, utils
+from ...led_mapping import NormalizedRect
+from ..theme import qcolor
 
 if TYPE_CHECKING:
     from ..controllers.sync_controller import SyncController
 
 
-# Default region layout: 10 LEDs mapped to screen areas
-# Format: list of (row, col) tuples where row is 0=top, 1=middle, 2=bottom
-# and col is 0-3 for the 4 horizontal segments
-DEFAULT_LED_MAPPING = [
-    (0, 3),  # LED 0: Top-right
-    (0, 2),  # LED 1: Top-center-right
-    (0, 1),  # LED 2: Top-center-left
-    (0, 0),  # LED 3: Top-left
-    (1, 0),  # LED 4: Left side
-    (2, 0),  # LED 5: Bottom-left
-    (2, 1),  # LED 6: Bottom-center-left
-    (2, 2),  # LED 7: Bottom-center-right
-    (2, 3),  # LED 8: Bottom-right
-    (1, 3),  # LED 9: Right side
-]
-
-# Screen region names for display
-REGION_NAMES = {
+DEFAULT_LED_MAPPING = led_mapping.DEFAULT_LEGACY_MAPPING
+REGION_NAMES: Dict[Tuple[int, int], str] = {
     (0, 0): "Top-Left",
     (0, 1): "Top-Center-Left",
     (0, 2): "Top-Center-Right",
@@ -55,149 +40,177 @@ REGION_NAMES = {
     (2, 3): "Bottom-Right",
 }
 
-# Vibrant test colors for each region - easy to distinguish
-TEST_COLORS: Dict[Tuple[int, int], Tuple[int, int, int]] = {
-    (0, 0): (255, 0, 0),      # Top-Left: Red
-    (0, 1): (255, 165, 0),    # Top-Center-Left: Orange
-    (0, 2): (255, 255, 0),    # Top-Center-Right: Yellow
-    (0, 3): (0, 255, 0),      # Top-Right: Green
-    (1, 0): (255, 0, 255),    # Left: Magenta
-    (1, 3): (0, 255, 255),    # Right: Cyan
-    (2, 0): (128, 0, 255),    # Bottom-Left: Purple
-    (2, 1): (0, 128, 255),    # Bottom-Center-Left: Sky Blue
-    (2, 2): (0, 255, 128),    # Bottom-Center-Right: Spring Green
-    (2, 3): (255, 255, 255),  # Bottom-Right: White
-}
-
-# Fixed colors for each LED position (LED 1-10)
-# These stay with the LED regardless of which region it's mapped to
-LED_COLORS: List[Tuple[int, int, int]] = [
-    (255, 0, 0),      # LED 1: Red
-    (255, 165, 0),    # LED 2: Orange
-    (255, 255, 0),    # LED 3: Yellow
-    (0, 255, 0),      # LED 4: Green
-    (255, 0, 255),    # LED 5: Magenta
-    (0, 255, 255),    # LED 6: Cyan
-    (128, 0, 255),    # LED 7: Purple
-    (0, 128, 255),    # LED 8: Sky Blue
-    (0, 255, 128),    # LED 9: Spring Green
-    (255, 255, 255),  # LED 10: White
+TEST_COLORS: List[Tuple[int, int, int]] = [
+    (255, 0, 0),
+    (255, 165, 0),
+    (255, 255, 0),
+    (0, 255, 0),
+    (255, 0, 255),
+    (0, 255, 255),
+    (128, 0, 255),
+    (0, 128, 255),
+    (0, 255, 128),
+    (255, 255, 255),
 ]
 
 
-class ScreenRegionPreview(QFrame):
-    """Visual preview of the monitor with draggable regions for LED mapping."""
+def zone_test_color(index: int) -> Tuple[int, int, int]:
+    if index < len(TEST_COLORS):
+        return TEST_COLORS[index]
+    color = QColor.fromHsv((index * 37) % 360, 210, 255)
+    return color.red(), color.green(), color.blue()
 
-    region_drag_swap = pyqtSignal(tuple, tuple)  # source_region, target_region
+
+def rect_test_color(rect: NormalizedRect) -> Tuple[int, int, int]:
+    normalized = led_mapping.normalize_rect(rect)
+    center_x = normalized["x"] + normalized["w"] / 2
+    center_y = normalized["y"] + normalized["h"] / 2
+    if abs(center_x - 0.5) < 0.001 and abs(center_y - 0.5) < 0.001:
+        return 255, 255, 255
+
+    angle = math.atan2(center_y - 0.5, center_x - 0.5)
+    hue = int(((angle + math.pi) / (2 * math.pi)) * 359)
+    value = 210 + int(min(45, math.hypot(center_x - 0.5, center_y - 0.5) * 90))
+    color = QColor.fromHsv(hue, 220, value)
+    return color.red(), color.green(), color.blue()
+
+
+def fit_led_colors_to_device(
+    device: Dict[str, object],
+    led_colors: List[Tuple[int, int, int]],
+) -> List[Tuple[int, int, int]]:
+    """Resize LED mapping colors to the segment count expected by one device."""
+    segment_count = connection.get_segment_count(device, default=len(DEFAULT_LED_MAPPING))
+    return utils.resample_colors_to_count(led_colors, segment_count)
+
+
+def fit_led_mapping_to_count(
+    mapping: List[NormalizedRect],
+    segment_count: int,
+) -> List[NormalizedRect]:
+    """Compatibility wrapper for tests and callers."""
+    return led_mapping.fit_normalized_mapping_to_count(mapping, segment_count)
+
+
+class ScreenRegionPreview(QFrame):
+    """Visual preview of the monitor with draggable content zones."""
+
+    zone_drag_swap = pyqtSignal(int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(280, 180)
+        self.setMinimumSize(300, 190)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setFrameShape(QFrame.Shape.Box)
-        self.setStyleSheet("background-color: #1a1a2e; border: 2px solid #4a4a6a; border-radius: 4px;")
+        self.setStyleSheet(
+            f"background-color: {qcolor('surface').name()};"
+            f"border: 1px solid {qcolor('border').name()};"
+            f"border-radius: 8px;"
+        )
 
-        self._led_mapping: List[Tuple[int, int]] = list(DEFAULT_LED_MAPPING)
-        self._hover_region: Optional[Tuple[int, int]] = None
-        # Region colors: dict mapping (row, col) -> QColor
-        self._region_colors: Dict[Tuple[int, int], QColor] = {}
+        self._mapping: List[NormalizedRect] = led_mapping.generate_screen_mapping(
+            len(DEFAULT_LED_MAPPING)
+        )
+        self._aspect_ratio = led_mapping.DEFAULT_ASPECT_RATIO
+        self._zone_colors: Dict[int, QColor] = {}
         self._show_colors = False
-        
-        # Drag state
-        self._drag_source: Optional[Tuple[int, int]] = None
+        self._hover_zone: Optional[int] = None
+        self._drag_source: Optional[int] = None
         self._drag_active = False
-        self._drag_pos: Optional[QPoint] = None  # Current mouse position during drag
+        self._drag_pos: Optional[QPoint] = None
 
         self.setMouseTracking(True)
         self.setAcceptDrops(True)
 
-    def set_mapping(self, mapping: List[Tuple[int, int]]) -> None:
-        self._led_mapping = list(mapping)
+    def set_mapping(self, mapping: List[NormalizedRect]) -> None:
+        self._mapping = [led_mapping.normalize_rect(rect) for rect in mapping]
         self.update()
 
-    def get_mapping(self) -> List[Tuple[int, int]]:
-        return list(self._led_mapping)
+    def get_mapping(self) -> List[NormalizedRect]:
+        return [dict(rect) for rect in self._mapping]
 
-    def set_region_colors(self, colors: Dict[Tuple[int, int], Tuple[int, int, int]]) -> None:
-        """Set colors for each region."""
-        self._region_colors = {k: QColor(r, g, b) for k, (r, g, b) in colors.items()}
+    def set_aspect_ratio(self, aspect_ratio: float) -> None:
+        self._aspect_ratio = led_mapping.sanitize_aspect_ratio(aspect_ratio)
+        self.update()
+
+    def set_zone_colors(self, colors: Dict[int, Tuple[int, int, int]]) -> None:
+        self._zone_colors = {
+            index: QColor(r, g, b)
+            for index, (r, g, b) in colors.items()
+        }
         self._show_colors = bool(colors)
         self.update()
 
     def clear_colors(self) -> None:
-        """Clear region colors."""
-        self._region_colors = {}
+        self._zone_colors = {}
         self._show_colors = False
         self.update()
-    
-    def get_led_at_region(self, region: Tuple[int, int]) -> Optional[int]:
-        """Get the LED index assigned to a region, or None."""
-        for i, r in enumerate(self._led_mapping):
-            if r == region:
-                return i
-        return None
 
-    def _get_region_rect(self, row: int, col: int) -> QRect:
-        """Calculate the rectangle for a screen region."""
+    def _screen_rect(self) -> QRect:
         margin = 10
-        w = self.width() - 2 * margin
-        h = self.height() - 2 * margin
+        available = self.rect().adjusted(margin, margin, -margin, -margin)
+        width = available.width()
+        height = available.height()
+        target_ratio = self._aspect_ratio
+        if width / max(1, height) > target_ratio:
+            screen_h = height
+            screen_w = int(screen_h * target_ratio)
+        else:
+            screen_w = width
+            screen_h = int(screen_w / target_ratio)
+        x = available.left() + (width - screen_w) // 2
+        y = available.top() + (height - screen_h) // 2
+        return QRect(x, y, screen_w, screen_h)
 
-        # 3 rows, 4 cols
-        cell_w = w // 4
-        cell_h = h // 3
+    def _zone_rect(self, index: int) -> QRect:
+        screen = self._screen_rect()
+        rect = self._mapping[index]
+        x = screen.left() + int(rect["x"] * screen.width())
+        y = screen.top() + int(rect["y"] * screen.height())
+        w = max(8, int(rect["w"] * screen.width()))
+        h = max(8, int(rect["h"] * screen.height()))
+        return QRect(x, y, w, h)
 
-        x = margin + col * cell_w
-        y = margin + row * cell_h
-
-        return QRect(x, y, cell_w, cell_h)
-
-    def _region_at_pos(self, pos: QPoint) -> Optional[Tuple[int, int]]:
-        """Get the region (row, col) at a given position."""
-        for row in range(3):
-            for col in range(4):
-                # Skip middle-center regions (no LEDs there)
-                if row == 1 and col in (1, 2):
-                    continue
-                rect = self._get_region_rect(row, col)
-                if rect.contains(pos):
-                    return (row, col)
+    def _zone_at_pos(self, pos: QPoint) -> Optional[int]:
+        for index in reversed(range(len(self._mapping))):
+            if self._zone_rect(index).contains(pos):
+                return index
         return None
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            region = self._region_at_pos(event.pos())
-            if region is not None and self.get_led_at_region(region) is not None:
-                # Start drag from this region
-                self._drag_source = region
+            zone = self._zone_at_pos(event.pos())
+            if zone is not None:
+                self._drag_source = zone
                 self._drag_active = True
                 self.setCursor(Qt.CursorShape.ClosedHandCursor)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        region = self._region_at_pos(event.pos())
-        if region != self._hover_region:
-            self._hover_region = region
+        zone = self._zone_at_pos(event.pos())
+        if zone != self._hover_zone:
+            self._hover_zone = zone
             self.update()
-        
-        # Update cursor and drag position based on drag state
+
         if self._drag_active:
             self._drag_pos = event.pos()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
-            self.update()  # Redraw to show drag indicator
-        elif region is not None and self.get_led_at_region(region) is not None:
+            self.update()
+        elif zone is not None:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
         else:
             self.setCursor(Qt.CursorShape.ArrowCursor)
-            
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._drag_active:
-            target_region = self._region_at_pos(event.pos())
-            if target_region is not None and target_region != self._drag_source:
-                # Emit swap signal
-                self.region_drag_swap.emit(self._drag_source, target_region)
+            target = self._zone_at_pos(event.pos())
+            if (
+                target is not None
+                and self._drag_source is not None
+                and target != self._drag_source
+            ):
+                self.zone_drag_swap.emit(self._drag_source, target)
             self._drag_source = None
             self._drag_active = False
             self._drag_pos = None
@@ -206,7 +219,7 @@ class ScreenRegionPreview(QFrame):
         super().mouseReleaseEvent(event)
 
     def leaveEvent(self, event) -> None:
-        self._hover_region = None
+        self._hover_zone = None
         if self._drag_active:
             self._drag_source = None
             self._drag_active = False
@@ -220,160 +233,161 @@ class ScreenRegionPreview(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Draw all regions
-        for row in range(3):
-            for col in range(4):
-                # Skip middle-center regions
-                if row == 1 and col in (1, 2):
-                    continue
+        screen_rect = self._screen_rect()
+        painter.setPen(QPen(qcolor("border"), 1))
+        painter.setBrush(QBrush(qcolor("surface_alt")))
+        painter.drawRoundedRect(screen_rect, 6, 6)
 
-                rect = self._get_region_rect(row, col)
-                region = (row, col)
-
-                # Get LED at this region (only 1 per region)
-                led_index = self.get_led_at_region(region)
-                is_drag_source = self._drag_active and region == self._drag_source
-                is_drag_target = self._drag_active and region == self._hover_region and region != self._drag_source
-
-                # Use test color if available
-                if self._show_colors and region in self._region_colors:
-                    fill_color = self._region_colors[region]
-                    # Highlight drag states
-                    if is_drag_source:
-                        fill_color = fill_color.darker(150)
-                        border_color = QColor(255, 200, 100)
-                    elif is_drag_target:
-                        fill_color = fill_color.lighter(130)
-                        border_color = QColor(100, 255, 100)
-                    elif self._hover_region == region:
-                        fill_color = fill_color.lighter(120)
-                        border_color = QColor(200, 200, 200)
-                    else:
-                        border_color = fill_color.darker(150)
-                else:
-                    # Non-test mode colors
-                    if is_drag_source:
-                        fill_color = QColor(100, 80, 40, 200)
-                        border_color = QColor(255, 200, 100)
-                    elif is_drag_target:
-                        fill_color = QColor(60, 120, 60, 200)
-                        border_color = QColor(100, 255, 100)
-                    elif self._hover_region == region:
-                        fill_color = QColor(80, 80, 120, 180)
-                        border_color = QColor(150, 150, 200)
-                    elif led_index is not None:
-                        fill_color = QColor(60, 100, 60, 150)
-                        border_color = QColor(100, 180, 100)
-                    else:
-                        fill_color = QColor(40, 40, 60, 100)
-                        border_color = QColor(80, 80, 100)
-
-                painter.setPen(QPen(border_color, 3 if is_drag_source or is_drag_target else 2))
-                painter.setBrush(QBrush(fill_color))
-                painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 4, 4)
-
-                # Draw LED number in this region
-                if led_index is not None:
-                    brightness = (fill_color.red() * 299 + fill_color.green() * 587 + fill_color.blue() * 114) / 1000
-                    text_color = QColor(0, 0, 0) if brightness > 128 else QColor(255, 255, 255)
-                    painter.setPen(text_color)
-                    font = QFont()
-                    font.setPointSize(10)
-                    font.setBold(True)
-                    painter.setFont(font)
-                    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(led_index + 1))
-
-        # Draw center "Monitor" label
-        center_rect = QRect(
-            self._get_region_rect(1, 1).left(),
-            self._get_region_rect(1, 1).top(),
-            self._get_region_rect(1, 2).right() - self._get_region_rect(1, 1).left(),
-            self._get_region_rect(1, 1).height()
-        )
-        painter.setPen(QColor(100, 100, 140))
+        center_rect = screen_rect
+        painter.setPen(qcolor("text_dim"))
         font = QFont()
         font.setPointSize(11)
         painter.setFont(font)
         painter.drawText(center_rect, Qt.AlignmentFlag.AlignCenter, "Screen Content")
-        
-        # Draw drag indicator (floating box following mouse)
+
+        for index, _rect in enumerate(self._mapping):
+            rect = self._zone_rect(index).adjusted(2, 2, -2, -2)
+            color = self._zone_colors.get(index, qcolor("accent"))
+            is_source = self._drag_active and index == self._drag_source
+            is_target = self._drag_active and index == self._hover_zone
+            is_hover = index == self._hover_zone
+
+            if self._show_colors:
+                fill_color = QColor(color)
+                if is_source:
+                    fill_color = fill_color.darker(150)
+                    border_color = QColor(255, 200, 100)
+                elif is_target:
+                    fill_color = fill_color.lighter(130)
+                    border_color = QColor(100, 255, 100)
+                elif is_hover:
+                    fill_color = fill_color.lighter(120)
+                    border_color = QColor(220, 220, 220)
+                else:
+                    border_color = fill_color.darker(150)
+            else:
+                fill_color = QColor(qcolor("accent"))
+                fill_color.setAlpha(75 if is_hover else 45)
+                border_color = qcolor("accent_bright") if is_hover else qcolor("border_strong")
+                if is_source:
+                    fill_color.setAlpha(120)
+                    border_color = qcolor("accent_bright")
+                elif is_target:
+                    fill_color = QColor(qcolor("success"))
+                    fill_color.setAlpha(130)
+                    border_color = qcolor("success")
+
+            painter.setPen(QPen(border_color, 3 if is_source or is_target else 2))
+            painter.setBrush(QBrush(fill_color))
+            painter.drawRoundedRect(rect, 4, 4)
+
+            brightness = (
+                fill_color.red() * 299
+                + fill_color.green() * 587
+                + fill_color.blue() * 114
+            ) / 1000
+            text_color = QColor(0, 0, 0) if brightness > 128 else QColor(255, 255, 255)
+            painter.setPen(text_color)
+            font = QFont()
+            font.setPointSize(9 if len(self._mapping) < 24 else 7)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(index + 1))
+
         if self._drag_active and self._drag_pos is not None and self._drag_source is not None:
-            indicator_size = 40
+            indicator_size = 38
             indicator_rect = QRect(
                 self._drag_pos.x() - indicator_size // 2,
                 self._drag_pos.y() - indicator_size // 2,
                 indicator_size,
-                indicator_size
+                indicator_size,
             )
-            
-            # Get the color of the dragged region
-            if self._show_colors and self._drag_source in self._region_colors:
-                drag_color = self._region_colors[self._drag_source]
-            else:
-                drag_color = QColor(100, 180, 100)
-            
-            # Draw semi-transparent indicator with border
+            drag_color = self._zone_colors.get(self._drag_source, qcolor("accent"))
             painter.setPen(QPen(QColor(255, 255, 255), 2))
-            painter.setBrush(QBrush(QColor(drag_color.red(), drag_color.green(), drag_color.blue(), 200)))
+            painter.setBrush(
+                QBrush(QColor(drag_color.red(), drag_color.green(), drag_color.blue(), 200))
+            )
             painter.drawRoundedRect(indicator_rect, 6, 6)
-            
-            # Draw LED number in indicator
-            led_index = self.get_led_at_region(self._drag_source)
-            if led_index is not None:
-                brightness = (drag_color.red() * 299 + drag_color.green() * 587 + drag_color.blue() * 114) / 1000
-                text_color = QColor(0, 0, 0) if brightness > 128 else QColor(255, 255, 255)
-                painter.setPen(text_color)
-                font = QFont()
-                font.setPointSize(12)
-                font.setBold(True)
-                painter.setFont(font)
-                painter.drawText(indicator_rect, Qt.AlignmentFlag.AlignCenter, str(led_index + 1))
+            painter.setPen(QColor(255, 255, 255))
+            painter.drawText(
+                indicator_rect,
+                Qt.AlignmentFlag.AlignCenter,
+                str(self._drag_source + 1),
+            )
 
 
 class LedMappingWidget(QWidget):
-    """Widget for mapping LED positions to screen regions via drag-and-drop."""
+    """Widget for mapping LED positions to screen content zones."""
 
-    mapping_changed = pyqtSignal(list)  # Emits the new mapping
+    mapping_changed = pyqtSignal(list)
 
-    def __init__(self, settings: QSettings, sync_controller: Optional["SyncController"] = None, parent=None):
+    def __init__(
+        self,
+        settings: QSettings,
+        sync_controller: Optional["SyncController"] = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self.settings = settings
         self.sync_controller = sync_controller
         self._test_mode_active = False
         self._test_timer: Optional[QTimer] = None
-        self._razer_mode_enabled = False  # Track razer mode to avoid white flash
+        self._razer_mode_enabled = False
+        self._segment_count = len(DEFAULT_LED_MAPPING)
+        self._aspect_ratio = led_mapping.DEFAULT_ASPECT_RATIO
+        self._capture_depth = led_mapping.capture_depth_from_settings(settings)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        # Instructions
         instructions = QLabel(
-            "Drag regions to swap LED positions. Colors show on your LED strip."
+            "Drag zones to swap LED positions. Colors show on your LED strip."
         )
         instructions.setWordWrap(True)
-        instructions.setStyleSheet("color: #aaa; font-size: 11px;")
+        instructions.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
         layout.addWidget(instructions)
 
-        # Screen region preview (main interaction area)
         self.screen_preview = ScreenRegionPreview()
         layout.addWidget(self.screen_preview)
 
-        # Current status info
-        self.selection_label = QLabel("Drag a region to swap LED positions")
-        self.selection_label.setStyleSheet("color: #888; font-style: italic;")
+        self.selection_label = QLabel("Drag a zone to swap LED positions")
+        self.selection_label.setStyleSheet(
+            f"color: {qcolor('text_disabled').name()}; font-style: italic;"
+        )
         layout.addWidget(self.selection_label)
 
-        # Buttons
+        depth_layout = QHBoxLayout()
+        depth_layout.addWidget(QLabel("Capture depth"))
+        self.capture_depth_slider = QSlider(Qt.Orientation.Horizontal)
+        self.capture_depth_slider.setRange(
+            int(led_mapping.MIN_CAPTURE_DEPTH * 100),
+            int(led_mapping.MAX_CAPTURE_DEPTH * 100),
+        )
+        self.capture_depth_slider.setValue(int(round(self._capture_depth * 100)))
+        self.capture_depth_slider.valueChanged.connect(self._on_capture_depth_changed)
+        depth_layout.addWidget(self.capture_depth_slider, 1)
+        self.capture_depth_label = QLabel(f"{int(round(self._capture_depth * 100))}%")
+        self.capture_depth_label.setMinimumWidth(42)
+        self.capture_depth_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        depth_layout.addWidget(self.capture_depth_label)
+        layout.addLayout(depth_layout)
+
         button_layout = QHBoxLayout()
-        
+
         self.test_button = QPushButton("■ Stop Test")
         self.test_button.setToolTip("Toggle test colors on LED strip")
         self.test_button.clicked.connect(self._toggle_test_mode)
         self.test_button.setCheckable(True)
-        self.test_button.setChecked(True)  # Start checked since we auto-start
+        self.test_button.setChecked(True)
         button_layout.addWidget(self.test_button)
-        
+
+        self.reverse_button = QPushButton("Reverse Order")
+        self.reverse_button.clicked.connect(self._reverse_order)
+        button_layout.addWidget(self.reverse_button)
+
         self.reset_button = QPushButton("Reset to Default")
         self.reset_button.clicked.connect(self._reset_to_default)
         button_layout.addWidget(self.reset_button)
@@ -381,229 +395,240 @@ class LedMappingWidget(QWidget):
         button_layout.addStretch()
         layout.addLayout(button_layout)
 
-        # Connect signals - drag swap for region reordering
-        self.screen_preview.region_drag_swap.connect(self._on_region_swap)
-
-        # Load saved mapping
+        self.screen_preview.zone_drag_swap.connect(self._on_zone_swap)
         self._load_mapping()
-    
+
+    def set_mapping_context(self, segment_count: int, aspect_ratio: float) -> None:
+        segment_count = led_mapping.clamp_zone_count(segment_count)
+        aspect_ratio = led_mapping.sanitize_aspect_ratio(aspect_ratio)
+        count_changed = segment_count != self._segment_count
+        aspect_changed = abs(aspect_ratio - self._aspect_ratio) > 0.001
+        if not count_changed and not aspect_changed:
+            return
+
+        self._segment_count = segment_count
+        self._aspect_ratio = aspect_ratio
+        self.screen_preview.set_aspect_ratio(aspect_ratio)
+        saved_mapping = led_mapping.parse_normalized_mapping(
+            self.settings.value(led_mapping.NORMALIZED_MAPPING_KEY, None)
+        )
+        regenerated = False
+        if saved_mapping and len(saved_mapping) == segment_count and not aspect_changed:
+            mapping = saved_mapping
+        else:
+            regenerated = True
+            mapping = led_mapping.generate_screen_mapping(
+                segment_count,
+                aspect_ratio,
+                self._capture_depth,
+            )
+        self.screen_preview.set_mapping(mapping)
+        self.selection_label.setText(f"Mapping {segment_count} zones")
+        if regenerated:
+            self._save_mapping()
+
+        if self._test_mode_active:
+            self._update_test_display()
+
+    def set_segment_count(self, segment_count: int) -> None:
+        self.set_mapping_context(segment_count, self._aspect_ratio)
+
     def start_test_mode_if_not_active(self) -> None:
-        """Start test mode if not already active. Called when widget becomes visible."""
         if not self._test_mode_active:
             self._start_test_mode()
 
     def stop_test_mode_if_active(self) -> None:
-        """Stop test mode if active. Called when widget is hidden."""
         if self._test_mode_active:
             self._stop_test_mode()
 
     def _load_mapping(self) -> None:
-        """Load mapping from settings."""
-        try:
-            saved = self.settings.value("sync/led_mapping", None)
-            if saved:
-                mapping = json.loads(saved)
-                # Convert lists back to tuples
-                mapping = [tuple(m) for m in mapping]
-                if len(mapping) == 10:
-                    self.screen_preview.set_mapping(mapping)
-                    return
-        except Exception:
-            pass
-        # Use default
-        self.screen_preview.set_mapping(DEFAULT_LED_MAPPING)
+        mapping = led_mapping.load_mapping_from_settings(
+            self.settings,
+            self._segment_count,
+            self._aspect_ratio,
+            self._capture_depth,
+        )
+        self.screen_preview.set_aspect_ratio(self._aspect_ratio)
+        self.screen_preview.set_mapping(mapping)
 
     def _save_mapping(self) -> None:
-        """Save mapping to settings."""
         mapping = self.screen_preview.get_mapping()
-        # Convert tuples to lists for JSON
-        self.settings.setValue("sync/led_mapping", json.dumps(mapping))
+        self.settings.setValue(
+            led_mapping.NORMALIZED_MAPPING_KEY,
+            led_mapping.serialize_mapping(mapping),
+        )
         self.mapping_changed.emit(mapping)
 
-    def get_mapping(self) -> List[Tuple[int, int]]:
-        """Get the current LED mapping."""
+    def get_mapping(self) -> List[NormalizedRect]:
         return self.screen_preview.get_mapping()
 
-    def _on_region_swap(self, source_region: Tuple[int, int], target_region: Tuple[int, int]) -> None:
-        """Handle swapping LEDs between two regions."""
+    def _on_zone_swap(self, source_index: int, target_index: int) -> None:
         mapping = self.screen_preview.get_mapping()
-        
-        # Find which LEDs are at source and target
-        source_led = None
-        target_led = None
-        for i, region in enumerate(mapping):
-            if region == source_region:
-                source_led = i
-            elif region == target_region:
-                target_led = i
-        
-        if source_led is None:
+        if not (0 <= source_index < len(mapping) and 0 <= target_index < len(mapping)):
             return
-        
-        # Swap the regions
-        if target_led is not None:
-            # Swap both LEDs
-            mapping[source_led], mapping[target_led] = mapping[target_led], mapping[source_led]
-            src_name = REGION_NAMES.get(source_region, "?")
-            tgt_name = REGION_NAMES.get(target_region, "?")
-            self.selection_label.setText(f"Swapped LED {source_led + 1} ↔ LED {target_led + 1}")
-        else:
-            # Move source LED to empty target region
-            mapping[source_led] = target_region
-            tgt_name = REGION_NAMES.get(target_region, "?")
-            self.selection_label.setText(f"Moved LED {source_led + 1} → {tgt_name}")
-        
+
+        mapping[source_index], mapping[target_index] = mapping[target_index], mapping[source_index]
         self.screen_preview.set_mapping(mapping)
+        self.selection_label.setText(
+            f"Swapped zone {source_index + 1} ↔ zone {target_index + 1}"
+        )
         self._save_mapping()
-        
-        # Update displays
+
+        if self._test_mode_active:
+            self._update_test_display()
+
+    def _reverse_order(self) -> None:
+        mapping = list(reversed(self.screen_preview.get_mapping()))
+        self.screen_preview.set_mapping(mapping)
+        self.selection_label.setText("Zone order reversed")
+        self._save_mapping()
+
+        if self._test_mode_active:
+            self._update_test_display()
+
+    def _on_capture_depth_changed(self, value: int) -> None:
+        self._capture_depth = led_mapping.clamp_capture_depth(value / 100)
+        self.capture_depth_label.setText(f"{int(round(self._capture_depth * 100))}%")
+        self.settings.setValue(led_mapping.CAPTURE_DEPTH_KEY, self._capture_depth)
+        self.screen_preview.set_mapping(
+            led_mapping.generate_screen_mapping(
+                self._segment_count,
+                self._aspect_ratio,
+                self._capture_depth,
+            )
+        )
+        self.selection_label.setText(
+            f"Capture depth set to {int(round(self._capture_depth * 100))}%"
+        )
+        self._save_mapping()
+
         if self._test_mode_active:
             self._update_test_display()
 
     def _toggle_test_mode(self) -> None:
-        """Toggle test mode."""
         if self._test_mode_active:
             self._stop_test_mode()
         else:
             self._start_test_mode()
 
     def _start_test_mode(self) -> None:
-        """Start test mode - show distinct colors for each region."""
         self._test_mode_active = True
         self.test_button.setText("■ Stop Test")
         self.test_button.setChecked(True)
-        self.selection_label.setText("Test mode - drag regions to swap LEDs")
-        
-        # Enable razer mode once at start
+        self.selection_label.setText("Test mode - drag zones to swap LEDs")
         self._enable_razer_mode()
-        
-        # Update the display
         self._update_test_display()
-        
-        # Create timer to keep updating (refreshes both UI and device)
+
         self._test_timer = QTimer(self)
         self._test_timer.timeout.connect(self._refresh_test_colors)
-        self._test_timer.start(1000)  # Refresh every 1 second (slower to avoid flashing)
+        self._test_timer.start(1000)
 
     def _stop_test_mode(self) -> None:
-        """Stop test mode."""
         self._test_mode_active = False
         self._razer_mode_enabled = False
-        self.test_button.setText("🎨 Test Colors")
+        self.test_button.setText("Test Colors")
         self.test_button.setChecked(False)
-        self.selection_label.setText("Drag regions to swap LED positions")
-        
+        self.selection_label.setText("Drag a zone to swap LED positions")
+
         if self._test_timer:
             self._test_timer.stop()
             self._test_timer = None
-        
-        # Clear colors from display
+
         self.screen_preview.clear_colors()
-        
-        # Turn off LEDs (send black)
-        self._send_colors_to_strip([(0, 0, 0)] * 10)
+
+        try:
+            self._send_colors_to_strip([(0, 0, 0)] * len(self.get_mapping()))
+        finally:
+            if self.sync_controller and not self.sync_controller.is_syncing():
+                self.sync_controller.close_server()
 
     def _enable_razer_mode(self) -> None:
-        """Enable razer mode on the device (once)."""
         if self._razer_mode_enabled:
             return
         try:
-            from ... import connection
-            
             if not self.sync_controller:
                 return
-            
-            device = self.sync_controller.get_selected_device()
-            if not device:
+
+            devices = self.sync_controller.get_selected_devices()
+            if not devices:
                 return
 
             self.sync_controller._ensure_server()
             server = self.sync_controller.server
             if server:
-                connection.switch_razer(server, device, True)
+                for device in devices:
+                    connection.switch_razer(server, device, True)
                 self._razer_mode_enabled = True
         except Exception:
             pass
 
+    def _zone_colors(self) -> Dict[int, Tuple[int, int, int]]:
+        return {
+            index: rect_test_color(rect)
+            for index, rect in enumerate(self.get_mapping())
+        }
+
     def _refresh_test_colors(self) -> None:
-        """Refresh test colors to device (without re-enabling razer mode)."""
         if not self._test_mode_active:
             return
-        # Each LED shows the color of the region it's mapped to
-        mapping = self.screen_preview.get_mapping()
-        led_colors = [TEST_COLORS.get(region, (0, 0, 0)) for region in mapping]
+        led_colors = [rect_test_color(rect) for rect in self.get_mapping()]
         self._send_colors_to_strip(led_colors, skip_razer_enable=True)
 
     def _update_test_display(self) -> None:
-        """Update the test mode display and send colors to LED strip."""
-        mapping = self.screen_preview.get_mapping()
-        
-        # Each region has a fixed test color (from TEST_COLORS)
-        # Each LED shows the color of the region it's mapped to
-        # This way when you swap, the physical LED changes to its new region's color
-        led_colors = [TEST_COLORS.get(region, (0, 0, 0)) for region in mapping]
-        
-        # For screen preview, show each region with its fixed test color
-        region_colors = dict(TEST_COLORS)
-        
-        # Show test colors in the screen preview
-        self.screen_preview.set_region_colors(region_colors)
-        
-        # Send region-based colors to physical LED strip
+        led_colors = [rect_test_color(rect) for rect in self.get_mapping()]
+        self.screen_preview.set_zone_colors(self._zone_colors())
         self._send_colors_to_strip(led_colors, skip_razer_enable=False)
 
-    def _send_colors_to_strip(self, led_colors: List[Tuple[int, int, int]], skip_razer_enable: bool = False) -> None:
-        """Send colors to the physical LED strip."""
+    def _send_colors_to_strip(
+        self,
+        led_colors: List[Tuple[int, int, int]],
+        skip_razer_enable: bool = False,
+    ) -> None:
         try:
-            from ...utils import convert_colors
-            from ... import connection
-            
             if not self.sync_controller:
                 return
-                
-            # Make sure we have a device
-            device = self.sync_controller.get_selected_device()
-            if not device:
+
+            devices = self.sync_controller.get_selected_devices()
+            if not devices:
                 return
 
-            # Ensure server is initialized
             self.sync_controller._ensure_server()
             server = self.sync_controller.server
             if server:
-                # Only enable razer mode if not already enabled (prevents white flash)
                 if not skip_razer_enable and not self._razer_mode_enabled:
-                    connection.switch_razer(server, device, True)
+                    for device in devices:
+                        connection.switch_razer(server, device, True)
                     self._razer_mode_enabled = True
-                connection.send_razer_data(server, device, convert_colors(led_colors))
+                for device in devices:
+                    payload = utils.convert_colors(
+                        fit_led_colors_to_device(device, led_colors)
+                    )
+                    connection.send_razer_data(server, device, payload)
         except Exception as e:
             if self._test_mode_active:
                 self.selection_label.setText(f"Connection error: {str(e)[:30]}")
 
-    def _get_color_name(self, region: Tuple[int, int]) -> str:
-        """Get the color name for a region."""
-        color_names = {
-            (0, 0): "Red",
-            (0, 1): "Orange",
-            (0, 2): "Yellow",
-            (0, 3): "Green",
-            (1, 0): "Magenta",
-            (1, 3): "Cyan",
-            (2, 0): "Purple",
-            (2, 1): "Sky Blue",
-            (2, 2): "Spring Green",
-            (2, 3): "White",
-        }
-        return color_names.get(region, "Unknown")
-
     def _reset_to_default(self) -> None:
-        """Reset mapping to default."""
-        self.screen_preview.set_mapping(DEFAULT_LED_MAPPING)
+        self.screen_preview.set_mapping(
+            led_mapping.generate_screen_mapping(
+                self._segment_count,
+                self._aspect_ratio,
+                self._capture_depth,
+            )
+        )
         self.selection_label.setText("Mapping reset to default")
         self._save_mapping()
-        
-        # Update the display
+
         if self._test_mode_active:
             self._update_test_display()
 
 
-__all__ = ["LedMappingWidget", "DEFAULT_LED_MAPPING", "REGION_NAMES", "TEST_COLORS"]
+__all__ = [
+    "LedMappingWidget",
+    "DEFAULT_LED_MAPPING",
+    "REGION_NAMES",
+    "TEST_COLORS",
+    "fit_led_colors_to_device",
+    "fit_led_mapping_to_count",
+    "rect_test_color",
+]

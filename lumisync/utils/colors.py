@@ -4,7 +4,7 @@ This module provides functions for color manipulation and conversion.
 """
 
 import base64
-from typing import List, Tuple
+from typing import Iterable, List, Tuple
 
 import webcolors
 from matplotlib.colors import CSS4_COLORS
@@ -52,6 +52,72 @@ def get_color(name: str, format: str = "rgb") -> Tuple[int, int, int] | str:
     return color
 
 
+def clamp_channel(value: int) -> int:
+    """Clamp a color channel to the byte range expected by Govee payloads."""
+    try:
+        channel = int(value)
+    except (TypeError, ValueError):
+        channel = 0
+    return max(0, min(255, channel))
+
+
+def normalize_rgb(color: Iterable[int]) -> Tuple[int, int, int]:
+    """Normalize any RGB-like iterable into a safe 3-byte tuple."""
+    values = list(color)[:3]
+    values.extend([0] * (3 - len(values)))
+    return (
+        clamp_channel(values[0]),
+        clamp_channel(values[1]),
+        clamp_channel(values[2]),
+    )
+
+
+def fit_colors_to_count(
+    colors: List[Tuple[int, int, int]],
+    count: int,
+) -> List[Tuple[int, int, int]]:
+    """Resize a color list to a device's segment count by cycling samples."""
+    count = max(0, int(count))
+    if count == 0:
+        return []
+    if not colors:
+        return [(0, 0, 0)] * count
+    normalized = [normalize_rgb(color) for color in colors]
+    return [normalized[index % len(normalized)] for index in range(count)]
+
+
+def resample_colors_to_count(
+    colors: List[Tuple[int, int, int]],
+    count: int,
+) -> List[Tuple[int, int, int]]:
+    """Resize perimeter colors so samples are spread over one physical loop."""
+    count = max(0, int(count))
+    if count == 0:
+        return []
+    if not colors:
+        return [(0, 0, 0)] * count
+
+    normalized = [normalize_rgb(color) for color in colors]
+    source_count = len(normalized)
+    if source_count == count:
+        return list(normalized)
+
+    resampled = []
+    for index in range(count):
+        position = index * source_count / count
+        left = int(position) % source_count
+        right = (left + 1) % source_count
+        fraction = position - int(position)
+        resampled.append(
+            (
+                int(lerp(normalized[left][0], normalized[right][0], fraction)),
+                int(lerp(normalized[left][1], normalized[right][1], fraction)),
+                int(lerp(normalized[left][2], normalized[right][2], fraction)),
+            )
+        )
+    return resampled
+
+
 def convert_colors(colors: List[Tuple[int, int, int]]) -> str:
     """Converts a list of RGB colors to the Razer protocol format.
 
@@ -65,8 +131,12 @@ def convert_colors(colors: List[Tuple[int, int, int]]) -> str:
     str
         Base64 encoded string for the Razer protocol.
     """
-    razer_header = [0xBB, 0x00, 0x0E, 0xB0, 0x01, len(colors)]
-    for color in colors:
+    if len(colors) > 255:
+        raise ValueError("Razer payload supports at most 255 RGB segments.")
+
+    normalized_colors = [normalize_rgb(color) for color in colors]
+    razer_header = [0xBB, 0x00, 0x0E, 0xB0, 0x01, len(normalized_colors)]
+    for color in normalized_colors:
         razer_header.extend(color)
 
     checksum = 0

@@ -7,7 +7,15 @@ This package provides various utilities for color handling, file operations, and
 from .logging import setup_logger, get_logger
 
 # Re-export color utilities
-from .colors import lerp, get_color, convert_colors
+from .colors import (
+    clamp_channel,
+    convert_colors,
+    fit_colors_to_count,
+    get_color,
+    lerp,
+    normalize_rgb,
+    resample_colors_to_count,
+)
 
 # Re-export file operation utilities
 from .file_operations import write_json, writeJSON
@@ -18,9 +26,13 @@ __all__ = [
     "get_logger",
 
     # Colors
+    "clamp_channel",
     "convert_colors",
+    "fit_colors_to_count",
     "lerp",
     "get_color",
+    "normalize_rgb",
+    "resample_colors_to_count",
 
     # File operations
     "write_json",

@@ -25,11 +25,11 @@ dependencies = [
   "dxcam>=0.0.5",
   "matplotlib>=3.10.1",
   "numpy>=2.2.4",
+  "packaging>=24.0",
   "pillow>=11.1.0",
   "soundcard>=0.4.5",
   "webcolors>=24.11.1",
   "PyQt6>=6.6.0",
-  "qt-material>=2.14",
   "pywin32>=310; sys_platform == 'win32'",
   "mss>=10.1.0; sys_platform != 'win32'",
 ]
@@ -39,6 +39,8 @@ include = ["lumisync*"]
 
 [tool.setuptools.package-data]
 "lumisync.gui.resources" = ["icons/*.svg", "*.ico"]
+"lumisync.gui.theme" = ["*.qss"]
+"lumisync.config" = ["*.toml"]
 
 [tool.setuptools.dynamic]
 version = { attr = "lumisync.__version__" }

@@ -3,11 +3,10 @@ import time
 from functools import partial
 from typing import Any, Dict, List, Tuple
 
-import colour
 import numpy as np
 from PIL import Image
 
-from .. import connection, utils
+from .. import connection, led_mapping, utils
 from ..config.options import BRIGHTNESS, GENERAL
 
 
@@ -39,13 +38,18 @@ class ScreenGrab:
                 ScreenGrab._dxcam_output_idx = None
 
             if ScreenGrab._dxcam_instance is None:
+                requested_output = max(0, self.display_index)
                 try:
-                    self.camera = dxcam.create(output_idx=self.display_index)
-                except TypeError:
+                    self.camera = dxcam.create(output_idx=requested_output)
+                except Exception:
                     try:
-                        self.camera = dxcam.create(device_idx=0, output_idx=self.display_index)
-                    except TypeError:
+                        self.camera = dxcam.create(device_idx=0, output_idx=requested_output)
+                    except Exception:
+                        # Fall back to dxcam's default output, usually the primary
+                        # monitor. This keeps GUI sync usable when QSettings contains
+                        # a stale or dxcam-incompatible display index.
                         self.camera = dxcam.create()
+                        self.display_index = 0
                 ScreenGrab._dxcam_instance = self.camera
                 ScreenGrab._dxcam_output_idx = self.display_index
             else:
@@ -84,9 +88,8 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
     connection.switch_razer(server, device, True)
     screen_grab = ScreenGrab()
 
-    # TODO: Initialise this in config?
-    # NOTE: Initialises with black colors
-    previous_colors = [(0, 0, 0)] * 10
+    segment_count = connection.get_segment_count(device, default=10)
+    previous_colors = [(0, 0, 0)] * segment_count
     while True:
         colors = []
         try:
@@ -99,27 +102,29 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
             print("Warning: Screenshot failed, trying again...")
             continue
 
-        top, bottom = int(height / 4 * 2), int(height / 4 * 3)
-        for x in range(4):
-            img = screen.crop((int(width / 4 * x), 0, int(width / 4 * (x + 1)), top))
-            point = (int(img.size[0] / 2), int(img.size[1] / 2))
-            colors.append(img.getpixel(point))
-
-        colors.reverse()
-        img = screen.crop((0, top, int(width / 4), bottom))
-        point = (int(img.size[0] / 2), int(img.size[1] / 2))
-        colors.append(img.getpixel(point))
-        for x in range(4):
-            img = screen.crop(
-                (int(width / 4 * x), bottom, int(width / 4 * (x + 1)), height)
+        mapping = led_mapping.generate_screen_mapping(
+            segment_count,
+            width / max(1, height),
+        )
+        for rect in mapping:
+            normalized = led_mapping.normalize_rect(rect)
+            x1 = int(normalized["x"] * width)
+            y1 = int(normalized["y"] * height)
+            x2 = int((normalized["x"] + normalized["w"]) * width)
+            y2 = int((normalized["y"] + normalized["h"]) * height)
+            colors.append(
+                screen.getpixel(
+                    (
+                        max(0, min(width - 1, x1 + max(1, x2 - x1) // 2)),
+                        max(0, min(height - 1, y1 + max(1, y2 - y1) // 2)),
+                    )
+                )
             )
-            point = (int(img.size[0] / 2), int(img.size[1] / 2))
-            colors.append(img.getpixel(point))
-        img = screen.crop((int((width / 4 * 3)), top, width, bottom))
-        colors.append(img.getpixel(point))
 
         # Apply brightness setting to colors
         colors = apply_brightness(colors, BRIGHTNESS.monitor)
+        colors = utils.resample_colors_to_count(colors, segment_count)
+        previous_colors = utils.fit_colors_to_count(previous_colors, segment_count)
 
         smooth_transition(server, device, previous_colors, colors)
         previous_colors = colors
@@ -156,21 +161,17 @@ def smooth_transition(
     delay: float = 0.01,
 ) -> None:
     """Computes a smooth transition of the colors and sends it to a device."""
-    prev_colors = [
-        colour.Color(rgb=(c[0] / 255, c[1] / 255, c[2] / 255)) for c in previous_colors
-    ]
-    next_colors = [
-        colour.Color(rgb=(c[0] / 255, c[1] / 255, c[2] / 255)) for c in colors
-    ]
-
-    # TODO: There is probably a quicker way to do this with the numpy package or so -> Check
-    for step in range(steps):
-        interpolated_colors = []
-        for i in range(len(colors)):
-            r = utils.lerp(prev_colors[i].red, next_colors[i].red, step / steps)
-            g = utils.lerp(prev_colors[i].green, next_colors[i].green, step / steps)
-            b = utils.lerp(prev_colors[i].blue, next_colors[i].blue, step / steps)
-            interpolated_colors.append((int(r * 255), int(g * 255), int(b * 255)))
+    previous_colors = utils.fit_colors_to_count(previous_colors, len(colors))
+    for step in range(1, steps + 1):
+        t = step / steps
+        interpolated_colors = [
+            (
+                int(prev[0] + (cur[0] - prev[0]) * t),
+                int(prev[1] + (cur[1] - prev[1]) * t),
+                int(prev[2] + (cur[2] - prev[2]) * t),
+            )
+            for prev, cur in zip(previous_colors, colors)
+        ]
 
         connection.send_razer_data(
             server, device, utils.convert_colors(interpolated_colors)

@@ -12,7 +12,7 @@ if np.lib.NumpyVersion(np.__version__) >= '2.0.0':
 import soundcard as sc
 
 from .. import connection, utils
-from ..config.options import GENERAL, AUDIO, COLORS, BRIGHTNESS
+from ..config.options import AUDIO, COLORS, BRIGHTNESS
 
 def start(server: socket.socket, device: Dict[str, Any]) -> None:
     # Initialize COM on Windows (required for soundcard library in threads)
@@ -22,7 +22,9 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
 
     try:
         connection.switch_razer(server, device, True)
-        COLORS.current = [(0, 0, 0)] * GENERAL.nled
+        COLORS.current = [
+            (0, 0, 0)
+        ] * connection.get_segment_count(device, default=10)
         while True:
             with sc.get_microphone(
                 id=str(sc.default_speaker().name), include_loopback=True
@@ -82,6 +84,12 @@ def wave_color(server: socket.socket, device: Dict[str, Any], amplitude: float) 
     COLORS.current.pop(0)
 
     # Apply brightness to current colors
+    segment_count = connection.get_segment_count(device, default=10)
+    COLORS.current = utils.fit_colors_to_count(COLORS.current, segment_count)
     adjusted_colors = apply_brightness(COLORS.current, BRIGHTNESS.music)
 
-    connection.send_razer_data(server, device, utils.convert_colors(adjusted_colors))
+    connection.send_razer_data(
+        server,
+        device,
+        utils.convert_colors(utils.fit_colors_to_count(adjusted_colors, segment_count)),
+    )
