@@ -9,7 +9,12 @@ import argparse
 import os
 import subprocess
 import sys
+from pathlib import Path
 from threading import Thread
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    __package__ = "lumisync"
 
 import colorama
 from colorama import Fore
@@ -18,6 +23,14 @@ from . import connection
 from .utils.logging import setup_logger
 
 logger = setup_logger("lumisync")
+
+
+def _ensure_standard_streams() -> None:
+    """Keep argparse usable in windowed frozen builds."""
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 
 def _launch_gui() -> int:
@@ -170,6 +183,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    _ensure_standard_streams()
+
     parser = _build_parser()
     args = parser.parse_args()
 
