@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
 )
 
+from ... import connection, utils
 from ..theme import qcolor
 
 if TYPE_CHECKING:
@@ -85,6 +86,15 @@ LED_COLORS: List[Tuple[int, int, int]] = [
     (0, 255, 128),    # LED 9: Spring Green
     (255, 255, 255),  # LED 10: White
 ]
+
+
+def fit_led_colors_to_device(
+    device: Dict[str, object],
+    led_colors: List[Tuple[int, int, int]],
+) -> List[Tuple[int, int, int]]:
+    """Resize LED mapping colors to the segment count expected by one device."""
+    segment_count = connection.get_segment_count(device, default=len(DEFAULT_LED_MAPPING))
+    return utils.resample_colors_to_count(led_colors, segment_count)
 
 
 class ScreenRegionPreview(QFrame):
@@ -515,15 +525,17 @@ class LedMappingWidget(QWidget):
         self.screen_preview.clear_colors()
         
         # Turn off LEDs (send black)
-        self._send_colors_to_strip([(0, 0, 0)] * 10)
+        try:
+            self._send_colors_to_strip([(0, 0, 0)] * 10)
+        finally:
+            if self.sync_controller and not self.sync_controller.is_syncing():
+                self.sync_controller.close_server()
 
     def _enable_razer_mode(self) -> None:
         """Enable razer mode on the device (once)."""
         if self._razer_mode_enabled:
             return
         try:
-            from ... import connection
-            
             if not self.sync_controller:
                 return
             
@@ -570,9 +582,6 @@ class LedMappingWidget(QWidget):
     def _send_colors_to_strip(self, led_colors: List[Tuple[int, int, int]], skip_razer_enable: bool = False) -> None:
         """Send colors to the physical LED strip."""
         try:
-            from ...utils import convert_colors
-            from ... import connection
-            
             if not self.sync_controller:
                 return
                 
@@ -590,8 +599,10 @@ class LedMappingWidget(QWidget):
                     for device in devices:
                         connection.switch_razer(server, device, True)
                     self._razer_mode_enabled = True
-                payload = convert_colors(led_colors)
                 for device in devices:
+                    payload = utils.convert_colors(
+                        fit_led_colors_to_device(device, led_colors)
+                    )
                     connection.send_razer_data(server, device, payload)
         except Exception as e:
             if self._test_mode_active:
@@ -624,4 +635,10 @@ class LedMappingWidget(QWidget):
             self._update_test_display()
 
 
-__all__ = ["LedMappingWidget", "DEFAULT_LED_MAPPING", "REGION_NAMES", "TEST_COLORS"]
+__all__ = [
+    "LedMappingWidget",
+    "DEFAULT_LED_MAPPING",
+    "REGION_NAMES",
+    "TEST_COLORS",
+    "fit_led_colors_to_device",
+]

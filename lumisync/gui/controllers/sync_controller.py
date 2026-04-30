@@ -57,7 +57,10 @@ def fit_led_mapping_to_count(
     """Resize a saved LED mapping to a device's effective segment count."""
     segment_count = max(1, int(segment_count))
     source = mapping or DEFAULT_LED_MAPPING
-    return [source[index % len(source)] for index in range(segment_count)]
+    return [
+        source[int(index * len(source) / segment_count) % len(source)]
+        for index in range(segment_count)
+    ]
 
 
 def sample_region_color(screen, width: int, height: int, row: int, col: int) -> Tuple[int, int, int]:
@@ -144,6 +147,7 @@ class MonitorSyncWorker(QObject):
             current_display_index = -1
             led_mapping = get_led_mapping_from_settings()
             mapping_check_counter = 0
+            empty_capture_count = 0
 
             while not self.stop_event.is_set():
                 try:
@@ -161,8 +165,20 @@ class MonitorSyncWorker(QObject):
 
                     screen = screen_grab.capture()
                     if screen is None:
+                        empty_capture_count += 1
+                        if empty_capture_count in (30, 120):
+                            self.status_updated.emit(
+                                "Monitor sync is waiting for screen frames. "
+                                "Check the display selected in Settings if lights stay dark."
+                            )
+                        if empty_capture_count >= 120:
+                            screen_grab = None
+                            current_display_index = -1
+                            empty_capture_count = 0
+                        time.sleep(0.05)
                         continue
 
+                    empty_capture_count = 0
                     width, height = screen.size
 
                     for device in self.devices:
@@ -180,7 +196,7 @@ class MonitorSyncWorker(QObject):
                             colors,
                             self.controller.get_monitor_brightness(),
                         )
-                        colors = utils.fit_colors_to_count(colors, segment_count)
+                        colors = utils.resample_colors_to_count(colors, segment_count)
                         previous_colors = previous_by_device.get(
                             key,
                             [(0, 0, 0)] * segment_count,
@@ -454,6 +470,7 @@ class SyncController(QObject):
     def stop_sync(self):
         """Stop any active synchronization."""
         if self.sync_thread is None:
+            self.close_server()
             return
 
         try:
@@ -464,6 +481,7 @@ class SyncController(QObject):
             self.sync_worker = None
             self.current_sync_mode = None
             self.active_devices = []
+            self.close_server()
             return
 
         if is_running:
@@ -492,6 +510,7 @@ class SyncController(QObject):
         # Clear the reference to allow garbage collection
         self.sync_thread = None
         self.sync_worker = None
+        self.close_server()
 
     def get_current_sync_mode(self) -> Optional[str]:
         """Get the current synchronization mode.
@@ -521,11 +540,15 @@ class SyncController(QObject):
         if self.server is None:
             self.server = connection.create_lan_socket()
 
+    def close_server(self) -> None:
+        """Close the shared LAN socket when sync/mapping is idle."""
+        if self.server is not None:
+            try:
+                self.server.close()
+            finally:
+                self.server = None
+
     def __del__(self):
         """Clean up resources when the controller is deleted."""
         self.stop_sync()
-        if self.server:
-            try:
-                self.server.close()
-            except:
-                pass
+        self.close_server()

@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QColorDialog,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -19,6 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ... import connection
 from ..controllers.device_controller import DeviceController
 from ..dialogs.add_device_dialog import AddDeviceDialog
 from ..theme import qcolor
@@ -190,6 +192,8 @@ class DevicesView(QWidget):
             card.power_clicked.connect(self.controller.toggle_power_at)
             card.color_picked.connect(self._on_card_color_picked)
             card.brightness_changed.connect(self.controller.set_brightness_at)
+            card.zone_count_requested.connect(self._on_card_zone_count)
+            card.zone_count_reset_requested.connect(self._on_card_zone_count_reset)
             card.remove_requested.connect(self._on_card_remove)
             self._cards.append(card)
             self.grid_layout.addWidget(card)
@@ -254,6 +258,24 @@ class DevicesView(QWidget):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self.controller.remove_device(index)
+
+    def _on_card_zone_count(self, index: int) -> None:
+        device = self.controller.devices[index]
+        current = connection.get_segment_count(device)
+        value, accepted = QInputDialog.getInt(
+            self,
+            "Set zone count",
+            "Zones:",
+            current,
+            1,
+            255,
+            1,
+        )
+        if accepted:
+            self.controller.set_zone_count_at(index, value)
+
+    def _on_card_zone_count_reset(self, index: int) -> None:
+        self.controller.set_zone_count_at(index, None)
 
     # ------------------------------------------------------------------ bulk
 

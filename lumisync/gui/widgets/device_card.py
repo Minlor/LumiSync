@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ... import connection
 from ..theme import qcolor
 from ..utils.animations import PulseDot
 
@@ -40,6 +41,8 @@ class DeviceCard(QFrame):
         color_picked(index, QColor)
         brightness_changed(index, value)
         remove_requested(index)
+        zone_count_requested(index)
+        zone_count_reset_requested(index)
     """
 
     selection_changed = pyqtSignal(int, bool)
@@ -48,6 +51,8 @@ class DeviceCard(QFrame):
     color_picked = pyqtSignal(int, QColor)
     brightness_changed = pyqtSignal(int, int)
     remove_requested = pyqtSignal(int)
+    zone_count_requested = pyqtSignal(int)
+    zone_count_reset_requested = pyqtSignal(int)
 
     def __init__(self, index: int, device: Dict[str, Any], parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -193,9 +198,11 @@ class DeviceCard(QFrame):
         if not ip:
             return "No LAN IP · Offline/Stale"
 
-        port = self._device.get("port", "?")
+        port = connection.get_device_port(self._device)
         source = "Manual" if self._device.get("manual") else "LAN"
-        return f"{ip} · :{port} · {source}"
+        zones = connection.get_segment_count(self._device)
+        zone_source = "set" if self._device.get("segment_count_override") else "default"
+        return f"{ip} · :{port} · {source} · {zones} zones ({zone_source})"
 
     # ------------------------------------------------------------------ events
 
@@ -238,9 +245,17 @@ class DeviceCard(QFrame):
 
     def _show_menu(self) -> None:
         menu = QMenu(self)
+        zone_action = menu.addAction("Set zone count...")
+        reset_zone_action = menu.addAction("Use default zone count")
+        reset_zone_action.setEnabled(bool(self._device.get("segment_count_override")))
+        menu.addSeparator()
         remove_action = menu.addAction("Remove device")
         chosen = menu.exec(self.menu_button.mapToGlobal(self.menu_button.rect().bottomLeft()))
-        if chosen == remove_action:
+        if chosen == zone_action:
+            self.zone_count_requested.emit(self._index)
+        elif chosen == reset_zone_action:
+            self.zone_count_reset_requested.emit(self._index)
+        elif chosen == remove_action:
             self.remove_requested.emit(self._index)
 
     # ------------------------------------------------------------------ public

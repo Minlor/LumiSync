@@ -14,6 +14,7 @@ from .colors import (
     get_color,
     lerp,
     normalize_rgb,
+    resample_colors_to_count,
 )
 
 # Re-export file operation utilities
@@ -31,6 +32,7 @@ __all__ = [
     "lerp",
     "get_color",
     "normalize_rgb",
+    "resample_colors_to_count",
 
     # File operations
     "write_json",

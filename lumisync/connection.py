@@ -13,6 +13,7 @@ from .config.options import CONNECTION
 
 
 STATUS_COMMANDS = ("status", "devStatus")
+DISCOVERY_METADATA_KEYS = ("Device_Port", "devicePort")
 LAN_REQUIREMENTS_MESSAGE = (
     "Make sure the device is on the same network and LAN Control is enabled "
     "for it in Govee Home."
@@ -85,28 +86,42 @@ def create_lan_socket(
     return server
 
 
-def get_segment_count(device: Dict[str, Any], default: int = 10) -> int:
-    """Return the best known LED/segment count for a LAN device."""
-    fallback = default if isinstance(default, int) and default > 0 else 10
-    for key in (
-        "SegmentNums",
-        "segmentNums",
-        "SegmentNum",
-        "segmentNum",
-        "segments",
-        "nled",
-        "led_count",
-        "ledCount",
-    ):
+def get_device_port(device: Dict[str, Any]) -> int:
+    """Return the UDP control port for a device."""
+    for key in ("Device_Port", "devicePort"):
         value = device.get(key)
-        if isinstance(value, (list, tuple)):
-            value = len(value)
+        try:
+            port = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 0 < port <= 65535:
+            return port
+
+    try:
+        port = int(device.get("port", 0))
+    except (TypeError, ValueError):
+        port = 0
+
+    # Older LumiSync discovery saved the scan port (4001) as the device control
+    # port. Keep manual overrides, but repair stale auto-discovered entries.
+    if 0 < port <= 65535 and (device.get("manual") or port != CONNECTION.default.port):
+        return port
+
+    return CONNECTION.default.control_port
+
+
+def get_segment_count(device: Dict[str, Any], default: int = 10) -> int:
+    """Return the user-configured zone count, or the generic default."""
+    fallback = default if isinstance(default, int) and default > 0 else 10
+    for key in ("segment_count_override", "segmentCountOverride"):
+        value = device.get(key)
         try:
             count = int(value)
         except (TypeError, ValueError):
             continue
         if 0 < count <= 255:
             return count
+
     return fallback
 
 
@@ -135,21 +150,25 @@ def parse(messages: List[str]) -> List[Dict[str, Any]]:
     devices = CONNECTION.devices
     for message in messages:
         message = json.loads(message)
+        data = message["msg"]["data"]
+        parsed_device = {
+            "mac": data["device"],
+            "model": data["sku"],
+            "ip": data["ip"],
+            "port": CONNECTION.default.control_port,
+        }
+        for key in DISCOVERY_METADATA_KEYS:
+            if key in data and data[key] is not None:
+                parsed_device[key] = data[key]
+
         device = next(
-            (x for x in devices if x["mac"] == message["msg"]["data"]["device"]),
+            (x for x in devices if x["mac"] == parsed_device["mac"]),
             None,
         )
         if device is None:
-            devices.append(
-                {
-                    "mac": message["msg"]["data"]["device"],
-                    "model": message["msg"]["data"]["sku"],
-                    "ip": message["msg"]["data"]["ip"],
-                    "port": CONNECTION.default.port,
-                }
-            )
+            devices.append(parsed_device)
         else:
-            device["ip"] = message["msg"]["data"]["ip"]
+            device.update(parsed_device)
     return devices
 
 
@@ -181,10 +200,7 @@ def send(server: socket.socket, device: Dict[str, Any], data: Dict[str, Any]) ->
     """Sends some data from the server to a device."""
     server.sendto(
         bytes(json.dumps(data), "utf-8"),
-        (
-            device["ip"],
-            device.get("port", device.get("Device_Port", CONNECTION.default.port)),
-        ),
+        (device["ip"], get_device_port(device)),
     )
 
 

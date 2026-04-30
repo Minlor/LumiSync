@@ -86,6 +86,38 @@ def fit_colors_to_count(
     return [normalized[index % len(normalized)] for index in range(count)]
 
 
+def resample_colors_to_count(
+    colors: List[Tuple[int, int, int]],
+    count: int,
+) -> List[Tuple[int, int, int]]:
+    """Resize perimeter colors so samples are spread over one physical loop."""
+    count = max(0, int(count))
+    if count == 0:
+        return []
+    if not colors:
+        return [(0, 0, 0)] * count
+
+    normalized = [normalize_rgb(color) for color in colors]
+    source_count = len(normalized)
+    if source_count == count:
+        return list(normalized)
+
+    resampled = []
+    for index in range(count):
+        position = index * source_count / count
+        left = int(position) % source_count
+        right = (left + 1) % source_count
+        fraction = position - int(position)
+        resampled.append(
+            (
+                int(lerp(normalized[left][0], normalized[right][0], fraction)),
+                int(lerp(normalized[left][1], normalized[right][1], fraction)),
+                int(lerp(normalized[left][2], normalized[right][2], fraction)),
+            )
+        )
+    return resampled
+
+
 def convert_colors(colors: List[Tuple[int, int, int]]) -> str:
     """Converts a list of RGB colors to the Razer protocol format.
 

@@ -110,6 +110,7 @@ class DeviceController(QObject):
     device_selected = pyqtSignal(dict)  # Selected device info
     device_added = pyqtSignal(dict)  # Newly added device
     device_removed = pyqtSignal(int)  # Index of removed device
+    device_updated = pyqtSignal(int, dict)  # Index, updated device
     device_state_updated = pyqtSignal(int, dict)  # Index, cached state
     discovery_started = pyqtSignal()  # Discovery process started
     discovery_finished = pyqtSignal()  # Discovery process finished
@@ -534,6 +535,44 @@ class DeviceController(QObject):
 
         except Exception as e:
             self.status_updated.emit(f"Error removing device: {str(e)}")
+            return False
+
+    def set_zone_count_at(self, index: int, zone_count: Optional[int]) -> bool:
+        """Set or clear a per-device LED/zone count override."""
+        device = self._device_at(index)
+        if not device:
+            return False
+
+        try:
+            if zone_count is None:
+                device.pop("segment_count_override", None)
+                message = f"{device.get('model', 'Device')}: using default zone count"
+            else:
+                count = int(zone_count)
+                if not 1 <= count <= 255:
+                    raise ValueError("Zone count must be between 1 and 255")
+                device["segment_count_override"] = count
+                message = f"{device.get('model', 'Device')}: zone count set to {count}"
+
+            self.devices[index] = device
+            try:
+                settings = devices.get_data()
+            except Exception:
+                settings = {"devices": [], "selectedDevice": self.selected_device_index, "time": 0}
+
+            settings["devices"] = self.devices
+            settings["selectedDevice"] = self.selected_device_index
+            devices.writeJSON(settings)
+
+            self.device_updated.emit(index, dict(device))
+            self.devices_discovered.emit(self.devices)
+            selected = self.get_selected_device()
+            if selected and index == self.selected_device_index:
+                self.device_selected.emit(selected)
+            self.status_updated.emit(message)
+            return True
+        except Exception as e:
+            self.status_updated.emit(f"Error: {str(e)}")
             return False
 
     def turn_on_off(self, on: bool = True):

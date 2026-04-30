@@ -38,13 +38,18 @@ class ScreenGrab:
                 ScreenGrab._dxcam_output_idx = None
 
             if ScreenGrab._dxcam_instance is None:
+                requested_output = max(0, self.display_index)
                 try:
-                    self.camera = dxcam.create(output_idx=self.display_index)
-                except TypeError:
+                    self.camera = dxcam.create(output_idx=requested_output)
+                except Exception:
                     try:
-                        self.camera = dxcam.create(device_idx=0, output_idx=self.display_index)
-                    except TypeError:
+                        self.camera = dxcam.create(device_idx=0, output_idx=requested_output)
+                    except Exception:
+                        # Fall back to dxcam's default output, usually the primary
+                        # monitor. This keeps GUI sync usable when QSettings contains
+                        # a stale or dxcam-incompatible display index.
                         self.camera = dxcam.create()
+                        self.display_index = 0
                 ScreenGrab._dxcam_instance = self.camera
                 ScreenGrab._dxcam_output_idx = self.display_index
             else:
@@ -113,7 +118,7 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
 
         # Apply brightness setting to colors
         colors = apply_brightness(colors, BRIGHTNESS.monitor)
-        colors = utils.fit_colors_to_count(colors, segment_count)
+        colors = utils.resample_colors_to_count(colors, segment_count)
         previous_colors = utils.fit_colors_to_count(previous_colors, segment_count)
 
         smooth_transition(server, device, previous_colors, colors)

@@ -66,7 +66,6 @@ class DeviceDiscoveryTests(unittest.TestCase):
                     "model": "H619C",
                     "ip": "192.168.0.10",
                     "port": 4001,
-                    "SegmentNums": 10,
                     "manual": True,
                 }
             ],
@@ -87,7 +86,6 @@ class DeviceDiscoveryTests(unittest.TestCase):
         self.assertEqual(result["lastDiscoveryCount"], 1)
         self.assertEqual(len(result["devices"]), 1)
         self.assertEqual(result["devices"][0]["ip"], "192.168.0.42")
-        self.assertEqual(result["devices"][0]["SegmentNums"], 10)
         self.assertTrue(result["devices"][0]["manual"])
 
     def test_manual_device_survives_missed_scan(self):
@@ -136,6 +134,17 @@ class DeviceDiscoveryTests(unittest.TestCase):
             result = devices.discover_lan_devices()
 
         self.assertEqual(result["lastDiscoveryCount"], 0)
+
+    def test_parse_ignores_unsupported_zone_count_from_scan_response(self):
+        messages = [
+            b'{"msg":{"cmd":"scan","data":{"device":"aa:bb","sku":"H619C","ip":"192.168.0.10","unknownZoneCount":20}}}'
+        ]
+
+        parsed = devices.parse(messages)
+
+        self.assertNotIn("unknownZoneCount", parsed[0])
+        self.assertEqual(parsed[0]["model"], "H619C")
+        self.assertEqual(parsed[0]["port"], 4003)
 
 
 if __name__ == "__main__":

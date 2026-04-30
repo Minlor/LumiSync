@@ -50,6 +50,7 @@ class LumiSyncMainWindow(QMainWindow):
         self.device_controller.device_selected.connect(self.sync_controller.set_device)
         self.device_controller.status_updated.connect(self.show_status)
         self.sync_controller.status_updated.connect(self.show_status)
+        self.sync_controller.sync_error.connect(self.show_status)
         self.update_controller.status_updated.connect(self.show_status)
         self.update_controller.update_available.connect(self._on_update_available)
 
