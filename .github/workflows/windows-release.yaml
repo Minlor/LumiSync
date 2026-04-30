@@ -1,6 +1,7 @@
 name: Build Windows Release
 
 on:
+  workflow_dispatch:
   release:
     types: [published]
 
@@ -33,6 +34,7 @@ jobs:
             dist/LumiSync-Windows-x64-onefile.exe
 
       - name: Attach artifacts to GitHub Release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: |
