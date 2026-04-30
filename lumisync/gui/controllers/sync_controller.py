@@ -3,7 +3,6 @@ Sync controller for the LumiSync GUI.
 This module handles synchronization functionality with PyQt6 signals.
 """
 
-import json
 import platform
 import socket
 import threading
@@ -15,78 +14,47 @@ from PyQt6.QtCore import QObject, pyqtSignal, QThread, QSettings
 if platform.system() == "Windows":
     from pythoncom import CoInitializeEx, CoUninitialize
 
-from ... import connection, devices, utils
+from ... import connection, devices, led_mapping, utils
 from ...config.options import AUDIO, BRIGHTNESS, GENERAL
 from ...sync import monitor, music
 
 
-# Default LED mapping (same as in led_mapping_widget.py)
-DEFAULT_LED_MAPPING = [
-    (0, 3),  # LED 0: Top-right
-    (0, 2),  # LED 1: Top-center-right
-    (0, 1),  # LED 2: Top-center-left
-    (0, 0),  # LED 3: Top-left
-    (1, 0),  # LED 4: Left side
-    (2, 0),  # LED 5: Bottom-left
-    (2, 1),  # LED 6: Bottom-center-left
-    (2, 2),  # LED 7: Bottom-center-right
-    (2, 3),  # LED 8: Bottom-right
-    (1, 3),  # LED 9: Right side
-]
+DEFAULT_LED_MAPPING = led_mapping.DEFAULT_LEGACY_MAPPING
 
 
-def get_led_mapping_from_settings() -> List[Tuple[int, int]]:
-    """Load LED mapping from QSettings."""
+def get_led_mapping_from_settings(
+    segment_count: int = len(DEFAULT_LED_MAPPING),
+    aspect_ratio: float = led_mapping.DEFAULT_ASPECT_RATIO,
+) -> List[led_mapping.NormalizedRect]:
+    """Load the monitor LED mapping from QSettings."""
     settings = QSettings("Minlor", "LumiSync")
-    try:
-        saved = settings.value("sync/led_mapping", None)
-        if saved:
-            mapping = json.loads(saved)
-            mapping = [tuple(m) for m in mapping]
-            if len(mapping) == 10:
-                return mapping
-    except Exception:
-        pass
-    return list(DEFAULT_LED_MAPPING)
+    return led_mapping.load_mapping_from_settings(settings, segment_count, aspect_ratio)
 
 
 def fit_led_mapping_to_count(
-    mapping: List[Tuple[int, int]],
+    mapping: List[led_mapping.NormalizedRect],
     segment_count: int,
-) -> List[Tuple[int, int]]:
+) -> List[led_mapping.NormalizedRect]:
     """Resize a saved LED mapping to a device's effective segment count."""
-    segment_count = max(1, int(segment_count))
-    source = mapping or DEFAULT_LED_MAPPING
-    return [
-        source[int(index * len(source) / segment_count) % len(source)]
-        for index in range(segment_count)
-    ]
+    return led_mapping.fit_normalized_mapping_to_count(mapping, segment_count)
 
 
-def sample_region_color(screen, width: int, height: int, row: int, col: int) -> Tuple[int, int, int]:
-    """Sample color from a screen region.
-
-    Args:
-        screen: PIL Image of the screen
-        width: Screen width
-        height: Screen height
-        row: Row index (0=top, 1=middle, 2=bottom)
-        col: Column index (0-3)
-
-    Returns:
-        RGB color tuple
-    """
-    # Define region boundaries
-    col_width = width // 4
-    row_height = height // 3
-
-    x1 = col * col_width
-    x2 = (col + 1) * col_width if col < 3 else width
-    y1 = row * row_height
-    y2 = (row + 1) * row_height if row < 2 else height
-
-    # Sample the center directly to avoid crop allocation every frame.
-    point = (x1 + max(0, x2 - x1) // 2, y1 + max(0, y2 - y1) // 2)
+def sample_region_color(
+    screen,
+    width: int,
+    height: int,
+    rect: led_mapping.NormalizedRect,
+) -> Tuple[int, int, int]:
+    """Sample color from the center of a normalized screen rectangle."""
+    normalized = led_mapping.normalize_rect(rect)
+    x1 = int(normalized["x"] * width)
+    y1 = int(normalized["y"] * height)
+    x2 = int((normalized["x"] + normalized["w"]) * width)
+    y2 = int((normalized["y"] + normalized["h"]) * height)
+    point = (
+        max(0, min(width - 1, x1 + max(1, x2 - x1) // 2)),
+        max(0, min(height - 1, y1 + max(1, y2 - y1) // 2)),
+    )
     return screen.getpixel(point)
 
 
@@ -145,9 +113,9 @@ class MonitorSyncWorker(QObject):
 
             screen_grab = None
             current_display_index = -1
-            led_mapping = get_led_mapping_from_settings()
             mapping_check_counter = 0
             empty_capture_count = 0
+            cached_mappings: Dict[Tuple[int, int, int], List[led_mapping.NormalizedRect]] = {}
 
             while not self.stop_event.is_set():
                 try:
@@ -155,7 +123,7 @@ class MonitorSyncWorker(QObject):
                     mapping_check_counter += 1
                     if mapping_check_counter >= 100:
                         mapping_check_counter = 0
-                        led_mapping = get_led_mapping_from_settings()
+                        cached_mappings.clear()
 
                     # Screen capture and color processing
                     desired_display = int(self.controller.get_monitor_display())
@@ -180,6 +148,7 @@ class MonitorSyncWorker(QObject):
 
                     empty_capture_count = 0
                     width, height = screen.size
+                    aspect_ratio = width / max(1, height)
 
                     for device in self.devices:
                         key = self._device_key(device)
@@ -187,10 +156,20 @@ class MonitorSyncWorker(QObject):
                             device,
                             default=len(DEFAULT_LED_MAPPING),
                         )
-                        device_mapping = fit_led_mapping_to_count(led_mapping, segment_count)
+                        mapping_key = (
+                            segment_count,
+                            int(aspect_ratio * 1000),
+                            int(self.controller.get_monitor_display()),
+                        )
+                        if mapping_key not in cached_mappings:
+                            cached_mappings[mapping_key] = get_led_mapping_from_settings(
+                                segment_count,
+                                aspect_ratio,
+                            )
+                        device_mapping = cached_mappings[mapping_key]
                         colors = [
-                            sample_region_color(screen, width, height, row, col)
-                            for row, col in device_mapping
+                            sample_region_color(screen, width, height, rect)
+                            for rect in device_mapping
                         ]
                         colors = monitor.apply_brightness(
                             colors,

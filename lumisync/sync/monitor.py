@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 from PIL import Image
 
-from .. import connection, utils
+from .. import connection, led_mapping, utils
 from ..config.options import BRIGHTNESS, GENERAL
 
 
@@ -102,19 +102,24 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
             print("Warning: Screenshot failed, trying again...")
             continue
 
-        top, bottom = int(height / 4 * 2), int(height / 4 * 3)
-        for x in range(4):
-            x1 = int(width / 4 * x)
-            x2 = int(width / 4 * (x + 1))
-            colors.append(screen.getpixel(((x1 + x2) // 2, top // 2)))
-
-        colors.reverse()
-        colors.append(screen.getpixel((int(width / 8), (top + bottom) // 2)))
-        for x in range(4):
-            x1 = int(width / 4 * x)
-            x2 = int(width / 4 * (x + 1))
-            colors.append(screen.getpixel(((x1 + x2) // 2, (bottom + height) // 2)))
-        colors.append(screen.getpixel((int(width / 8 * 7), (top + bottom) // 2)))
+        mapping = led_mapping.generate_screen_mapping(
+            segment_count,
+            width / max(1, height),
+        )
+        for rect in mapping:
+            normalized = led_mapping.normalize_rect(rect)
+            x1 = int(normalized["x"] * width)
+            y1 = int(normalized["y"] * height)
+            x2 = int((normalized["x"] + normalized["w"]) * width)
+            y2 = int((normalized["y"] + normalized["h"]) * height)
+            colors.append(
+                screen.getpixel(
+                    (
+                        max(0, min(width - 1, x1 + max(1, x2 - x1) // 2)),
+                        max(0, min(height - 1, y1 + max(1, y2 - y1) // 2)),
+                    )
+                )
+            )
 
         # Apply brightness setting to colors
         colors = apply_brightness(colors, BRIGHTNESS.monitor)

@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import List, Optional
 
 from PyQt6.QtCore import QSettings, QTimer, Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QGuiApplication
 from PyQt6.QtWidgets import (
     QFrame,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QPushButton,
     QSlider,
@@ -17,6 +18,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ... import connection
 from ..controllers.device_controller import DeviceController
 from ..controllers.sync_controller import SyncController
 from ..theme import qcolor
@@ -62,8 +64,16 @@ class ModesView(QWidget):
 
         modes_row = QHBoxLayout()
         modes_row.setSpacing(14)
-        modes_row.addWidget(self._build_monitor_group(), 1)
-        modes_row.addWidget(self._build_music_group(), 1)
+        modes_row.addWidget(
+            self._build_monitor_group(),
+            1,
+            alignment=Qt.AlignmentFlag.AlignTop,
+        )
+        modes_row.addWidget(
+            self._build_music_group(),
+            1,
+            alignment=Qt.AlignmentFlag.AlignTop,
+        )
         root.addLayout(modes_row)
 
         root.addWidget(self._build_active_syncs_group())
@@ -82,7 +92,7 @@ class ModesView(QWidget):
 
         self.monitor_chips = DeviceChipStrip("Devices")
         self.monitor_chips.selection_changed.connect(
-            lambda ids: self._save_mode_devices("monitor", ids)
+            lambda ids: self._on_mode_devices_changed("monitor", ids)
         )
         layout.addWidget(self.monitor_chips)
 
@@ -108,6 +118,14 @@ class ModesView(QWidget):
         self.mapping_toggle_button.clicked.connect(self._toggle_led_mapping)
         toggle_row.addWidget(self.mapping_toggle_button)
         toggle_row.addStretch(1)
+        self.monitor_zones_button = QPushButton("Adjust Zones")
+        self.monitor_zones_button.setToolTip(
+            "Set the zone count for selected monitor sync devices"
+        )
+        self.monitor_zones_button.clicked.connect(
+            lambda: self._adjust_zones_for_strip(self.monitor_chips)
+        )
+        toggle_row.addWidget(self.monitor_zones_button)
         layout.addLayout(toggle_row)
 
         self.led_mapping_container = QFrame()
@@ -143,9 +161,22 @@ class ModesView(QWidget):
 
         self.music_chips = DeviceChipStrip("Devices")
         self.music_chips.selection_changed.connect(
-            lambda ids: self._save_mode_devices("music", ids)
+            lambda ids: self._on_mode_devices_changed("music", ids)
         )
         layout.addWidget(self.music_chips)
+
+        zone_row = QHBoxLayout()
+        zone_row.addWidget(QLabel("Zones"))
+        zone_row.addStretch(1)
+        self.music_zones_button = QPushButton("Adjust Zones")
+        self.music_zones_button.setToolTip(
+            "Set the zone count for selected music sync devices"
+        )
+        self.music_zones_button.clicked.connect(
+            lambda: self._adjust_zones_for_strip(self.music_chips)
+        )
+        zone_row.addWidget(self.music_zones_button)
+        layout.addLayout(zone_row)
 
         b_row = QHBoxLayout()
         b_row.addWidget(QLabel("Brightness"))
@@ -159,8 +190,6 @@ class ModesView(QWidget):
         self.music_brightness_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         b_row.addWidget(self.music_brightness_label)
         layout.addLayout(b_row)
-
-        layout.addStretch(1)
 
         self.music_start_button = QPushButton("Start Music Sync")
         self.music_start_button.setObjectName("Primary")
@@ -199,6 +228,7 @@ class ModesView(QWidget):
             self.device_controller.device_added.connect(lambda *_: self._refresh_chip_strips())
             self.device_controller.device_removed.connect(lambda *_: self._refresh_chip_strips())
             self.device_controller.device_selected.connect(lambda *_: self._refresh_chip_strips())
+            self.device_controller.device_updated.connect(lambda *_: self._refresh_chip_strips())
 
     # ------------------------------------------------------------------ chips
 
@@ -219,10 +249,83 @@ class ModesView(QWidget):
                 else:
                     ids = list(saved)
                 strip.set_selected_ids(ids)
+        self._refresh_led_mapping_zone_count()
+
+    def _on_mode_devices_changed(self, mode: str, ids: List[str]) -> None:
+        self._save_mode_devices(mode, ids)
+        if mode == "monitor":
+            self._refresh_led_mapping_zone_count()
 
     def _save_mode_devices(self, mode: str, ids: List[str]) -> None:
         settings = QSettings("Minlor", "LumiSync")
         settings.setValue(f"sync/{mode}/devices", ",".join(ids))
+
+    def _refresh_led_mapping_zone_count(self) -> None:
+        if not hasattr(self, "led_mapping_widget"):
+            return
+
+        aspect_ratio = self._monitor_aspect_ratio()
+        selected_devices = self.monitor_chips.selected_devices()
+        if not selected_devices:
+            self.led_mapping_widget.set_mapping_context(
+                connection.get_segment_count({}),
+                aspect_ratio,
+            )
+            return
+
+        self.controller.selected_devices = [
+            dict(device)
+            for device in selected_devices
+            if device
+        ]
+        segment_count = connection.get_segment_count(selected_devices[0])
+        self.led_mapping_widget.set_mapping_context(segment_count, aspect_ratio)
+
+    def _monitor_aspect_ratio(self) -> float:
+        screens = list(QGuiApplication.screens())
+        display_index = int(self.controller.get_monitor_display())
+        if 0 <= display_index < len(screens):
+            geometry = screens[display_index].geometry()
+            return geometry.width() / max(1, geometry.height())
+        return 16 / 9
+
+    def _adjust_zones_for_strip(self, strip: DeviceChipStrip) -> None:
+        if self.device_controller is None:
+            self.controller.status_updated.emit("Zone settings are unavailable.")
+            return
+
+        selected_devices = strip.selected_devices()
+        if not selected_devices:
+            self.controller.status_updated.emit("Select at least one device first.")
+            return
+
+        current_count = connection.get_segment_count(selected_devices[0])
+        zone_count, accepted = QInputDialog.getInt(
+            self,
+            "Adjust Zones",
+            "Zones:",
+            current_count,
+            1,
+            255,
+            1,
+        )
+        if not accepted:
+            return
+
+        selected_ids = {device_id(device) for device in selected_devices}
+        changed = 0
+        for index, device in enumerate(self.device_controller.devices):
+            selected = device_id(device) in selected_ids
+            if selected and self.device_controller.set_zone_count_at(index, zone_count):
+                changed += 1
+
+        if changed:
+            plural = "" if changed == 1 else "s"
+            self.controller.status_updated.emit(
+                f"Zone count set to {zone_count} for {changed} device{plural}."
+            )
+            if strip is self.monitor_chips:
+                self._refresh_led_mapping_zone_count()
 
     # ------------------------------------------------------------------ LED mapping
 
@@ -230,6 +333,7 @@ class ModesView(QWidget):
         self._mapping_expanded = not self._mapping_expanded
 
         if self._mapping_expanded:
+            self._refresh_led_mapping_zone_count()
             self.mapping_toggle_button.setText("LED Mapping  ▼")
             self.led_mapping_container.setVisible(True)
             self._mapping_anim = animate_height(self.led_mapping_container, 400, duration=220)
