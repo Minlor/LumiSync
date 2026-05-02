@@ -33,13 +33,16 @@ datas = [
 ]
 
 binaries = []
+binaries += safe_collect_dynamic_libs("cv2")
 binaries += safe_collect_dynamic_libs("dxcam")
 binaries += safe_collect_dynamic_libs("soundcard")
 
 hiddenimports = []
+hiddenimports += safe_collect_submodules("cv2")
 hiddenimports += safe_collect_submodules("lumisync")
 hiddenimports += safe_collect_submodules("dxcam")
 hiddenimports += [
+    "cv2",
     "PyQt6.QtCore",
     "PyQt6.QtGui",
     "PyQt6.QtSvg",

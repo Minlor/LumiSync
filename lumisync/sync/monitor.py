@@ -10,6 +10,23 @@ from .. import connection, led_mapping, utils
 from ..config.options import BRIGHTNESS, GENERAL
 
 
+MISSING_CV2_MESSAGE = (
+    "Monitor sync requires OpenCV's cv2 module for Windows screen capture. "
+    "Install opencv-python-headless or use a LumiSync build that bundles it."
+)
+
+
+class ScreenCaptureDependencyError(RuntimeError):
+    """Raised when a required screen-capture dependency is unavailable."""
+
+
+def _create_dxcam_camera(dxcam_module, **kwargs):
+    try:
+        return dxcam_module.create(processor_backend="numpy", **kwargs)
+    except TypeError:
+        return dxcam_module.create(**kwargs)
+
+
 class ScreenGrab:
     """Facilitates taking a screenshot while supporting
     different platforms and compositors (the latter for Unix).
@@ -40,15 +57,22 @@ class ScreenGrab:
             if ScreenGrab._dxcam_instance is None:
                 requested_output = max(0, self.display_index)
                 try:
-                    self.camera = dxcam.create(output_idx=requested_output)
+                    self.camera = _create_dxcam_camera(
+                        dxcam,
+                        output_idx=requested_output,
+                    )
                 except Exception:
                     try:
-                        self.camera = dxcam.create(device_idx=0, output_idx=requested_output)
+                        self.camera = _create_dxcam_camera(
+                            dxcam,
+                            device_idx=0,
+                            output_idx=requested_output,
+                        )
                     except Exception:
                         # Fall back to dxcam's default output, usually the primary
                         # monitor. This keeps GUI sync usable when QSettings contains
                         # a stale or dxcam-incompatible display index.
-                        self.camera = dxcam.create()
+                        self.camera = _create_dxcam_camera(dxcam)
                         self.display_index = 0
                 ScreenGrab._dxcam_instance = self.camera
                 ScreenGrab._dxcam_output_idx = self.display_index
@@ -73,7 +97,12 @@ class ScreenGrab:
 
     def capture(self) -> Image.Image | None:
         """Captures a screenshot."""
-        screen = self.capture_method()
+        try:
+            screen = self.capture_method()
+        except ModuleNotFoundError as exc:
+            if exc.name == "cv2":
+                raise ScreenCaptureDependencyError(MISSING_CV2_MESSAGE) from exc
+            raise
         if screen is None:
             return screen
 
@@ -86,7 +115,11 @@ class ScreenGrab:
 def start(server: socket.socket, device: Dict[str, Any]) -> None:
     """Starts the monitor-light synchronization."""
     connection.switch_razer(server, device, True)
-    screen_grab = ScreenGrab()
+    try:
+        screen_grab = ScreenGrab()
+    except ScreenCaptureDependencyError as exc:
+        print(f"Monitor sync unavailable: {exc}")
+        return
 
     segment_count = connection.get_segment_count(device, default=10)
     previous_colors = [(0, 0, 0)] * segment_count
@@ -98,6 +131,9 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
                 continue
 
             width, height = screen.size
+        except ScreenCaptureDependencyError as exc:
+            print(f"Monitor sync unavailable: {exc}")
+            return
         except OSError:
             print("Warning: Screenshot failed, trying again...")
             continue
