@@ -614,6 +614,56 @@ class DeviceController(QObject):
             self.status_updated.emit(f"Error adding device: {str(e)}")
             return False
 
+    def add_tuya_device_manually(
+        self,
+        ip: str,
+        device_id: str,
+        local_key: str,
+        model: str = "LSC / Tuya Light",
+        protocol_version: str = "3.3",
+    ) -> bool:
+        """Add a Tuya / LSC Smart Connect WiFi light for local control."""
+        try:
+            ip = (ip or "").strip()
+            device_id = (device_id or "").strip()
+            local_key = (local_key or "").strip()
+            if not (ip and device_id and local_key):
+                self.status_updated.emit(
+                    "Tuya devices need an IP, device ID and local key."
+                )
+                return False
+
+            for device in self.devices:
+                if device.get("device_id") == device_id or device.get("ip") == ip:
+                    self.status_updated.emit("Device already exists")
+                    return False
+
+            new_device = {
+                "ip": ip,
+                "device_id": device_id,
+                "local_key": local_key,
+                "model": model or "LSC / Tuya Light",
+                "transport": "tuya",
+                "protocol_version": protocol_version or "3.3",
+                "manual": True,
+            }
+            self.devices.append(new_device)
+
+            try:
+                settings = devices.get_data()
+            except Exception:
+                settings = {"devices": [], "selectedDevice": 0, "time": 0}
+            settings["devices"] = self.devices
+            devices.writeJSON(settings)
+
+            self.device_added.emit(new_device)
+            self.devices_discovered.emit(self.devices)
+            self.status_updated.emit(f"Added Tuya device: {model} ({ip})")
+            return True
+        except Exception as e:
+            self.status_updated.emit(f"Error adding device: {str(e)}")
+            return False
+
     def scan_ble_devices(self) -> None:
         """Scan for iDotMatrix devices over BLE and add likely matches.
 

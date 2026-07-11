@@ -36,6 +36,8 @@ dependencies = [
 [project.optional-dependencies]
 # Bluetooth LE devices (e.g. iDotMatrix pixel displays)
 ble = ["bleak>=0.22.0"]
+# Tuya / LSC Smart Connect WiFi devices (local control)
+tuya = ["tinytuya>=1.13.0"]
 
 [tool.ruff]
 target-version = "py311"

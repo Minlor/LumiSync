@@ -360,6 +360,15 @@ class DevicesView(QWidget):
                     address, model, dialog.matrix_size()
                 )
                 return
+            if dialog.device_type() == "tuya":
+                self.controller.add_tuya_device_manually(
+                    dialog.ip_entry.text(),
+                    dialog.tuya_device_id(),
+                    dialog.tuya_local_key(),
+                    dialog.model_entry.text() or "LSC / Tuya Light",
+                    dialog.tuya_version(),
+                )
+                return
             ip = dialog.ip_entry.text()
             model = dialog.model_entry.text() or "Manual Device"
             mac = dialog.mac_entry.text() or None

@@ -22,6 +22,14 @@ from lumisync.drivers.idotmatrix_ble import (
     screen_to_pixels,
 )
 from lumisync.drivers.registry import create_adapter
+from lumisync.drivers.tuya_lan import (
+    TuyaLightAdapter,
+    build_color_command,
+    encode_brightness,
+    encode_colour,
+    encode_temperature,
+    rgb_to_hsv_tuya,
+)
 
 
 class FakeSocket:
@@ -270,6 +278,95 @@ class RegistryTests(unittest.TestCase):
     def test_ble_transport_selects_idotmatrix(self):
         adapter = create_adapter({"transport": "ble"})
         self.assertIsInstance(adapter, IDotMatrixBleAdapter)
+
+    def test_tuya_transport_selects_tuya(self):
+        adapter = create_adapter(
+            {"transport": "tuya", "ip": "1.2.3.4", "device_id": "x", "local_key": "y"}
+        )
+        self.assertIsInstance(adapter, TuyaLightAdapter)
+
+
+class FakeTuyaHandle:
+    """Records DP writes so the adapter can be tested without tinytuya."""
+
+    def __init__(self):
+        self.single = []
+        self.multiple = []
+
+    def set_value(self, dp, value):
+        self.single.append((dp, value))
+
+    def set_multiple_values(self, mapping):
+        self.multiple.append(dict(mapping))
+
+
+class TuyaEncoderTests(unittest.TestCase):
+    def test_hsv_units_are_h360_s1000_v1000(self):
+        self.assertEqual(rgb_to_hsv_tuya(255, 0, 0), (0, 1000, 1000))
+        self.assertEqual(rgb_to_hsv_tuya(0, 255, 0), (120, 1000, 1000))
+        self.assertEqual(rgb_to_hsv_tuya(0, 0, 255), (240, 1000, 1000))
+        self.assertEqual(rgb_to_hsv_tuya(255, 255, 255), (0, 0, 1000))
+
+    def test_colour_data_v2_golden(self):
+        self.assertEqual(encode_colour(255, 0, 0), "000003e803e8")
+        self.assertEqual(encode_colour(0, 255, 0), "007803e803e8")
+        self.assertEqual(encode_colour(0, 0, 255), "00f003e803e8")
+        self.assertEqual(encode_colour(255, 255, 255), "0000000003e8")
+
+    def test_colour_data_v1_golden(self):
+        self.assertEqual(encode_colour(255, 0, 0, schema="v1"), "0000ffff")
+        self.assertEqual(encode_colour(0, 255, 0, schema="v1"), "0078ffff")
+        self.assertEqual(encode_colour(255, 255, 255, schema="v1"), "000000ff")
+
+    def test_brightness_scaling(self):
+        self.assertEqual([encode_brightness(p) for p in (0, 50, 100)], [10, 505, 1000])
+        self.assertEqual(
+            [encode_brightness(p, schema="v1") for p in (0, 50, 100)], [25, 140, 255]
+        )
+
+    def test_temperature_scaling(self):
+        self.assertEqual(encode_temperature(2700, 2700, 6500), 0)
+        self.assertEqual(encode_temperature(6500, 2700, 6500), 1000)
+        self.assertEqual(encode_temperature(6500, 2700, 6500, schema="v1"), 255)
+        self.assertEqual(encode_temperature(4000, 2700, 2700), 0)  # degenerate range
+
+    def test_build_color_command_switches_to_colour_mode(self):
+        self.assertEqual(
+            build_color_command({}, 255, 0, 0), {21: "colour", 24: "000003e803e8"}
+        )
+        self.assertEqual(
+            build_color_command({"dp_schema": "v1"}, 0, 255, 0),
+            {2: "colour", 5: "0078ffff"},
+        )
+
+
+class TuyaAdapterTests(unittest.TestCase):
+    def _adapter(self, **extra):
+        device = {"ip": "1.2.3.4", "device_id": "d", "local_key": "k", **extra}
+        adapter = TuyaLightAdapter(device)
+        adapter._dev = FakeTuyaHandle()
+        return adapter
+
+    def test_power_sets_switch_dp(self):
+        a = self._adapter()
+        a.set_power(True)
+        self.assertEqual(a._dev.single, [(20, True)])
+
+    def test_color_sends_mode_and_colour_dps(self):
+        a = self._adapter()
+        a.set_color(0, 0, 255)
+        self.assertEqual(a._dev.multiple, [{21: "colour", 24: "00f003e803e8"}])
+
+    def test_segments_average_to_one_ambient_color(self):
+        a = self._adapter()
+        a.set_segments([(255, 0, 0), (0, 0, 255)])  # avg -> (127, 0, 127)
+        self.assertEqual(len(a._dev.multiple), 1)
+        self.assertEqual(a._dev.multiple[0][21], "colour")
+
+    def test_missing_credentials_raise(self):
+        adapter = TuyaLightAdapter({"ip": "1.2.3.4"})  # no id/key
+        with self.assertRaises(RuntimeError):
+            adapter._handle()
 
 
 if __name__ == "__main__":

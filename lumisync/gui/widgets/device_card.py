@@ -225,10 +225,16 @@ class DeviceCard(QFrame):
         self.color_temp_changed.emit(self._index, value)
 
     def _format_subline(self) -> str:
-        if str(self._device.get("transport", "")).lower() == "ble":
+        transport = str(self._device.get("transport", "")).lower()
+        if transport == "ble":
             address = self._device.get("ble_address") or self._device.get("mac") or "?"
             size = self._device.get("matrix_size", "32x32")
             return f"{address} · Bluetooth · {size} matrix"
+
+        if transport == "tuya":
+            ip = self._device.get("ip", "?")
+            version = self._device.get("protocol_version", "3.3")
+            return f"{ip} · LSC/Tuya · protocol {version}"
 
         ip = self._device.get("ip")
         if not ip:

@@ -59,6 +59,7 @@ class AddDeviceDialog(QDialog):
         self.type_combo = QComboBox()
         self.type_combo.addItem("Govee (LAN / Wi-Fi)", "lan")
         self.type_combo.addItem("iDotMatrix (Bluetooth)", "ble")
+        self.type_combo.addItem("LSC / Tuya (Wi-Fi)", "tuya")
         self.type_combo.currentIndexChanged.connect(self._on_type_changed)
         type_form.addRow("Device type:", self.type_combo)
         layout.addLayout(type_form)
@@ -104,6 +105,23 @@ class AddDeviceDialog(QDialog):
         self.matrix_size_label = QLabel("Matrix size:")
         form.addRow(self.matrix_size_label, self.matrix_size_combo)
 
+        # --- Tuya/LSC-only fields (hidden unless type == tuya) ---
+        self.tuya_id_entry = QLineEdit()
+        self.tuya_id_entry.setPlaceholderText("22-char device id (see docs)")
+        self.tuya_id_label = QLabel("Device ID *:")
+        form.addRow(self.tuya_id_label, self.tuya_id_entry)
+
+        self.tuya_key_entry = QLineEdit()
+        self.tuya_key_entry.setPlaceholderText("16-char local key")
+        self.tuya_key_label = QLabel("Local key *:")
+        form.addRow(self.tuya_key_label, self.tuya_key_entry)
+
+        self.tuya_version_combo = QComboBox()
+        for ver in ("3.3", "3.1", "3.2", "3.4", "3.5"):
+            self.tuya_version_combo.addItem(ver, ver)
+        self.tuya_version_label = QLabel("Protocol version:")
+        form.addRow(self.tuya_version_label, self.tuya_version_combo)
+
         layout.addLayout(form)
         self._on_type_changed()
 
@@ -137,19 +155,43 @@ class AddDeviceDialog(QDialog):
     def matrix_size(self) -> str:
         return self.matrix_size_combo.currentData() or "32x32"
 
+    def tuya_device_id(self) -> str:
+        return self.tuya_id_entry.text().strip()
+
+    def tuya_local_key(self) -> str:
+        return self.tuya_key_entry.text().strip()
+
+    def tuya_version(self) -> str:
+        return self.tuya_version_combo.currentData() or "3.3"
+
     def _on_type_changed(self, *_args) -> None:
-        is_ble = self.device_type() == "ble"
-        for widget in (self.ip_entry, self.ip_row_label, self.mac_entry,
-                       self.port_entry, self.port_row_label):
-            widget.setVisible(not is_ble)
-        # MAC row label is managed by the form; toggle the field only.
-        self.mac_entry.setVisible(not is_ble)
+        kind = self.device_type()
+        is_ble = kind == "ble"
+        is_tuya = kind == "tuya"
+        is_lan = kind == "lan"
+
+        # Govee LAN fields: IP + MAC + port.
+        for widget in (self.ip_entry, self.ip_row_label):
+            widget.setVisible(is_lan or is_tuya)  # IP is needed by Tuya too
+        for widget in (self.mac_entry, self.port_entry, self.port_row_label):
+            widget.setVisible(is_lan)
+
+        # iDotMatrix BLE fields.
         for widget in (self.ble_address_entry, self.ble_address_label,
                        self.matrix_size_combo, self.matrix_size_label):
             widget.setVisible(is_ble)
-        self.model_entry.setPlaceholderText(
-            "e.g., iDotMatrix 32x32" if is_ble else "e.g., Govee H6199"
-        )
+
+        # Tuya/LSC fields.
+        for widget in (self.tuya_id_entry, self.tuya_id_label,
+                       self.tuya_key_entry, self.tuya_key_label,
+                       self.tuya_version_combo, self.tuya_version_label):
+            widget.setVisible(is_tuya)
+
+        placeholder = {
+            "ble": "e.g., iDotMatrix 32x32",
+            "tuya": "e.g., LSC Smart Bulb",
+        }.get(kind, "e.g., Govee H6199")
+        self.model_entry.setPlaceholderText(placeholder)
 
     def validate_and_accept(self):
         """Validate input and accept dialog if valid."""
@@ -161,6 +203,22 @@ class AddDeviceDialog(QDialog):
             if not self.ble_address_entry.text().strip():
                 self.show_error("Bluetooth address is required")
                 self.ble_address_entry.setFocus()
+                return
+            self.accept()
+            return
+
+        if self.device_type() == "tuya":
+            if not self.ip_entry.text().strip():
+                self.show_error("IP address is required")
+                self.ip_entry.setFocus()
+                return
+            if not self.tuya_device_id():
+                self.show_error("Device ID is required (see docs/lsc-tuya-research.md)")
+                self.tuya_id_entry.setFocus()
+                return
+            if not self.tuya_local_key():
+                self.show_error("Local key is required (see docs/lsc-tuya-research.md)")
+                self.tuya_key_entry.setFocus()
                 return
             self.accept()
             return

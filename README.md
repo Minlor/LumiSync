@@ -27,8 +27,17 @@
 | 🎵 **Music Sync** | React to audio with dynamic color patterns |
 | 🎨 **Color Control** | Set custom colors and brightness directly from the app |
 | 🖌️ **Modern GUI** | PySide6 interface with Windows 11-style navigation and theme support |
+| 🔌 **Multi-Vendor** | Govee (LAN), iDotMatrix pixel panels (Bluetooth), and LSC/Tuya WiFi lights |
 | 🔍 **Auto-Discovery** | Automatically finds Govee devices on your LAN via UDP broadcast |
 | ⚡ **Low Latency** | Direct LAN communication, no cloud required |
+
+### Supported devices
+
+| Family | Transport | Install | Notes |
+|--------|-----------|---------|-------|
+| Govee strips/bulbs | LAN (UDP) | base install | Enable "LAN Control" in the Govee app |
+| iDotMatrix panels | Bluetooth LE | `pip install lumisync[ble]` | Pixel displays; see [docs](docs/idotmatrix-ble-research.md) |
+| LSC / Tuya WiFi lights | LAN (Tuya local) | `pip install lumisync[tuya]` | Needs the device's local key — see [docs](docs/lsc-tuya-research.md) |
 
 <div align="center">
 <img src="https://via.placeholder.com/700x400?text=LumiSync+Screenshot" alt="LumiSync Screenshot" width="700"/>

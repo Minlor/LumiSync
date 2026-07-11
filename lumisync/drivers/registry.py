@@ -20,4 +20,8 @@ def create_adapter(device: Dict[str, Any], server=None) -> TransportAdapter:
 
     if transport == "ble" or kind in ("idotmatrix", "idotmatrix_ble"):
         return IDotMatrixBleAdapter(device)
+    if transport == "tuya" or kind in ("tuya", "lsc"):
+        from .tuya_lan import TuyaLightAdapter
+
+        return TuyaLightAdapter(device)
     return GoveeLanAdapter(device, server)
