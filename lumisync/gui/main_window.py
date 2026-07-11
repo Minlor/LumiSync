@@ -295,6 +295,14 @@ def main():
         # The window can hide to the tray; the tray Quit action ends the app.
         app.setQuitOnLastWindowClosed(False)
 
+        from .utils.single_instance import SingleInstance
+        guard = SingleInstance(app)
+        if not guard.try_acquire():
+            logger.info("LumiSync is already running; asked it to show itself")
+            sys.exit(0)
+
+        _install_excepthook()
+
         apply_theme(app)
 
         from .utils.window_effects import install_dark_titlebar_filter
@@ -302,6 +310,7 @@ def main():
 
         window = LumiSyncMainWindow()
         window.show()
+        guard.activate_requested.connect(window.show_from_tray)
         QTimer.singleShot(1000, window.check_for_updates_on_startup)
 
         exit_code = app.exec()
@@ -311,6 +320,35 @@ def main():
     except Exception as e:
         logger.critical(f"Uncaught exception in GUI: {str(e)}", exc_info=True)
         raise
+
+
+def _install_excepthook():
+    """Log uncaught exceptions and tell the user instead of dying silently.
+
+    Qt swallows Python exceptions raised inside slots/event handlers and, on
+    PySide6, terminates the process without any UI feedback. This hook writes
+    the traceback to the log and shows a dialog pointing at the log file.
+    """
+    from ..utils.logging import get_logs_directory
+
+    def hook(exc_type, exc_value, exc_tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+            return
+        logger.critical(
+            "Uncaught exception", exc_info=(exc_type, exc_value, exc_tb)
+        )
+        try:
+            QMessageBox.critical(
+                None,
+                "LumiSync — Unexpected Error",
+                f"Something went wrong:\n\n{exc_type.__name__}: {exc_value}\n\n"
+                f"Details were written to the logs in:\n{get_logs_directory()}",
+            )
+        except Exception:
+            pass
+
+    sys.excepthook = hook
 
 
 if __name__ == "__main__":

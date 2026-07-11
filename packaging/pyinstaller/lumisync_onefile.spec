@@ -45,6 +45,7 @@ hiddenimports += [
     "cv2",
     "PySide6.QtCore",
     "PySide6.QtGui",
+    "PySide6.QtNetwork",
     "PySide6.QtSvg",
     "PySide6.QtSvgWidgets",
     "PySide6.QtWidgets",
