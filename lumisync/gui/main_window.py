@@ -219,6 +219,9 @@ def main():
 
         apply_theme(app)
 
+        from .utils.window_effects import install_dark_titlebar_filter
+        install_dark_titlebar_filter(app)
+
         window = LumiSyncMainWindow()
         window.show()
         QTimer.singleShot(1000, window.check_for_updates_on_startup)
