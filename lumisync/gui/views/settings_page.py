@@ -9,10 +9,12 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -29,7 +31,18 @@ class SettingsPage(QWidget):
         self.settings = settings
         self._main_window = main_window
 
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+
+        root = QVBoxLayout(content)
         root.setContentsMargins(20, 18, 20, 18)
         root.setSpacing(14)
 
@@ -37,6 +50,7 @@ class SettingsPage(QWidget):
         header.setProperty("role", "title")
         root.addWidget(header)
 
+        root.addWidget(self._build_application_group())
         root.addWidget(self._build_display_group())
         root.addWidget(self._build_defaults_group())
         root.addWidget(self._build_sync_tuning_group())
@@ -46,6 +60,56 @@ class SettingsPage(QWidget):
         root.addStretch(1)
 
     # ---------------------------------------------------------------- groups
+
+    def _build_application_group(self) -> QGroupBox:
+        from ..utils import autostart
+
+        group = QGroupBox("Application")
+        form = QFormLayout(group)
+        form.setSpacing(8)
+
+        def _bool_setting(key: str, default: bool) -> bool:
+            return str(self.settings.value(key, default)).lower() in ("true", "1")
+
+        self.tray_check = QCheckBox("Keep running in the system tray when the window is closed")
+        self.tray_check.setChecked(_bool_setting("ui/minimize_to_tray", True))
+        self.tray_check.toggled.connect(
+            lambda checked: self.settings.setValue("ui/minimize_to_tray", bool(checked))
+        )
+        form.addRow("Tray", self.tray_check)
+
+        self.autostart_check = QCheckBox("Start LumiSync when Windows starts")
+        if autostart.is_supported():
+            self.autostart_check.setChecked(autostart.is_enabled())
+            self.autostart_check.toggled.connect(self._on_autostart_toggled)
+        else:
+            self.autostart_check.setEnabled(False)
+            self.autostart_check.setToolTip("Autostart is only supported on Windows.")
+        form.addRow("Startup", self.autostart_check)
+
+        self.statusbar_check = QCheckBox("Show the status bar")
+        self.statusbar_check.setChecked(_bool_setting("ui/status_bar", False))
+        self.statusbar_check.toggled.connect(self._on_statusbar_toggled)
+        form.addRow("Status bar", self.statusbar_check)
+
+        return group
+
+    def _on_autostart_toggled(self, checked: bool) -> None:
+        from ..utils import autostart
+
+        if not autostart.set_enabled(bool(checked)):
+            # Revert the checkbox if the registry write failed.
+            self.autostart_check.blockSignals(True)
+            self.autostart_check.setChecked(autostart.is_enabled())
+            self.autostart_check.blockSignals(False)
+            main_window = self._main_window
+            if main_window is not None and hasattr(main_window, "show_error"):
+                main_window.show_error("Error: could not update the Windows autostart entry.")
+
+    def _on_statusbar_toggled(self, checked: bool) -> None:
+        self.settings.setValue("ui/status_bar", bool(checked))
+        if self._main_window is not None:
+            self._main_window.statusBar().setVisible(bool(checked))
 
     def _build_display_group(self) -> QGroupBox:
         group = QGroupBox("Display Sync")

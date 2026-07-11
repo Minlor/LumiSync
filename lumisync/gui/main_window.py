@@ -3,8 +3,8 @@ Main application window for the LumiSync GUI.
 """
 
 import sys
-from PySide6.QtWidgets import QMainWindow, QMessageBox, QApplication
-from PySide6.QtCore import QSettings, QTimer, QUrl
+from PySide6.QtWidgets import QMainWindow, QMenu, QMessageBox, QApplication, QSystemTrayIcon
+from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 
 from .resources.icons import IconKey, icon as app_icon
@@ -50,10 +50,13 @@ class LumiSyncMainWindow(QMainWindow):
         self.sync_controller = SyncController()
         self.update_controller = UpdateController()
 
+        self._quitting = False
+
         self.setup_controller_connections()
         self.setup_ui()
         self.setup_status_bar()
         self.set_icon()
+        self.setup_tray()
         self.restore_geometry()
 
         logger.info("LumiSync GUI initialized")
@@ -113,6 +116,54 @@ class LumiSyncMainWindow(QMainWindow):
             icon=app_icon(IconKey.SETTINGS), widget=self.settings_page, bottom=True,
         )
         self.nav_shell.set_page_svg("settings", "settings.svg")
+
+    def setup_tray(self):
+        """System tray icon so the app can keep syncing with the window closed."""
+        self.tray = None
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            logger.info("System tray unavailable; running without a tray icon")
+            return
+
+        tray = QSystemTrayIcon(self)
+        tray.setIcon(app_icon(IconKey.APP))
+        tray.setToolTip("LumiSync")
+
+        menu = QMenu(self)
+        open_action = menu.addAction("Open LumiSync")
+        open_action.triggered.connect(self.show_from_tray)
+        menu.addSeparator()
+        stop_action = menu.addAction("Stop All Syncs")
+        stop_action.triggered.connect(self.sync_controller.stop_sync)
+        menu.addSeparator()
+        quit_action = menu.addAction("Quit LumiSync")
+        quit_action.triggered.connect(self.quit_app)
+
+        tray.setContextMenu(menu)
+        tray.activated.connect(self._on_tray_activated)
+        tray.show()
+        self.tray = tray
+
+    def show_from_tray(self):
+        self.show()
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+        self.raise_()
+        self.activateWindow()
+
+    def _on_tray_activated(self, reason):
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self.show_from_tray()
+
+    def _minimize_to_tray_enabled(self) -> bool:
+        raw = self.settings.value("ui/minimize_to_tray", True)
+        return str(raw).lower() in ("true", "1")
+
+    def quit_app(self):
+        """Quit deliberately (tray menu) — skips the tray-hide and the prompt."""
+        self._quitting = True
+        self.close()
 
     def setup_status_bar(self):
         raw = self.settings.value("ui/status_bar", False)
@@ -181,31 +232,56 @@ class LumiSyncMainWindow(QMainWindow):
             self.restoreGeometry(geometry)
 
     def closeEvent(self, event):
-        reply = QMessageBox.question(
-            self, "Quit", "Do you want to quit LumiSync?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
+        # Closing the window hides to the tray (syncs keep running) unless the
+        # user quit deliberately or disabled the tray behavior in Settings.
+        if (
+            not self._quitting
+            and self.tray is not None
+            and self._minimize_to_tray_enabled()
+        ):
+            event.ignore()
+            self.hide()
+            notice_shown = str(
+                self.settings.value("ui/tray_notice_shown", False)
+            ).lower() in ("true", "1")
+            if not notice_shown:
+                self.tray.showMessage(
+                    "LumiSync is still running",
+                    "Syncing continues in the background. Right-click the "
+                    "tray icon to quit, or disable this in Settings.",
+                )
+                self.settings.setValue("ui/tray_notice_shown", True)
+            return
 
-        if reply == QMessageBox.StandardButton.Yes:
-            self.settings.setValue("geometry", self.saveGeometry())
-            if hasattr(self.sync_controller, 'stop_sync'):
-                self.sync_controller.stop_sync()
-            draw_view = getattr(self, "draw_view", None)
-            if draw_view is not None:
-                try:
-                    draw_view._stop_send()
-                except Exception:
-                    pass
-            # Close any persistent BLE connections.
+        if not self._quitting:
+            reply = QMessageBox.question(
+                self, "Quit", "Do you want to quit LumiSync?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+
+        self.settings.setValue("geometry", self.saveGeometry())
+        if hasattr(self.sync_controller, 'stop_sync'):
+            self.sync_controller.stop_sync()
+        draw_view = getattr(self, "draw_view", None)
+        if draw_view is not None:
             try:
-                from ..drivers import pool
-                pool.close_all()
+                draw_view._stop_send()
             except Exception:
                 pass
-            event.accept()
-        else:
-            event.ignore()
+        # Close any persistent BLE connections.
+        try:
+            from ..drivers import pool
+            pool.close_all()
+        except Exception:
+            pass
+        if self.tray is not None:
+            self.tray.hide()
+        event.accept()
+        QApplication.instance().quit()
 
 
 def main():
@@ -216,6 +292,8 @@ def main():
         app = QApplication(sys.argv)
         app.setApplicationName("LumiSync")
         app.setOrganizationName("Minlor")
+        # The window can hide to the tray; the tray Quit action ends the app.
+        app.setQuitOnLastWindowClosed(False)
 
         apply_theme(app)
 
