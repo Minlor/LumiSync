@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..theme import qcolor
 
 
 def device_id(device: Dict[str, Any]) -> str:
@@ -45,7 +44,7 @@ class DeviceChipStrip(QFrame):
         layout.setSpacing(6)
 
         self._label = QLabel(label + ":")
-        self._label.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
+        self._label.setProperty("role", "subtle")
         layout.addWidget(self._label)
 
         # Chip container — chips added dynamically
@@ -57,11 +56,7 @@ class DeviceChipStrip(QFrame):
         self._edit_button = QToolButton()
         self._edit_button.setText("Edit ▾")
         self._edit_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._edit_button.setStyleSheet(
-            "QToolButton { background: transparent; border: none; "
-            f"color: {qcolor('accent_bright').name()}; padding: 2px 4px; font-size: 9pt; }}"
-            "QToolButton:hover { color: white; }"
-        )
+        self._edit_button.setProperty("role", "link")
         self._edit_button.clicked.connect(self._open_picker)
         layout.addWidget(self._edit_button)
 
@@ -101,8 +96,7 @@ class DeviceChipStrip(QFrame):
 
         if not self._devices:
             empty = QLabel("No devices")
-            empty.setProperty("role", "subtle")
-            empty.setStyleSheet(f"color: {qcolor('text_disabled').name()}; font-size: 9pt; font-style: italic;")
+            empty.setProperty("role", "hint")
             self._chips_layout.addWidget(empty)
             return
 
@@ -117,12 +111,12 @@ class DeviceChipStrip(QFrame):
 
         if overflow:
             more = QLabel(f"+{overflow} more")
-            more.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
+            more.setProperty("role", "subtle")
             self._chips_layout.addWidget(more)
 
         if not selected:
             none = QLabel("(none — sync disabled)")
-            none.setStyleSheet(f"color: {qcolor('warning').name()}; font-size: 9pt;")
+            none.setProperty("role", "warn")
             self._chips_layout.addWidget(none)
 
     def _make_chip(self, device: Dict[str, Any]) -> QPushButton:

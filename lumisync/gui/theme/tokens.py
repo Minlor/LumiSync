@@ -46,6 +46,12 @@ TOKENS: dict[str, str] = {
     "radius_sm":      "6px",
     "radius_md":      "8px",
     "radius_lg":      "12px",
+
+    # Typography
+    "font_title":     "18pt",
+    "font_body":      "10pt",
+    "font_small":     "9pt",
+    "font_caption":   "8pt",
 }
 
 

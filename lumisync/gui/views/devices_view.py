@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Set
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QColorDialog,
     QFrame,
@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
 from ... import connection
 from ..controllers.device_controller import DeviceController
 from ..dialogs.add_device_dialog import AddDeviceDialog
-from ..theme import qcolor
 from ..utils.animations import animate_height
 from ..utils.flow_layout import FlowLayout
 from ..widgets.device_card import DeviceCard
@@ -51,11 +50,7 @@ class DevicesView(QWidget):
 
         # Header
         header = QLabel("Devices")
-        header.setProperty("role", "header")
-        f = QFont()
-        f.setPointSize(18)
-        f.setBold(True)
-        header.setFont(f)
+        header.setProperty("role", "title")
         root.addWidget(header)
 
         # Toolbar row
@@ -83,7 +78,7 @@ class DevicesView(QWidget):
         toolbar.addStretch(1)
 
         self.summary_label = QLabel("")
-        self.summary_label.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
+        self.summary_label.setProperty("role", "subtle")
         toolbar.addWidget(self.summary_label)
 
         self.select_all_button = QPushButton("Select all")
@@ -107,7 +102,7 @@ class DevicesView(QWidget):
         bulk_layout.setSpacing(8)
 
         self.bulk_label = QLabel("")
-        self.bulk_label.setStyleSheet(f"color: {qcolor('text').name()}; font-weight: 600;")
+        self.bulk_label.setProperty("role", "strong")
         bulk_layout.addWidget(self.bulk_label)
         bulk_layout.addStretch(1)
 
@@ -154,9 +149,7 @@ class DevicesView(QWidget):
         )
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_label.setWordWrap(True)
-        self.empty_label.setStyleSheet(
-            f"color: {qcolor('text_dim').name()}; font-size: 11pt; padding: 40px;"
-        )
+        self.empty_label.setProperty("role", "empty")
         self.empty_label.setVisible(False)
         root.addWidget(self.empty_label)
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QSettings
-from PySide6.QtGui import QDesktopServices, QFont, QGuiApplication
+from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..theme import qcolor
 from ..controllers.sync_controller import SYNC_SETTINGS_KEYS, load_sync_settings
 from ...sync import audio
 from ...config.options import SYNC
@@ -35,10 +34,7 @@ class SettingsPage(QWidget):
         root.setSpacing(14)
 
         header = QLabel("Settings")
-        f = QFont()
-        f.setPointSize(18)
-        f.setBold(True)
-        header.setFont(f)
+        header.setProperty("role", "title")
         root.addWidget(header)
 
         root.addWidget(self._build_display_group())
@@ -214,7 +210,7 @@ class SettingsPage(QWidget):
             "Select devices in the Devices tab and use 'Save as Group' to create "
             "a group. Saved groups appear here."
         )
-        info.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
+        info.setProperty("role", "subtle")
         info.setWordWrap(True)
         layout.addWidget(info)
 
@@ -245,7 +241,7 @@ class SettingsPage(QWidget):
         groups = controller.get_groups()
         if not groups:
             empty = QLabel("No groups yet.")
-            empty.setStyleSheet(f"color: {qcolor('text_disabled').name()}; font-size: 9pt;")
+            empty.setProperty("role", "hint")
             self._groups_list.addWidget(empty)
             return
 
@@ -279,7 +275,7 @@ class SettingsPage(QWidget):
         layout.addWidget(version_label)
 
         desc = QLabel("Sync your Govee lights with your screen and audio.")
-        desc.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
+        desc.setProperty("role", "subtle")
         layout.addWidget(desc)
 
         self.update_status_label = QLabel("Updates have not been checked yet.")

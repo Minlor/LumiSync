@@ -345,16 +345,14 @@ class LedMappingWidget(QWidget):
             "Drag zones to swap LED positions. Colors show on your LED strip."
         )
         instructions.setWordWrap(True)
-        instructions.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
+        instructions.setProperty("role", "subtle")
         layout.addWidget(instructions)
 
         self.screen_preview = ScreenRegionPreview()
         layout.addWidget(self.screen_preview)
 
         self.selection_label = QLabel("Drag a zone to swap LED positions")
-        self.selection_label.setStyleSheet(
-            f"color: {qcolor('text_disabled').name()}; font-style: italic;"
-        )
+        self.selection_label.setProperty("role", "hint")
         layout.addWidget(self.selection_label)
 
         depth_layout = QHBoxLayout()

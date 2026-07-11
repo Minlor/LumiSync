@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from PySide6.QtCore import QSettings, QTimer, Qt
-from PySide6.QtGui import QFont, QGuiApplication
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QFrame,
     QGroupBox,
@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
 from ... import connection
 from ..controllers.device_controller import DeviceController
 from ..controllers.sync_controller import SyncController
-from ..theme import qcolor
 from ..utils.animations import animate_height
 from ..widgets.active_sync_row import ActiveSyncRow
 from ..widgets.device_chip import DeviceChipStrip, device_id
@@ -57,10 +56,7 @@ class ModesView(QWidget):
         root.setSpacing(14)
 
         header = QLabel("Sync Modes")
-        f = QFont()
-        f.setPointSize(18)
-        f.setBold(True)
-        header.setFont(f)
+        header.setProperty("role", "title")
         root.addWidget(header)
 
         modes_row = QHBoxLayout()
@@ -87,7 +83,6 @@ class ModesView(QWidget):
 
         desc = QLabel("Sample colors from your screen and push them to the lights.")
         desc.setProperty("role", "subtle")
-        desc.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
@@ -156,7 +151,6 @@ class ModesView(QWidget):
 
         desc = QLabel("Push colors based on the audio output amplitude.")
         desc.setProperty("role", "subtle")
-        desc.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
@@ -211,9 +205,6 @@ class ModesView(QWidget):
 
         self.empty_active_label = QLabel("No active syncs.")
         self.empty_active_label.setProperty("role", "hint")
-        self.empty_active_label.setStyleSheet(
-            f"color: {qcolor('text_disabled').name()}; font-style: italic; padding: 6px 0;"
-        )
         layout.addWidget(self.empty_active_label)
 
         return group

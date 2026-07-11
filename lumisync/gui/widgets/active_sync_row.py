@@ -49,7 +49,7 @@ class ActiveSyncRow(QFrame):
         text_box.addWidget(title)
 
         sub = QLabel(self._format_devices(device_names))
-        sub.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
+        sub.setProperty("role", "subtle")
         text_box.addWidget(sub)
 
         layout.addLayout(text_box, 1)

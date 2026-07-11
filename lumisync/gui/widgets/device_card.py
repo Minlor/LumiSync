@@ -113,11 +113,6 @@ class DeviceCard(QFrame):
         self.menu_button.setText("⋮")
         self.menu_button.setProperty("role", "ghost")
         self.menu_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.menu_button.setStyleSheet(
-            "QToolButton { background: transparent; border: none; "
-            "color: " + qcolor("text_dim").name() + "; padding: 2px 6px; font-size: 14pt; }"
-            "QToolButton:hover { color: " + qcolor("text").name() + "; }"
-        )
         self.menu_button.clicked.connect(self._show_menu)
         header.addWidget(self.menu_button)
 
@@ -126,7 +121,6 @@ class DeviceCard(QFrame):
         # Sub-line: IP · Port · Source
         sub = QLabel(self._format_subline())
         sub.setProperty("role", "subtle")
-        sub.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
         root.addWidget(sub)
 
         state_row = QHBoxLayout()
@@ -134,22 +128,17 @@ class DeviceCard(QFrame):
 
         self.primary_label = QLabel("Primary")
         self.primary_label.setProperty("role", "pill")
-        self.primary_label.setStyleSheet(
-            f"background: {qcolor('accent_dim').name()};"
-            f"color: {qcolor('text').name()};"
-            "border-radius: 8px; padding: 2px 7px; font-size: 8pt;"
-        )
         self.primary_label.setVisible(False)
         state_row.addWidget(self.primary_label)
 
         self.power_state_label = QLabel("Power unknown")
-        self.power_state_label.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
+        self.power_state_label.setProperty("role", "subtle")
         state_row.addWidget(self.power_state_label)
 
         state_row.addStretch(1)
 
         self.state_detail_label = QLabel("Status pending")
-        self.state_detail_label.setStyleSheet(f"color: {qcolor('text_disabled').name()}; font-size: 9pt;")
+        self.state_detail_label.setProperty("role", "status")
         state_row.addWidget(self.state_detail_label)
 
         root.addLayout(state_row)
@@ -158,7 +147,7 @@ class DeviceCard(QFrame):
         bright_row = QHBoxLayout()
         bright_row.setSpacing(8)
         bright_label = QLabel("☀")
-        bright_label.setStyleSheet(f"color: {qcolor('text_dim').name()};")
+        bright_label.setProperty("role", "icon")
         bright_row.addWidget(bright_label)
 
         self.brightness_slider = QSlider(Qt.Orientation.Horizontal)
@@ -170,7 +159,7 @@ class DeviceCard(QFrame):
         self.brightness_value = QLabel("100%")
         self.brightness_value.setMinimumWidth(36)
         self.brightness_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.brightness_value.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
+        self.brightness_value.setProperty("role", "subtle")
         bright_row.addWidget(self.brightness_value)
         root.addLayout(bright_row)
 
@@ -208,7 +197,7 @@ class DeviceCard(QFrame):
         temp_row = QHBoxLayout()
         temp_row.setSpacing(8)
         temp_label = QLabel("🌡")
-        temp_label.setStyleSheet(f"color: {qcolor('text_dim').name()};")
+        temp_label.setProperty("role", "icon")
         temp_row.addWidget(temp_label)
 
         self.color_temp_slider = QSlider(Qt.Orientation.Horizontal)
@@ -220,7 +209,7 @@ class DeviceCard(QFrame):
         self.color_temp_value = QLabel(f"{self.color_temp_slider.value()}K")
         self.color_temp_value.setMinimumWidth(44)
         self.color_temp_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.color_temp_value.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
+        self.color_temp_value.setProperty("role", "subtle")
         temp_row.addWidget(self.color_temp_value)
 
         self._color_temp_row = temp_row

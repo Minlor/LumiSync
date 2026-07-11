@@ -47,6 +47,82 @@ QToolTip {
     padding: 4px 8px;
 }
 
+/* ---- Text & control roles ----
+   Views set `role` properties instead of inline stylesheets so typography
+   and colors stay consistent and live in one place. */
+
+QLabel[role="title"] {
+    font-size: {font_title};
+    font-weight: 700;
+}
+
+QLabel[role="subtle"] {
+    color: {text_dim};
+    font-size: {font_small};
+}
+
+QLabel[role="strong"] {
+    font-weight: 600;
+}
+
+QLabel[role="hint"] {
+    color: {text_disabled};
+    font-size: {font_small};
+    font-style: italic;
+}
+
+QLabel[role="status"] {
+    color: {text_disabled};
+    font-size: {font_small};
+}
+
+QLabel[role="warn"] {
+    color: {warning};
+    font-size: {font_small};
+}
+
+QLabel[role="icon"] {
+    color: {text_dim};
+}
+
+QLabel[role="empty"] {
+    color: {text_dim};
+    font-size: 11pt;
+    padding: 40px;
+}
+
+QLabel[role="pill"] {
+    background: {accent_dim};
+    color: {text};
+    border-radius: 8px;
+    padding: 2px 7px;
+    font-size: {font_caption};
+}
+
+QToolButton[role="ghost"] {
+    background: transparent;
+    border: none;
+    color: {text_dim};
+    padding: 2px 6px;
+    font-size: 14pt;
+}
+
+QToolButton[role="ghost"]:hover {
+    color: {text};
+}
+
+QToolButton[role="link"] {
+    background: transparent;
+    border: none;
+    color: {accent_bright};
+    padding: 2px 4px;
+    font-size: {font_small};
+}
+
+QToolButton[role="link"]:hover {
+    color: white;
+}
+
 /* ---- GroupBox / Cards ---- */
 
 QGroupBox {
