@@ -35,6 +35,10 @@ dependencies = [
   "mss>=10.1.0; sys_platform != 'win32'",
 ]
 
+[project.optional-dependencies]
+# Bluetooth LE devices (e.g. iDotMatrix pixel displays)
+ble = ["bleak>=0.22.0"]
+
 [tool.setuptools.packages.find]
 include = ["lumisync*"]
 
