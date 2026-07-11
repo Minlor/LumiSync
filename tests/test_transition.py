@@ -1,7 +1,5 @@
 import time
 
-import colour
-
 from lumisync import connection, utils
 
 
@@ -26,19 +24,18 @@ def transition() -> None:
         previous = None
         for color in all_colors:
             if previous is None:
-                previous = colour.Color(
-                    rgb=(color[0] / 255, color[1] / 255, color[2] / 255)
-                )
+                previous = color
                 continue
-            color = colour.Color(rgb=(color[0] / 255, color[1] / 255, color[2] / 255))
-            range = list(previous.range_to(color, 10))
-            for i in range:
+            for step in range(1, 11):
+                fraction = step / 10
+                blended = [
+                    int(utils.lerp(previous[channel], color[channel], fraction))
+                    for channel in range(3)
+                ]
                 connection.send_razer_data(
                     server,
                     device,
-                    utils.convert_colors(
-                        [[int(i.red * 255), int(i.green * 255), int(i.blue * 255)]]
-                    ),
+                    utils.convert_colors([blended]),
                 )
                 time.sleep(0.025)
             previous = color

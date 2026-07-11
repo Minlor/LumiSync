@@ -8,7 +8,9 @@ import math
 from typing import Iterable, List, Tuple
 
 import webcolors
-from matplotlib.colors import CSS4_COLORS
+
+# webcolors ships the CSS3 named-color table; CSS4 added exactly one name.
+_CSS4_EXTRAS = {"rebeccapurple": "#663399"}
 
 
 def lerp(start: float, end: float, step: float) -> float:
@@ -47,10 +49,11 @@ def get_color(name: str, format: str = "rgb") -> Tuple[int, int, int] | str:
     color : str or tuple of int
         Either a string if "hexadecimal" or a tuple of ints if "rgb".
     """
-    color = CSS4_COLORS.get(name.lower())
+    key = name.lower()
+    hex_value = _CSS4_EXTRAS.get(key) or webcolors.name_to_hex(key)
     if format == "rgb":
-        color = webcolors.hex_to_rgb(color)
-    return color
+        return tuple(webcolors.hex_to_rgb(hex_value))
+    return hex_value
 
 
 def kelvin_to_rgb(kelvin: int) -> Tuple[int, int, int]:
