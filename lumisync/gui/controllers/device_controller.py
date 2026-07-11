@@ -112,6 +112,21 @@ class DeviceStatusWorker(QObject):
             self.finished.emit()
 
 
+class BleScanWorker(QObject):
+    """Run the (blocking, ~8s) BLE discovery scan off the GUI thread."""
+
+    finished = Signal(list)  # raw discovery entries
+    error = Signal(str)
+
+    def run(self) -> None:
+        try:
+            from ...drivers.idotmatrix_ble import IDotMatrixBleAdapter
+
+            self.finished.emit(IDotMatrixBleAdapter.discover(timeout=8.0))
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class DeviceController(QObject):
     """Controller for device management with PySide6 signals."""
 
@@ -125,6 +140,8 @@ class DeviceController(QObject):
     device_state_updated = Signal(int, dict)  # Index, cached state
     discovery_started = Signal()  # Discovery process started
     discovery_finished = Signal()  # Discovery process finished
+    ble_scan_started = Signal()  # Bluetooth scan started
+    ble_scan_finished = Signal()  # Bluetooth scan finished
     groups_changed = Signal(list)  # Updated list of sync groups
 
     def __init__(self):
@@ -191,6 +208,8 @@ class DeviceController(QObject):
     def _clear_status_refs(self) -> None:
         self.status_thread = None
         self.status_worker = None
+        self._ble_scan_thread = None
+        self._ble_scan_worker = None
 
     def discover_devices(self):
         """Start device discovery in background thread."""
@@ -598,18 +617,45 @@ class DeviceController(QObject):
     def scan_ble_devices(self) -> None:
         """Scan for iDotMatrix devices over BLE and add likely matches.
 
-        Auto-adds devices whose advertisement looks like an iDotMatrix panel; if
-        none match, reports what was seen so the user can add by address instead.
+        The scan itself blocks for ~8 s, so it runs in a worker thread;
+        results are processed back on the GUI thread. Auto-adds devices whose
+        advertisement looks like an iDotMatrix panel; if none match, reports
+        what was seen so the user can add by address instead.
         """
-        self.status_updated.emit("Scanning for Bluetooth devices...")
-        try:
-            from ...drivers.idotmatrix_ble import IDotMatrixBleAdapter
-
-            found = IDotMatrixBleAdapter.discover(timeout=8.0)
-        except Exception as e:
-            self.status_updated.emit(f"Bluetooth scan unavailable: {e}")
+        if getattr(self, "_ble_scan_thread", None) is not None:
+            self.status_updated.emit("Bluetooth scan already in progress...")
             return
 
+        self.ble_scan_started.emit()
+        self.status_updated.emit("Scanning for Bluetooth devices...")
+
+        thread = QThread()
+        worker = BleScanWorker()
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_ble_scan_finished)
+        worker.error.connect(self._on_ble_scan_error)
+
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_ble_scan_refs)
+
+        self._ble_scan_thread = thread
+        self._ble_scan_worker = worker
+        thread.start()
+
+    def _clear_ble_scan_refs(self) -> None:
+        self._ble_scan_thread = None
+        self._ble_scan_worker = None
+
+    def _on_ble_scan_error(self, message: str) -> None:
+        self.status_updated.emit(f"Bluetooth scan unavailable: {message}")
+        self.ble_scan_finished.emit()
+
+    def _on_ble_scan_finished(self, found: List[Dict[str, Any]]) -> None:
         likely = [d for d in found if d.get("likely")]
         added = 0
         for entry in likely:
@@ -641,6 +687,7 @@ class DeviceController(QObject):
                 "No Bluetooth devices found. Turn Bluetooth on and make sure the "
                 "panel is advertising (disconnect it from the phone app first)."
             )
+        self.ble_scan_finished.emit()
 
     def remove_device(self, index: int) -> bool:
         """Remove device by index.

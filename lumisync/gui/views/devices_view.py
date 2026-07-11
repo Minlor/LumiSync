@@ -150,7 +150,8 @@ class DevicesView(QWidget):
         # Empty state label
         self.empty_label = QLabel(
             "No devices yet.\n\nClick “Discover Devices” to find Govee lights on your "
-            "network, or “Add Manually” to add one by IP."
+            "network, “Scan Bluetooth” for iDotMatrix panels, or “Add Manually” "
+            "to add one by IP or Bluetooth address."
         )
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_label.setWordWrap(True)
@@ -167,6 +168,8 @@ class DevicesView(QWidget):
         self.controller.device_state_updated.connect(self._on_device_state_updated)
         self.controller.discovery_started.connect(self._on_discovery_started)
         self.controller.discovery_finished.connect(self._on_discovery_finished)
+        self.controller.ble_scan_started.connect(self._on_ble_scan_started)
+        self.controller.ble_scan_finished.connect(self._on_ble_scan_finished)
 
     def _on_discovery_started(self) -> None:
         self.discover_button.setEnabled(False)
@@ -175,6 +178,14 @@ class DevicesView(QWidget):
     def _on_discovery_finished(self) -> None:
         self.discover_button.setEnabled(True)
         self.discover_button.setText("Discover Devices")
+
+    def _on_ble_scan_started(self) -> None:
+        self.scan_ble_button.setEnabled(False)
+        self.scan_ble_button.setText("Scanning…")
+
+    def _on_ble_scan_finished(self) -> None:
+        self.scan_ble_button.setEnabled(True)
+        self.scan_ble_button.setText("Scan Bluetooth")
 
     # ------------------------------------------------------------------ cards
 
