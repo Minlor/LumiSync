@@ -7,7 +7,7 @@ to stay in sync.
 
 from __future__ import annotations
 
-from PyQt6.QtGui import QColor
+from PySide6.QtGui import QColor
 
 
 TOKENS: dict[str, str] = {

@@ -26,7 +26,7 @@
 | 🖥️ **Monitor Sync** | Sample colors from screen regions and sync to your LED strip in real-time |
 | 🎵 **Music Sync** | React to audio with dynamic color patterns |
 | 🎨 **Color Control** | Set custom colors and brightness directly from the app |
-| 🖌️ **Modern GUI** | PyQt6 interface with Windows 11-style navigation and theme support |
+| 🖌️ **Modern GUI** | PySide6 interface with Windows 11-style navigation and theme support |
 | 🔍 **Auto-Discovery** | Automatically finds Govee devices on your LAN via UDP broadcast |
 | ⚡ **Low Latency** | Direct LAN communication, no cloud required |
 
@@ -93,7 +93,7 @@ lumisync/
 ├── devices.py           # Device discovery & caching
 ├── config/options.py    # Runtime configuration
 ├── sync/                # Monitor & music sync engines
-├── gui/                 # PyQt6 application
+├── gui/                 # PySide6 application
 │   ├── controllers/     # Business logic (QObject + pyqtSignal)
 │   ├── views/           # UI components
 │   └── widgets/         # Reusable widgets

@@ -1,13 +1,13 @@
 """
 Device controller for the LumiSync GUI.
-This module handles device discovery and management with PyQt6 signals.
+This module handles device discovery and management with PySide6 signals.
 """
 
 import socket
 import time
 from typing import Any, Dict, List, Optional
 
-from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer
+from PySide6.QtCore import QObject, Signal, QThread, QTimer
 
 from ... import connection, devices, groups
 from ...drivers import pool
@@ -18,8 +18,8 @@ class DeviceDiscoveryWorker(QObject):
     """Worker object for device discovery in a separate thread."""
 
     # Signals
-    finished = pyqtSignal(list, int, int)  # devices, selected_index, LAN replies
-    error = pyqtSignal(str)  # error message
+    finished = Signal(list, int, int)  # devices, selected_index, LAN replies
+    error = Signal(str)  # error message
 
     def run(self):
         """Run device discovery in background thread.
@@ -50,9 +50,9 @@ class DeviceDiscoveryWorker(QObject):
 class DeviceStatusWorker(QObject):
     """Query current LAN state for one or more devices off the GUI thread."""
 
-    state_updated = pyqtSignal(int, dict)
-    finished = pyqtSignal()
-    error = pyqtSignal(str)
+    state_updated = Signal(int, dict)
+    finished = Signal()
+    error = Signal(str)
 
     def __init__(self, indexed_devices: List[tuple[int, Dict[str, Any]]]):
         super().__init__()
@@ -113,19 +113,19 @@ class DeviceStatusWorker(QObject):
 
 
 class DeviceController(QObject):
-    """Controller for device management with PyQt6 signals."""
+    """Controller for device management with PySide6 signals."""
 
     # Signals
-    status_updated = pyqtSignal(str)  # Status message
-    devices_discovered = pyqtSignal(list)  # List of devices
-    device_selected = pyqtSignal(dict)  # Selected device info
-    device_added = pyqtSignal(dict)  # Newly added device
-    device_removed = pyqtSignal(int)  # Index of removed device
-    device_updated = pyqtSignal(int, dict)  # Index, updated device
-    device_state_updated = pyqtSignal(int, dict)  # Index, cached state
-    discovery_started = pyqtSignal()  # Discovery process started
-    discovery_finished = pyqtSignal()  # Discovery process finished
-    groups_changed = pyqtSignal(list)  # Updated list of sync groups
+    status_updated = Signal(str)  # Status message
+    devices_discovered = Signal(list)  # List of devices
+    device_selected = Signal(dict)  # Selected device info
+    device_added = Signal(dict)  # Newly added device
+    device_removed = Signal(int)  # Index of removed device
+    device_updated = Signal(int, dict)  # Index, updated device
+    device_state_updated = Signal(int, dict)  # Index, cached state
+    discovery_started = Signal()  # Discovery process started
+    discovery_finished = Signal()  # Discovery process finished
+    groups_changed = Signal(list)  # Updated list of sync groups
 
     def __init__(self):
         """Initialize the device controller."""

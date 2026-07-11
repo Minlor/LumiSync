@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Set
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QFont
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont
+from PySide6.QtWidgets import (
     QColorDialog,
     QFrame,
     QHBoxLayout,

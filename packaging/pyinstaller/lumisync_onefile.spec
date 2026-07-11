@@ -43,11 +43,11 @@ hiddenimports += safe_collect_submodules("lumisync")
 hiddenimports += safe_collect_submodules("dxcam")
 hiddenimports += [
     "cv2",
-    "PyQt6.QtCore",
-    "PyQt6.QtGui",
-    "PyQt6.QtSvg",
-    "PyQt6.QtSvgWidgets",
-    "PyQt6.QtWidgets",
+    "PySide6.QtCore",
+    "PySide6.QtGui",
+    "PySide6.QtSvg",
+    "PySide6.QtSvgWidgets",
+    "PySide6.QtWidgets",
     "pythoncom",
     "pywintypes",
     "soundcard",

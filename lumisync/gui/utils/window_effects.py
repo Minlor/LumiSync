@@ -21,8 +21,8 @@ import platform
 from ctypes import Structure, c_int, c_void_p, windll
 from ctypes.wintypes import BOOL, DWORD, HWND
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QWidget
 
 
 def apply_qt_translucent_background(window: QWidget) -> None:

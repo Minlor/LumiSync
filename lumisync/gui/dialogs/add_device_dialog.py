@@ -3,12 +3,12 @@ Add Device Dialog for the LumiSync GUI.
 This module provides a dialog for manually adding devices.
 """
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QComboBox,
     QLineEdit, QFormLayout, QDialogButtonBox
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 
 from ..utils.validators import IPAddressValidator, MACAddressValidator, PortValidator
 from ...drivers.idotmatrix_ble import KNOWN_SIZES

@@ -23,8 +23,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import Dict, Optional, Tuple, Union
 
-from PyQt6.QtCore import QSize
-from PyQt6.QtGui import QIcon, QPixmap
+from PySide6.QtCore import QSize
+from PySide6.QtGui import QIcon, QPixmap
 
 from . import ResourceManager
 

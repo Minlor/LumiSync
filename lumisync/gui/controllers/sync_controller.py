@@ -1,6 +1,6 @@
 """
 Sync controller for the LumiSync GUI.
-This module handles synchronization functionality with PyQt6 signals.
+This module handles synchronization functionality with PySide6 signals.
 """
 
 import platform
@@ -9,7 +9,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QObject, pyqtSignal, QThread, QSettings
+from PySide6.QtCore import QObject, Signal, QThread, QSettings
 
 if platform.system() == "Windows":
     from pythoncom import CoInitializeEx, CoUninitialize
@@ -115,8 +115,8 @@ class MonitorSyncWorker(QObject):
     """Worker for monitor synchronization in a separate thread."""
 
     # Signals
-    status_updated = pyqtSignal(str)
-    error_occurred = pyqtSignal(str)
+    status_updated = Signal(str)
+    error_occurred = Signal(str)
 
     def __init__(self, server, devices, stop_event, controller):
         super().__init__()
@@ -251,8 +251,8 @@ class MusicSyncWorker(QObject):
     """Worker for music synchronization in a separate thread."""
 
     # Signals
-    status_updated = pyqtSignal(str)
-    error_occurred = pyqtSignal(str)
+    status_updated = Signal(str)
+    error_occurred = Signal(str)
 
     def __init__(self, server, devices, stop_event, controller):
         super().__init__()
@@ -356,14 +356,14 @@ class MusicSyncWorker(QObject):
 
 
 class SyncController(QObject):
-    """Controller for managing synchronization with PyQt6 signals."""
+    """Controller for managing synchronization with PySide6 signals."""
 
     # Signals
-    status_updated = pyqtSignal(str)
-    sync_started = pyqtSignal(str)  # mode: "monitor" or "music"
-    sync_stopped = pyqtSignal()
-    brightness_changed = pyqtSignal(str, float)  # mode, value
-    sync_error = pyqtSignal(str)
+    status_updated = Signal(str)
+    sync_started = Signal(str)  # mode: "monitor" or "music"
+    sync_stopped = Signal()
+    brightness_changed = Signal(str, float)  # mode, value
+    sync_error = Signal(str)
 
     def __init__(self):
         """Initialize the sync controller."""

@@ -5,9 +5,9 @@ from __future__ import annotations
 import threading
 from typing import Any, Dict, List, Optional
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtGui import QColor, QFont
+from PySide6.QtWidgets import (
     QColorDialog,
     QComboBox,
     QHBoxLayout,
@@ -31,8 +31,8 @@ class _DrawWorker(QObject):
     cleanly when the user navigates away or quits.
     """
 
-    finished = pyqtSignal()
-    error = pyqtSignal(str)
+    finished = Signal()
+    error = Signal(str)
 
     def __init__(self, device, frames, frame_delay):
         super().__init__()

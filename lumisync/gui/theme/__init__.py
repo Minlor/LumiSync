@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtGui import QColor, QPalette
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtGui import QColor, QPalette
+from PySide6.QtWidgets import QApplication
 
 from .tokens import TOKENS, qcolor
 

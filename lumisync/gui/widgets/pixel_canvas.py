@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-from PyQt6.QtCore import Qt, pyqtSignal, QRect
-from PyQt6.QtGui import QColor, QPainter, QMouseEvent
-from PyQt6.QtWidgets import QWidget
+from PySide6.QtCore import Qt, Signal, QRect
+from PySide6.QtGui import QColor, QPainter, QMouseEvent
+from PySide6.QtWidgets import QWidget
 
 RGB = Tuple[int, int, int]
 
@@ -14,7 +14,7 @@ RGB = Tuple[int, int, int]
 class PixelCanvas(QWidget):
     """Editable grid of pixels. Click or drag to paint with the current color."""
 
-    changed = pyqtSignal()
+    changed = Signal()
 
     def __init__(self, cols: int = 32, rows: int = 32, parent=None):
         super().__init__(parent)

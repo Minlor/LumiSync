@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QEnterEvent, QMouseEvent
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QEnterEvent, QMouseEvent
+from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QFrame,
@@ -45,15 +45,15 @@ class DeviceCard(QFrame):
         zone_count_reset_requested(index)
     """
 
-    selection_changed = pyqtSignal(int, bool)
-    primary_clicked = pyqtSignal(int)
-    power_clicked = pyqtSignal(int)
-    color_picked = pyqtSignal(int, QColor)
-    brightness_changed = pyqtSignal(int, int)
-    color_temp_changed = pyqtSignal(int, int)  # index, kelvin
-    remove_requested = pyqtSignal(int)
-    zone_count_requested = pyqtSignal(int)
-    zone_count_reset_requested = pyqtSignal(int)
+    selection_changed = Signal(int, bool)
+    primary_clicked = Signal(int)
+    power_clicked = Signal(int)
+    color_picked = Signal(int, QColor)
+    brightness_changed = Signal(int, int)
+    color_temp_changed = Signal(int, int)  # index, kelvin
+    remove_requested = Signal(int)
+    zone_count_requested = Signal(int)
+    zone_count_reset_requested = Signal(int)
 
     def __init__(self, index: int, device: Dict[str, Any], parent: Optional[QWidget] = None):
         super().__init__(parent)

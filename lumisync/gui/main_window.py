@@ -3,9 +3,9 @@ Main application window for the LumiSync GUI.
 """
 
 import sys
-from PyQt6.QtWidgets import QMainWindow, QMessageBox, QApplication
-from PyQt6.QtCore import QSettings, QTimer, QUrl
-from PyQt6.QtGui import QDesktopServices
+from PySide6.QtWidgets import QMainWindow, QMessageBox, QApplication
+from PySide6.QtCore import QSettings, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 
 from .resources.icons import IconKey, icon as app_icon
 from .widgets import NavigationShell
@@ -112,7 +112,8 @@ class LumiSyncMainWindow(QMainWindow):
         self.nav_shell.set_page_svg("settings", "settings.svg")
 
     def setup_status_bar(self):
-        show_status = bool(self.settings.value("ui/status_bar", False, type=bool))
+        raw = self.settings.value("ui/status_bar", False)
+        show_status = str(raw).lower() in ("true", "1")
         self.statusBar().setVisible(show_status)
         if show_status:
             self.statusBar().showMessage("Ready")

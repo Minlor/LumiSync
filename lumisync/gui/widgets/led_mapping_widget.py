@@ -5,9 +5,9 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
-from PyQt6.QtCore import QPoint, QRect, QSettings, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen, QBrush
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QPoint, QRect, QSettings, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen, QBrush
+from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -95,7 +95,7 @@ def fit_led_mapping_to_count(
 class ScreenRegionPreview(QFrame):
     """Visual preview of the monitor with draggable content zones."""
 
-    zone_drag_swap = pyqtSignal(int, int)
+    zone_drag_swap = Signal(int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -319,7 +319,7 @@ class ScreenRegionPreview(QFrame):
 class LedMappingWidget(QWidget):
     """Widget for mapping LED positions to screen content zones."""
 
-    mapping_changed = pyqtSignal(list)
+    mapping_changed = Signal(list)
 
     def __init__(
         self,

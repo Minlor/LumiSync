@@ -27,7 +27,7 @@ dependencies = [
   "pillow>=11.1.0",
   "soundcard>=0.4.5",
   "webcolors>=24.11.1",
-  "PyQt6>=6.6.0",
+  "PySide6>=6.6.0",
   "opencv-python-headless>=4.10.0; sys_platform == 'win32'",
   "pywin32>=310; sys_platform == 'win32'",
   "mss>=10.1.0; sys_platform != 'win32'",

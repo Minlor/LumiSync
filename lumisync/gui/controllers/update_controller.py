@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal
+from PySide6.QtCore import QObject, QThread, Signal
 
 from ... import __version__
 from ...updates import UpdateCheckResult, check_for_update
 
 
 class UpdateCheckWorker(QObject):
-    finished = pyqtSignal(object)
+    finished = Signal(object)
 
     def run(self) -> None:
         try:
@@ -25,10 +25,10 @@ class UpdateCheckWorker(QObject):
 
 
 class UpdateController(QObject):
-    check_started = pyqtSignal()
-    check_finished = pyqtSignal(object)
-    update_available = pyqtSignal(object)
-    status_updated = pyqtSignal(str)
+    check_started = Signal()
+    check_finished = Signal(object)
+    update_available = Signal(object)
+    status_updated = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()

@@ -7,15 +7,15 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from PyQt6.QtCore import (
+from PySide6.QtCore import (
     QAbstractAnimation,
     QEasingCurve,
     QPropertyAnimation,
     Qt,
-    pyqtProperty,
+    Property,
 )
-from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import QGraphicsOpacityEffect, QStackedWidget, QWidget
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QStackedWidget, QWidget
 
 
 def animate_height(
@@ -125,10 +125,10 @@ class PulseDot(QWidget):
         self._pulse = float(value)
         self.update()
 
-    pulse = pyqtProperty(float, _get_pulse, _set_pulse)
+    pulse = Property(float, _get_pulse, _set_pulse)
 
     def paintEvent(self, _event) -> None:
-        from PyQt6.QtGui import QPainter, QBrush
+        from PySide6.QtGui import QPainter, QBrush
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)

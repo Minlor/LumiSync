@@ -6,8 +6,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Set
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -31,7 +31,7 @@ class DeviceChipStrip(QFrame):
     Emits `selection_changed(list[str])` of selected device ids.
     """
 
-    selection_changed = pyqtSignal(list)
+    selection_changed = Signal(list)
 
     def __init__(self, label: str = "Devices", parent: Optional[QWidget] = None):
         super().__init__(parent)

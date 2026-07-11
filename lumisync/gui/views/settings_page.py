@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QSettings
-from PyQt6.QtGui import QDesktopServices, QFont, QGuiApplication
-from PyQt6.QtCore import QUrl
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QSettings
+from PySide6.QtGui import QDesktopServices, QFont, QGuiApplication
+from PySide6.QtCore import QUrl
+from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,

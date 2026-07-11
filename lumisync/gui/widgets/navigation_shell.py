@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import (
+from PySide6.QtCore import (
     QEasingCurve,
     QPoint,
     QPropertyAnimation,
@@ -18,9 +18,9 @@ from PyQt6.QtCore import (
     QSize,
     Qt,
 )
-from PyQt6.QtGui import QColor, QPainter, QPixmap
-from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtWidgets import (
+from PySide6.QtGui import QColor, QPainter, QPixmap
+from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
