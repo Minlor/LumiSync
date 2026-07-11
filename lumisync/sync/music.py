@@ -12,7 +12,7 @@ if np.lib.NumpyVersion(np.__version__) >= '2.0.0':
 
 import soundcard as sc
 
-from .. import connection, utils
+from .. import utils
 from ..config.options import AUDIO, BRIGHTNESS, COLORS, SYNC
 from ..drivers.registry import create_adapter
 from . import audio, processing

@@ -534,7 +534,7 @@ class DeviceController(QObject):
             # Save settings
             try:
                 settings = devices.get_data()
-            except:
+            except Exception:
                 settings = {"devices": [], "selectedDevice": 0, "time": 0}
 
             settings["devices"] = self.devices
@@ -667,7 +667,7 @@ class DeviceController(QObject):
             # Save settings
             try:
                 settings = devices.get_data()
-            except:
+            except Exception:
                 settings = {"devices": [], "selectedDevice": 0, "time": 0}
 
             settings["devices"] = self.devices
@@ -1012,5 +1012,5 @@ class DeviceController(QObject):
             try:
                 self.server.close()
                 self.server = None
-            except:
+            except Exception:
                 pass

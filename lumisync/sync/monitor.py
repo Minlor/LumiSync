@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from PIL import Image
 
-from .. import connection, led_mapping, utils
+from .. import led_mapping, utils
 from ..config.options import BRIGHTNESS, GENERAL, SYNC
 from ..drivers.registry import create_adapter
 from . import processing

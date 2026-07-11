@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Dict, List, Optional
 
-from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QColorDialog,

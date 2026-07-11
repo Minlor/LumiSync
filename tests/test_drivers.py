@@ -4,9 +4,7 @@ import unittest
 
 import numpy as np
 
-from lumisync import utils
 from lumisync.utils.colors import kelvin_to_rgb
-from lumisync.drivers import DeviceCapabilities
 from lumisync.drivers.govee_lan import GoveeLanAdapter
 from lumisync.drivers.idotmatrix_ble import (
     IDotMatrixBleAdapter,

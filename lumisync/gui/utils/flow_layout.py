@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from PyQt6.QtCore import QPoint, QRect, QSize, Qt
-from PyQt6.QtWidgets import QLayout, QLayoutItem, QSizePolicy, QStyle, QWidget
+from PyQt6.QtWidgets import QLayout, QLayoutItem, QSizePolicy, QWidget
 
 
 class FlowLayout(QLayout):

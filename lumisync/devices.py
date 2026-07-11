@@ -199,7 +199,7 @@ def request() -> socket.socket:
     if _global_server is not None:
         try:
             _global_server.close()
-        except:
+        except Exception:
             pass
 
     logger.info("Requesting device data from network")

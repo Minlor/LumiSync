@@ -3,7 +3,7 @@ Resource management for LumiSync GUI.
 Handles loading of icons and other resources for PyQt6.
 """
 
-import os
+
 import sys
 from pathlib import Path
 from typing import Optional

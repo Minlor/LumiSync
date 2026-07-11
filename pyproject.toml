@@ -39,6 +39,9 @@ dependencies = [
 # Bluetooth LE devices (e.g. iDotMatrix pixel displays)
 ble = ["bleak>=0.22.0"]
 
+[tool.ruff]
+target-version = "py311"
+
 [tool.setuptools.packages.find]
 include = ["lumisync*"]
 

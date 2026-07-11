@@ -4,8 +4,8 @@ This module provides a dialog for manually adding devices.
 """
 
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
-    QLineEdit, QPushButton, QFormLayout, QDialogButtonBox
+    QDialog, QVBoxLayout, QLabel, QComboBox,
+    QLineEdit, QFormLayout, QDialogButtonBox
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont

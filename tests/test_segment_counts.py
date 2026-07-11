@@ -8,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtWidgets import QApplication
 
 from lumisync import connection, led_mapping
+from lumisync.drivers import pool
 from lumisync.gui.controllers.device_controller import DeviceController
 from lumisync.gui.controllers.sync_controller import (
     SyncController,
@@ -350,12 +351,14 @@ class SegmentCountTests(unittest.TestCase):
         with (
             patch("lumisync.gui.controllers.device_controller.devices.get_data", return_value=saved),
             patch("lumisync.gui.controllers.device_controller.devices.writeJSON"),
-            patch("lumisync.gui.controllers.device_controller.create_adapter", side_effect=fake_create),
+            patch("lumisync.drivers.pool.create_adapter", side_effect=fake_create),
         ):
             controller = DeviceController()
             controller.add_ble_device_manually("AA:BB:CC:DD:EE:FF", "iDotMatrix", "16x16")
             self.assertEqual(controller.devices[0]["transport"], "ble")
             controller.set_color_at(0, 10, 20, 30)
+            # BLE adapters are pooled and persistent; app shutdown closes them.
+            pool.close_all()
 
         self.assertIn(("color", 10, 20, 30), calls)
         self.assertIn(("close",), calls)

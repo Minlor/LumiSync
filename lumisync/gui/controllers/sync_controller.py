@@ -14,10 +14,9 @@ from PyQt6.QtCore import QObject, pyqtSignal, QThread, QSettings
 if platform.system() == "Windows":
     from pythoncom import CoInitializeEx, CoUninitialize
 
-from ... import connection, devices, led_mapping, utils
-from ...config.options import AUDIO, BRIGHTNESS, GENERAL, SYNC
+from ... import connection, led_mapping, utils
+from ...config.options import AUDIO, BRIGHTNESS, SYNC
 from ...drivers import pool
-from ...drivers.registry import create_adapter
 from ...sync import audio, monitor, music, processing
 
 
@@ -349,7 +348,7 @@ class MusicSyncWorker(QObject):
             try:
                 if platform.system() == "Windows":
                     CoUninitialize()
-            except:
+            except Exception:
                 pass
 
     def _device_key(self, device: Dict[str, Any]) -> str:

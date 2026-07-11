@@ -13,7 +13,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMenu,
     QPushButton,
-    QSizePolicy,
     QToolButton,
     QWidget,
 )

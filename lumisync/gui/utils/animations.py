@@ -11,11 +11,8 @@ from PyQt6.QtCore import (
     QAbstractAnimation,
     QEasingCurve,
     QPropertyAnimation,
-    QObject,
-    QTimer,
     Qt,
     pyqtProperty,
-    pyqtSignal,
 )
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QGraphicsOpacityEffect, QStackedWidget, QWidget
