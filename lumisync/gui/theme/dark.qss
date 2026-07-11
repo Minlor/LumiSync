@@ -403,6 +403,46 @@ QComboBox::drop-down {
     subcontrol-position: top right;
 }
 
+QComboBox::down-arrow {
+    image: url({icon_dir}/chevron-down.svg);
+    width: 12px;
+    height: 12px;
+}
+
+QSpinBox::up-button,
+QSpinBox::down-button {
+    subcontrol-origin: border;
+    width: 18px;
+    border: none;
+    background: transparent;
+    border-radius: {radius_sm};
+}
+
+QSpinBox::up-button {
+    subcontrol-position: top right;
+}
+
+QSpinBox::down-button {
+    subcontrol-position: bottom right;
+}
+
+QSpinBox::up-button:hover,
+QSpinBox::down-button:hover {
+    background: {hover};
+}
+
+QSpinBox::up-arrow {
+    image: url({icon_dir}/chevron-up.svg);
+    width: 10px;
+    height: 10px;
+}
+
+QSpinBox::down-arrow {
+    image: url({icon_dir}/chevron-down.svg);
+    width: 10px;
+    height: 10px;
+}
+
 QComboBox QAbstractItemView {
     background: {surface_alt};
     border: 1px solid {border};
