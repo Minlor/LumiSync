@@ -15,11 +15,65 @@ if platform.system() == "Windows":
     from pythoncom import CoInitializeEx, CoUninitialize
 
 from ... import connection, devices, led_mapping, utils
-from ...config.options import AUDIO, BRIGHTNESS, GENERAL
-from ...sync import monitor, music
+from ...config.options import AUDIO, BRIGHTNESS, GENERAL, SYNC
+from ...drivers import pool
+from ...drivers.registry import create_adapter
+from ...sync import audio, monitor, music, processing
 
 
 DEFAULT_LED_MAPPING = led_mapping.DEFAULT_LEGACY_MAPPING
+
+# QSettings keys for the tunables exposed in the Settings page. Kept here so the
+# loader and the UI share one source of truth.
+SYNC_SETTINGS_KEYS = {
+    "smoothing": "sync/smoothing",
+    "saturation": "sync/saturation",
+    "gamma_correct": "sync/gamma_correct",
+    "monitor_fps": "sync/monitor_fps",
+    "music_gain": "sync/music_gain",
+    "music_smoothing": "sync/music_smoothing",
+    "music_palette": "sync/music_palette",
+}
+
+
+def _coerce_float(value: Any, fallback: float, low: float, high: float) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(low, min(high, result))
+
+
+def _coerce_bool(value: Any, fallback: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "1", "yes", "on"):
+            return True
+        if lowered in ("false", "0", "no", "off"):
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return fallback
+
+
+def load_sync_settings(settings: QSettings) -> None:
+    """Apply persisted sync tuning from QSettings onto the live SYNC config.
+
+    QSettings round-trips values as strings on some platforms, so every field
+    is coerced and clamped to a safe range before it reaches the sync loops.
+    """
+    keys = SYNC_SETTINGS_KEYS
+    SYNC.smoothing = _coerce_float(settings.value(keys["smoothing"], SYNC.smoothing), SYNC.smoothing, 0.05, 1.0)
+    SYNC.saturation = _coerce_float(settings.value(keys["saturation"], SYNC.saturation), SYNC.saturation, 1.0, 2.0)
+    SYNC.gamma_correct = _coerce_bool(settings.value(keys["gamma_correct"], SYNC.gamma_correct), SYNC.gamma_correct)
+    SYNC.monitor_fps = int(_coerce_float(settings.value(keys["monitor_fps"], SYNC.monitor_fps), SYNC.monitor_fps, 10, 144))
+    SYNC.music_gain = _coerce_float(settings.value(keys["music_gain"], SYNC.music_gain), SYNC.music_gain, 0.5, 4.0)
+    SYNC.music_smoothing = _coerce_float(settings.value(keys["music_smoothing"], SYNC.music_smoothing), SYNC.music_smoothing, 0.05, 1.0)
+    palette = str(settings.value(keys["music_palette"], SYNC.music_palette))
+    if palette in audio.PALETTES:
+        SYNC.music_palette = palette
 
 
 def get_led_mapping_from_settings(
@@ -72,54 +126,43 @@ class MonitorSyncWorker(QObject):
         self.stop_event = stop_event
         self.controller = controller
 
-    def _send_smooth_frame(
-        self,
-        device: Dict[str, Any],
-        previous_colors: List[Tuple[int, int, int]],
-        colors: List[Tuple[int, int, int]],
-    ) -> None:
-        """Send one smooth transition frame to a participating device."""
-        steps = 10
-        for step in range(1, steps + 1):
-            if self.stop_event.is_set():
-                return
-            t = step / steps
-            interpolated = [
-                (
-                    int(prev[0] + (cur[0] - prev[0]) * t),
-                    int(prev[1] + (cur[1] - prev[1]) * t),
-                    int(prev[2] + (cur[2] - prev[2]) * t),
-                )
-                for prev, cur in zip(previous_colors, colors)
-            ]
-            payload = utils.convert_colors(interpolated)
-            connection.send_razer_data(self.server, device, payload)
-            time.sleep(0.01)
-
     def run(self):
-        """Run monitor sync loop."""
-        try:
-            # Enable Razer mode
-            for device in self.devices:
-                connection.switch_razer(self.server, device, True)
+        """Run monitor sync loop.
 
-            # Initialize per-device frame state based on known segment counts.
-            previous_by_device = {
-                self._device_key(device): [
-                    (0, 0, 0)
-                ] * connection.get_segment_count(device, default=len(DEFAULT_LED_MAPPING))
-                for device in self.devices
-            }
+        One captured frame produces one smoothed packet per device. Temporal
+        smoothing lives in a per-device EMA (:class:`processing.ColorSmoother`),
+        so we no longer flood the strip with ten interpolated packets per frame.
+        Frame pacing and a delta check keep CPU and UDP traffic bounded.
+        """
+        try:
+            # One driver per device; enable its segment/streaming mode once.
+            adapters = {}
+            for device in self.devices:
+                adapter = pool.acquire(device, self.server)
+                adapter.begin_stream()
+                adapters[self._device_key(device)] = adapter
+
+            # Per-device smoothing state and last transmitted frame.
+            smoothers: Dict[str, processing.ColorSmoother] = {}
+            last_sent: Dict[str, Optional[List[Tuple[int, int, int]]]] = {}
+            for device in self.devices:
+                key = self._device_key(device)
+                count = adapters[key].capabilities.segment_count
+                smoothers[key] = processing.ColorSmoother(SYNC.smoothing, count)
+                last_sent[key] = None
 
             screen_grab = None
             current_display_index = -1
             mapping_check_counter = 0
             empty_capture_count = 0
             cached_mappings: Dict[Tuple[int, int, int], List[led_mapping.NormalizedRect]] = {}
+            frame_interval = 1.0 / max(1, SYNC.monitor_fps)
 
             while not self.stop_event.is_set():
+                frame_start = time.monotonic()
                 try:
-                    # Periodically refresh LED mapping (every 100 frames)
+                    # Periodically drop the mapping cache so edits made in the
+                    # LED Mapping tab are picked up mid-sync.
                     mapping_check_counter += 1
                     if mapping_check_counter >= 100:
                         mapping_check_counter = 0
@@ -130,9 +173,10 @@ class MonitorSyncWorker(QObject):
                     if screen_grab is None or desired_display != current_display_index:
                         current_display_index = desired_display
                         screen_grab = monitor.ScreenGrab(display_index=current_display_index)
+                        cached_mappings.clear()
 
-                    screen = screen_grab.capture()
-                    if screen is None:
+                    frame = screen_grab.capture_array()
+                    if frame is None:
                         empty_capture_count += 1
                         if empty_capture_count in (30, 120):
                             self.status_updated.emit(
@@ -143,23 +187,22 @@ class MonitorSyncWorker(QObject):
                             screen_grab = None
                             current_display_index = -1
                             empty_capture_count = 0
-                        time.sleep(0.05)
+                        self.stop_event.wait(0.05)
                         continue
 
                     empty_capture_count = 0
-                    width, height = screen.size
+                    height, width = frame.shape[:2]
                     aspect_ratio = width / max(1, height)
+                    brightness = self.controller.get_monitor_brightness()
 
                     for device in self.devices:
                         key = self._device_key(device)
-                        segment_count = connection.get_segment_count(
-                            device,
-                            default=len(DEFAULT_LED_MAPPING),
-                        )
+                        adapter = adapters[key]
+                        segment_count = adapter.capabilities.segment_count
                         mapping_key = (
                             segment_count,
                             int(aspect_ratio * 1000),
-                            int(self.controller.get_monitor_display()),
+                            current_display_index,
                         )
                         if mapping_key not in cached_mappings:
                             cached_mappings[mapping_key] = get_led_mapping_from_settings(
@@ -167,29 +210,36 @@ class MonitorSyncWorker(QObject):
                                 aspect_ratio,
                             )
                         device_mapping = cached_mappings[mapping_key]
-                        colors = [
-                            sample_region_color(screen, width, height, rect)
-                            for rect in device_mapping
-                        ]
-                        colors = monitor.apply_brightness(
-                            colors,
-                            self.controller.get_monitor_brightness(),
+
+                        colors = processing.average_zone_colors(
+                            frame, device_mapping, gamma_correct=SYNC.gamma_correct
                         )
+                        colors = processing.apply_saturation(colors, SYNC.saturation)
                         colors = utils.resample_colors_to_count(colors, segment_count)
-                        previous_colors = previous_by_device.get(
-                            key,
-                            [(0, 0, 0)] * segment_count,
-                        )
-                        previous_colors = utils.fit_colors_to_count(
-                            previous_colors,
-                            segment_count,
-                        )
-                        self._send_smooth_frame(device, previous_colors, colors)
-                        previous_by_device[key] = colors
+                        colors = processing.apply_brightness(colors, brightness)
+
+                        smoother = smoothers.get(key)
+                        if smoother is None:
+                            smoother = processing.ColorSmoother(SYNC.smoothing, segment_count)
+                            smoothers[key] = smoother
+                        else:
+                            smoother.alpha = SYNC.smoothing  # live-apply UI changes
+                        smoothed = smoother.update(colors)
+
+                        if processing.colors_changed(
+                            last_sent.get(key), smoothed, SYNC.delta_threshold
+                        ):
+                            adapter.set_segments(smoothed)
+                            last_sent[key] = smoothed
 
                 except Exception as e:
                     self.error_occurred.emit(f"Error in monitor sync: {str(e)}")
                     time.sleep(1)  # Avoid tight loop on error
+                    continue
+
+                elapsed = time.monotonic() - frame_start
+                if elapsed < frame_interval:
+                    self.stop_event.wait(frame_interval - elapsed)
 
         except Exception as e:
             self.error_occurred.emit(f"Monitor sync error: {str(e)}")
@@ -213,74 +263,84 @@ class MusicSyncWorker(QObject):
         self.controller = controller
 
     def run(self):
-        """Run music sync loop."""
+        """Run music sync loop.
+
+        Each audio window is split into bass/mid/treble energy by an FFT and
+        mapped to a color that scrolls along the strip. The recorder is opened
+        once per connection instead of once per frame, and frames are paced, so
+        this reacts to the music itself rather than to raw volume.
+        """
         try:
             # Initialize COM for this thread (Windows only)
             if platform.system() == "Windows":
                 CoInitializeEx(0)
 
-            # Enable Razer mode
+            # One driver per device; enable its segment/streaming mode once.
+            adapters = {}
             for device in self.devices:
-                connection.switch_razer(self.server, device, True)
+                adapter = pool.acquire(device, self.server)
+                adapter.begin_stream()
+                adapters[self._device_key(device)] = adapter
 
             current_by_device = {
                 self._device_key(device): [
                     (0, 0, 0)
-                ] * connection.get_segment_count(device, default=10)
+                ] * adapters[self._device_key(device)].capabilities.segment_count
                 for device in self.devices
             }
+            color_smoother = processing.ColorSmoother(SYNC.music_smoothing, 1)
+            numframes = int(max(AUDIO.duration, AUDIO.music_window) * AUDIO.sample_rate)
+            frame_interval = 1.0 / max(1, SYNC.music_fps)
 
             while not self.stop_event.is_set():
                 try:
-                    # Audio capture and processing
+                    # Open the loopback recorder once, then stream frames from it.
                     with music.sc.get_microphone(
                         id=str(music.sc.default_speaker().name),
                         include_loopback=True,
                     ).recorder(samplerate=AUDIO.sample_rate) as mic:
-                        # Try and except due to a soundcard error when no audio is playing
-                        try:
-                            data = mic.record(
-                                numframes=int(AUDIO.duration * AUDIO.sample_rate)
-                            )
-                        except TypeError:
-                            data = None
-                        amp = music.get_amplitude(data)
+                        while not self.stop_event.is_set():
+                            frame_start = time.monotonic()
+                            # Try/except due to a soundcard error when no audio plays.
+                            try:
+                                data = mic.record(numframes=numframes)
+                            except TypeError:
+                                data = None
 
-                        # Wave color implementation
-                        match amp:
-                            case amp if amp < 0.04:
-                                next_color = (int(amp * 255), 0, 0)
-                            case amp if 0.04 <= amp < 0.08:
-                                next_color = (0, int(amp * 255), 0)
-                            case _:
-                                next_color = (0, 0, int(amp * 255))
+                            raw_color = audio.amplitude_color(
+                                data,
+                                AUDIO.sample_rate,
+                                gain=SYNC.music_gain,
+                                palette=SYNC.music_palette,
+                            )
+                            color_smoother.alpha = SYNC.music_smoothing  # live-apply
+                            next_color = color_smoother.update([raw_color])[0]
+                            brightness = self.controller.get_music_brightness()
 
-                        for device in self.devices:
-                            key = self._device_key(device)
-                            segment_count = connection.get_segment_count(
-                                device,
-                                default=10,
-                            )
-                            current = current_by_device.get(
-                                key,
-                                [(0, 0, 0)] * segment_count,
-                            )
-                            current = utils.fit_colors_to_count(current, segment_count)
-                            current.append(next_color)
-                            current.pop(0)
-                            current_by_device[key] = current
-                            adjusted_colors = music.apply_brightness(
-                                current,
-                                self.controller.get_music_brightness(),
-                            )
-                            payload = utils.convert_colors(
-                                utils.fit_colors_to_count(adjusted_colors, segment_count)
-                            )
-                            connection.send_razer_data(self.server, device, payload)
+                            for device in self.devices:
+                                key = self._device_key(device)
+                                adapter = adapters[key]
+                                segment_count = adapter.capabilities.segment_count
+                                current = current_by_device.get(
+                                    key,
+                                    [(0, 0, 0)] * segment_count,
+                                )
+                                current = utils.fit_colors_to_count(current, segment_count)
+                                current.append(next_color)
+                                current.pop(0)
+                                current_by_device[key] = current
+                                adjusted_colors = processing.apply_brightness(
+                                    current, brightness
+                                )
+                                adapter.set_segments(adjusted_colors)
+
+                            elapsed = time.monotonic() - frame_start
+                            if elapsed < frame_interval:
+                                self.stop_event.wait(frame_interval - elapsed)
 
                 except Exception as e:
                     self.error_occurred.emit(f"Error in music sync: {str(e)}")
-                    time.sleep(1)  # Avoid tight loop on error
+                    self.stop_event.wait(1)  # Avoid tight loop on error
 
         except Exception as e:
             self.error_occurred.emit(f"Music sync error: {str(e)}")

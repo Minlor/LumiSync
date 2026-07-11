@@ -9,7 +9,9 @@ from typing import Any, Dict, List, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer
 
-from ... import connection, devices
+from ... import connection, devices, groups
+from ...drivers import pool
+from ...drivers.registry import create_adapter
 
 
 class DeviceDiscoveryWorker(QObject):
@@ -20,9 +22,18 @@ class DeviceDiscoveryWorker(QObject):
     error = pyqtSignal(str)  # error message
 
     def run(self):
-        """Run device discovery in background thread."""
+        """Run device discovery in background thread.
+
+        Falls back to a unicast subnet sweep when the multicast scan finds
+        nothing, so devices are still discovered on multicast-hostile networks.
+        """
         try:
             settings = devices.discover_lan_devices(preserve_existing=True)
+
+            if int(settings.get("lastDiscoveryCount", 0)) == 0:
+                settings = devices.discover_lan_devices(
+                    preserve_existing=True, deep=True
+                )
 
             # Emit success signal with discovered devices
             self.finished.emit(
@@ -114,6 +125,7 @@ class DeviceController(QObject):
     device_state_updated = pyqtSignal(int, dict)  # Index, cached state
     discovery_started = pyqtSignal()  # Discovery process started
     discovery_finished = pyqtSignal()  # Discovery process finished
+    groups_changed = pyqtSignal(list)  # Updated list of sync groups
 
     def __init__(self):
         """Initialize the device controller."""
@@ -389,41 +401,91 @@ class DeviceController(QObject):
     def _can_try_lan(self, device: Dict[str, Any]) -> bool:
         return bool(device.get("ip"))
 
-    def _send_turn(self, device: Dict[str, Any], on: bool) -> str:
+    def _is_ble(self, device: Dict[str, Any]) -> bool:
+        return str(device.get("transport", "")).lower() == "ble"
+
+    def _run_adapter(self, device: Dict[str, Any], action) -> str:
+        """Run a control action through the device's transport adapter.
+
+        BLE devices use a shared, persistent connection from the pool (no
+        reconnect per action). Govee devices open a short-lived LAN socket per
+        action, matching the previous behavior.
+        """
+        if self._is_ble(device):
+            action(pool.acquire(device))
+            return "BLE"
+
         if not self._can_try_lan(device):
             raise RuntimeError(
                 "Device has no LAN IP. Discover it on the same network or add it manually."
             )
-        self._ensure_server()
+        adapter = create_adapter(device)
         try:
-            connection.switch(self.server, device, on)
+            action(adapter)
         finally:
-            self._close_server()
+            try:
+                adapter.close()
+            except Exception:
+                pass
         return "LAN"
+
+    def _send_turn(self, device: Dict[str, Any], on: bool) -> str:
+        return self._run_adapter(device, lambda adapter: adapter.set_power(on))
 
     def _send_brightness(self, device: Dict[str, Any], brightness: int) -> str:
-        if not self._can_try_lan(device):
-            raise RuntimeError(
-                "Device has no LAN IP. Discover it on the same network or add it manually."
-            )
-        self._ensure_server()
-        try:
-            connection.set_brightness(self.server, device, brightness)
-        finally:
-            self._close_server()
-        return "LAN"
+        return self._run_adapter(
+            device, lambda adapter: adapter.set_brightness(brightness)
+        )
 
     def _send_color(self, device: Dict[str, Any], r: int, g: int, b: int) -> str:
-        if not self._can_try_lan(device):
-            raise RuntimeError(
-                "Device has no LAN IP. Discover it on the same network or add it manually."
-            )
-        self._ensure_server()
+        return self._run_adapter(device, lambda adapter: adapter.set_color(r, g, b))
+
+    def _send_color_temp(self, device: Dict[str, Any], kelvin: int) -> str:
+        return self._run_adapter(
+            device, lambda adapter: adapter.set_color_temperature(kelvin)
+        )
+
+    def get_capabilities_at(self, index: int):
+        """Return the SKU capabilities for a device, or None."""
+        from ...sku_catalog import capabilities_for
+
+        device = self._device_at(index)
+        if not device:
+            return None
+        return capabilities_for(device.get("model") or device.get("sku"))
+
+    def supports_color_temp_at(self, index: int) -> bool:
+        cap = self.get_capabilities_at(index)
+        return bool(cap and cap.color_temp_max > cap.color_temp_min > 0)
+
+    def set_color_temperature_at(self, index: int, kelvin: int) -> None:
+        """Set a device's tunable-white color temperature (Kelvin)."""
+        device = self._device_at(index)
+        if not device:
+            return
         try:
-            connection.set_color(self.server, device, r, g, b)
-        finally:
-            self._close_server()
-        return "LAN"
+            cap = self.get_capabilities_at(index)
+            if cap and cap.color_temp_max > 0:
+                kelvin = max(cap.color_temp_min, min(cap.color_temp_max, int(kelvin)))
+            transport = self._send_color_temp(device, int(kelvin))
+            from ...utils.colors import kelvin_to_rgb
+
+            self._merge_device_state(
+                index,
+                {
+                    "color": kelvin_to_rgb(int(kelvin)),
+                    "color_temp": int(kelvin),
+                    "online": True,
+                    "stale": True,
+                    "last_error": None,
+                },
+            )
+            self.status_updated.emit(
+                f"{device.get('model', 'Device')}: white {int(kelvin)}K via {transport}"
+            )
+            self._schedule_status_refresh(index)
+        except Exception as e:
+            self.status_updated.emit(f"Error: {str(e)}")
 
     def add_device_manually(self, ip: str, model: str = "Manual Device",
                            mac: str = None, port: int = 4003) -> bool:
@@ -490,6 +552,96 @@ class DeviceController(QObject):
             self.status_updated.emit(f"Error adding device: {str(e)}")
             return False
 
+    def add_ble_device_manually(
+        self,
+        address: str,
+        model: str = "iDotMatrix",
+        matrix_size: str = "32x32",
+    ) -> bool:
+        """Add a Bluetooth-LE device (e.g. an iDotMatrix pixel display)."""
+        try:
+            address = (address or "").strip()
+            if not address:
+                self.status_updated.emit("A Bluetooth address is required.")
+                return False
+
+            for device in self.devices:
+                if device.get("ble_address") == address or device.get("mac") == address:
+                    self.status_updated.emit("Device already exists")
+                    return False
+
+            new_device = {
+                "mac": address,
+                "ble_address": address,
+                "model": model or "iDotMatrix",
+                "transport": "ble",
+                "matrix_size": matrix_size or "32x32",
+                "manual": True,
+            }
+            self.devices.append(new_device)
+
+            try:
+                settings = devices.get_data()
+            except Exception:
+                settings = {"devices": [], "selectedDevice": 0, "time": 0}
+            settings["devices"] = self.devices
+            devices.writeJSON(settings)
+
+            self.device_added.emit(new_device)
+            self.devices_discovered.emit(self.devices)
+            self.status_updated.emit(f"Added Bluetooth device: {model} ({address})")
+            return True
+        except Exception as e:
+            self.status_updated.emit(f"Error adding device: {str(e)}")
+            return False
+
+    def scan_ble_devices(self) -> None:
+        """Scan for iDotMatrix devices over BLE and add likely matches.
+
+        Auto-adds devices whose advertisement looks like an iDotMatrix panel; if
+        none match, reports what was seen so the user can add by address instead.
+        """
+        self.status_updated.emit("Scanning for Bluetooth devices...")
+        try:
+            from ...drivers.idotmatrix_ble import IDotMatrixBleAdapter
+
+            found = IDotMatrixBleAdapter.discover(timeout=8.0)
+        except Exception as e:
+            self.status_updated.emit(f"Bluetooth scan unavailable: {e}")
+            return
+
+        likely = [d for d in found if d.get("likely")]
+        added = 0
+        for entry in likely:
+            if self.add_ble_device_manually(
+                entry.get("ble_address", ""), entry.get("model") or "iDotMatrix"
+            ):
+                added += 1
+
+        if added:
+            self.status_updated.emit(
+                f"Bluetooth scan added {added} iDotMatrix device(s)."
+            )
+        elif found:
+            names = sorted(
+                {
+                    d["model"]
+                    for d in found
+                    if d.get("model") and d["model"] != "Unknown"
+                }
+            )
+            seen = ", ".join(names[:8]) if names else "unnamed devices"
+            self.status_updated.emit(
+                f"No iDotMatrix panel matched among {len(found)} Bluetooth device(s). "
+                f"Seen: {seen}. Disconnect the phone app from the panel and rescan, "
+                f"or use 'Add Manually' with its Bluetooth address."
+            )
+        else:
+            self.status_updated.emit(
+                "No Bluetooth devices found. Turn Bluetooth on and make sure the "
+                "panel is advertising (disconnect it from the phone app first)."
+            )
+
     def remove_device(self, index: int) -> bool:
         """Remove device by index.
 
@@ -504,6 +656,7 @@ class DeviceController(QObject):
                 return False
 
             removed = self.devices.pop(index)
+            pool.close(removed)  # drop any persistent BLE connection
 
             # Adjust selected index
             if self.selected_device_index >= len(self.devices):
@@ -771,6 +924,63 @@ class DeviceController(QObject):
         except Exception as e:
             self.status_updated.emit(f"Error: {str(e)}")
 
+    # --- Sync groups -------------------------------------------------------
+
+    def _load_settings_safe(self) -> Dict[str, Any]:
+        try:
+            return devices.load_settings()
+        except Exception:
+            return {"devices": [], "selectedDevice": 0, "time": 0}
+
+    def get_groups(self) -> List[Dict[str, Any]]:
+        """Return the saved sync groups."""
+        return groups.list_groups(self._load_settings_safe())
+
+    def _persist_groups(self, updated: List[Dict[str, Any]]) -> None:
+        settings = self._load_settings_safe()
+        settings["devices"] = self.devices
+        settings["selectedDevice"] = self.selected_device_index
+        settings["groups"] = updated
+        devices.writeJSON(settings)
+        self.groups_changed.emit(updated)
+
+    def save_group(self, name: str, indices: List[int]) -> bool:
+        """Create or replace a group from the given device indices."""
+        name = (name or "").strip()
+        members = [self.devices[i] for i in indices if 0 <= i < len(self.devices)]
+        if not name or not members:
+            self.status_updated.emit("Group needs a name and at least one device.")
+            return False
+        existing = self.get_groups()
+        updated = groups.upsert_group(existing, groups.make_group(name, members))
+        self._persist_groups(updated)
+        self.status_updated.emit(f"Saved group '{name}' ({len(members)} device(s))")
+        return True
+
+    def delete_group(self, name: str) -> bool:
+        updated = groups.remove_group(self.get_groups(), name)
+        self._persist_groups(updated)
+        self.status_updated.emit(f"Deleted group '{name}'")
+        return True
+
+    def get_group_devices(self, name: str) -> List[Dict[str, Any]]:
+        """Resolve a group name to the current device dicts it contains."""
+        group = groups.find_group(self.get_groups(), name)
+        if not group:
+            return []
+        return groups.resolve_devices(group, self.devices)
+
+    def get_group_indices(self, name: str) -> List[int]:
+        """Return the current device indices belonging to a group."""
+        group = groups.find_group(self.get_groups(), name)
+        if not group:
+            return []
+        keys = set(group.get("devices", []))
+        return [
+            i for i, device in enumerate(self.devices)
+            if groups.device_key(device) in keys
+        ]
+
     def _ensure_server(self):
         """Ensure server socket exists."""
         if self.server is None:
@@ -785,6 +995,10 @@ class DeviceController(QObject):
 
     def __del__(self):
         """Clean up resources when the controller is deleted."""
+        try:
+            pool.close_all()
+        except Exception:
+            pass
         for thread_attr in ("status_thread", "discovery_thread"):
             thread = getattr(self, thread_attr, None)
             if thread is not None:

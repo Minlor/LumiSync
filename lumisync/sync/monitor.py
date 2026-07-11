@@ -1,13 +1,15 @@
 import socket
 import time
 from functools import partial
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
 
 from .. import connection, led_mapping, utils
-from ..config.options import BRIGHTNESS, GENERAL
+from ..config.options import BRIGHTNESS, GENERAL, SYNC
+from ..drivers.registry import create_adapter
+from . import processing
 
 
 MISSING_CV2_MESSAGE = (
@@ -95,8 +97,12 @@ class ScreenGrab:
                 # TODO: Implement Wayland support
                 raise NotImplementedError("Wayland support is not yet implemented in ScreenGrab.")
 
-    def capture(self) -> Image.Image | None:
-        """Captures a screenshot."""
+    def capture_array(self) -> Optional[np.ndarray]:
+        """Capture the screen as a contiguous ``(H, W, 3)`` uint8 RGB array.
+
+        Returning NumPy directly lets the sync pipeline vectorize zone sampling
+        instead of paying for a PIL round-trip and per-pixel Python access.
+        """
         try:
             screen = self.capture_method()
         except ModuleNotFoundError as exc:
@@ -104,33 +110,59 @@ class ScreenGrab:
                 raise ScreenCaptureDependencyError(MISSING_CV2_MESSAGE) from exc
             raise
         if screen is None:
-            return screen
+            return None
 
+        array = np.asarray(screen)
         if GENERAL.platform != "Windows" and GENERAL.compositor == "x11":
-            screen = np.array(screen)[..., [2, 1, 0]]
+            # mss returns BGRA; reorder to RGB and drop alpha.
+            array = array[..., [2, 1, 0]]
+        elif array.ndim == 3 and array.shape[2] == 4:
+            array = array[..., :3]
+        return np.ascontiguousarray(array)
 
-        return Image.fromarray(screen)
+    def capture(self) -> Image.Image | None:
+        """Captures a screenshot as a PIL image (compatibility helper)."""
+        array = self.capture_array()
+        if array is None:
+            return None
+        return Image.fromarray(array)
+
+
+def apply_brightness(
+    colors: List[Tuple[int, int, int]], brightness_factor: float
+) -> List[Tuple[int, int, int]]:
+    """Apply a 0..1 brightness factor to a list of RGB colors."""
+    return processing.apply_brightness(colors, brightness_factor)
 
 
 def start(server: socket.socket, device: Dict[str, Any]) -> None:
-    """Starts the monitor-light synchronization."""
-    connection.switch_razer(server, device, True)
+    """Run the CLI monitor-sync loop for a single device.
+
+    Each iteration captures one frame, averages the mapped edge zones, applies
+    saturation/brightness, smooths toward the new colors with a temporal EMA,
+    and sends exactly one packet. Frame pacing keeps CPU and UDP traffic in
+    check while staying far more responsive than the old ten-packets-per-frame
+    approach.
+    """
+    adapter = create_adapter(device, server)
+    adapter.begin_stream()
     try:
         screen_grab = ScreenGrab()
     except ScreenCaptureDependencyError as exc:
         print(f"Monitor sync unavailable: {exc}")
         return
 
-    segment_count = connection.get_segment_count(device, default=10)
-    previous_colors = [(0, 0, 0)] * segment_count
-    while True:
-        colors = []
-        try:
-            screen = screen_grab.capture()
-            if screen is None:
-                continue
+    segment_count = adapter.capabilities.segment_count
+    smoother = processing.ColorSmoother(SYNC.smoothing, segment_count)
+    frame_interval = 1.0 / max(1, SYNC.monitor_fps)
+    mapping: Optional[List[led_mapping.NormalizedRect]] = None
+    mapping_aspect: Optional[float] = None
+    last_sent: Optional[List[Tuple[int, int, int]]] = None
 
-            width, height = screen.size
+    while True:
+        frame_start = time.monotonic()
+        try:
+            frame = screen_grab.capture_array()
         except ScreenCaptureDependencyError as exc:
             print(f"Monitor sync unavailable: {exc}")
             return
@@ -138,78 +170,28 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
             print("Warning: Screenshot failed, trying again...")
             continue
 
-        mapping = led_mapping.generate_screen_mapping(
-            segment_count,
-            width / max(1, height),
-        )
-        for rect in mapping:
-            normalized = led_mapping.normalize_rect(rect)
-            x1 = int(normalized["x"] * width)
-            y1 = int(normalized["y"] * height)
-            x2 = int((normalized["x"] + normalized["w"]) * width)
-            y2 = int((normalized["y"] + normalized["h"]) * height)
-            colors.append(
-                screen.getpixel(
-                    (
-                        max(0, min(width - 1, x1 + max(1, x2 - x1) // 2)),
-                        max(0, min(height - 1, y1 + max(1, y2 - y1) // 2)),
-                    )
-                )
-            )
+        if frame is None:
+            time.sleep(0.01)
+            continue
 
-        # Apply brightness setting to colors
-        colors = apply_brightness(colors, BRIGHTNESS.monitor)
+        height, width = frame.shape[:2]
+        aspect_ratio = width / max(1, height)
+        if mapping is None or aspect_ratio != mapping_aspect:
+            mapping = led_mapping.generate_screen_mapping(segment_count, aspect_ratio)
+            mapping_aspect = aspect_ratio
+
+        colors = processing.average_zone_colors(
+            frame, mapping, gamma_correct=SYNC.gamma_correct
+        )
+        colors = processing.apply_saturation(colors, SYNC.saturation)
         colors = utils.resample_colors_to_count(colors, segment_count)
-        previous_colors = utils.fit_colors_to_count(previous_colors, segment_count)
+        colors = processing.apply_brightness(colors, BRIGHTNESS.monitor)
+        smoothed = smoother.update(colors)
 
-        smooth_transition(server, device, previous_colors, colors)
-        previous_colors = colors
+        if processing.colors_changed(last_sent, smoothed, SYNC.delta_threshold):
+            adapter.set_segments(smoothed)
+            last_sent = smoothed
 
-
-def apply_brightness(
-    colors: List[Tuple[int, int, int]], brightness_factor: float
-) -> List[Tuple[int, int, int]]:
-    """Apply brightness factor to a list of colors.
-
-    Args:
-        colors: List of RGB color tuples
-        brightness_factor: Brightness factor (0.0 to 1.0)
-
-    Returns:
-        List of adjusted RGB color tuples
-    """
-    return [
-        (
-            int(r * brightness_factor),
-            int(g * brightness_factor),
-            int(b * brightness_factor),
-        )
-        for r, g, b in colors
-    ]
-
-
-def smooth_transition(
-    server: socket.socket,
-    device: Dict[str, Any],
-    previous_colors: List[Tuple[float, float, float]],
-    colors: List[Tuple[float, float, float]],
-    steps: int = 10,
-    delay: float = 0.01,
-) -> None:
-    """Computes a smooth transition of the colors and sends it to a device."""
-    previous_colors = utils.fit_colors_to_count(previous_colors, len(colors))
-    for step in range(1, steps + 1):
-        t = step / steps
-        interpolated_colors = [
-            (
-                int(prev[0] + (cur[0] - prev[0]) * t),
-                int(prev[1] + (cur[1] - prev[1]) * t),
-                int(prev[2] + (cur[2] - prev[2]) * t),
-            )
-            for prev, cur in zip(previous_colors, colors)
-        ]
-
-        connection.send_razer_data(
-            server, device, utils.convert_colors(interpolated_colors)
-        )
-        time.sleep(delay)
+        elapsed = time.monotonic() - frame_start
+        if elapsed < frame_interval:
+            time.sleep(frame_interval - elapsed)

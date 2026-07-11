@@ -11,6 +11,7 @@ from typing import Dict, List, Any
 
 from colorama import Fore
 
+from . import connection
 from .connection import connect, listen as connection_listen, parse
 from .config.options import CONNECTION
 from .utils import write_json, get_logger
@@ -51,6 +52,11 @@ def _load_saved_settings(filename: str = "settings.json") -> Dict[str, Any]:
     copied["selectedDevice"] = selected
     copied["time"] = float(data.get("time", 0) or 0)
     return copied
+
+
+def load_settings(filename: str = "settings.json") -> Dict[str, Any]:
+    """Read persisted settings from disk without triggering network discovery."""
+    return _load_saved_settings(filename)
 
 
 def _device_keys(device: Dict[str, Any]) -> List[str]:
@@ -118,8 +124,14 @@ def merge_discovered_devices(
     return merged
 
 
-def discover_lan_devices(preserve_existing: bool = True) -> Dict[str, Any]:
-    """Discover LAN devices once, merge with saved devices, and persist safely."""
+def discover_lan_devices(
+    preserve_existing: bool = True, deep: bool = False
+) -> Dict[str, Any]:
+    """Discover LAN devices once, merge with saved devices, and persist safely.
+
+    When ``deep`` is set, a unicast subnet sweep runs alongside the multicast
+    scan so devices are still found on networks that filter multicast.
+    """
     saved_settings = _load_saved_settings() if preserve_existing else _empty_settings()
     existing_devices = saved_settings.get("devices", [])
     if not isinstance(existing_devices, list):
@@ -141,6 +153,23 @@ def discover_lan_devices(preserve_existing: bool = True) -> Dict[str, Any]:
                 server.close()
             except Exception:
                 pass
+
+    if deep:
+        sweep_server = None
+        try:
+            logger.info("Running deep subnet sweep for devices")
+            sweep_server, swept = connection.sweep_scan()
+            discovered_devices = merge_discovered_devices(
+                discovered_devices, [dict(device) for device in swept]
+            )
+        except Exception as exc:
+            logger.warning("Deep sweep failed: %s", exc)
+        finally:
+            if sweep_server is not None:
+                try:
+                    sweep_server.close()
+                except Exception:
+                    pass
 
     merged_devices = merge_discovered_devices(
         [dict(device) for device in existing_devices if isinstance(device, dict)],
