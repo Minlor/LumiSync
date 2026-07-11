@@ -19,6 +19,9 @@ from PyQt6.QtWidgets import (
 )
 
 from ..theme import qcolor
+from ..controllers.sync_controller import SYNC_SETTINGS_KEYS, load_sync_settings
+from ...sync import audio
+from ...config.options import SYNC
 
 
 class SettingsPage(QWidget):
@@ -40,6 +43,7 @@ class SettingsPage(QWidget):
 
         root.addWidget(self._build_display_group())
         root.addWidget(self._build_defaults_group())
+        root.addWidget(self._build_sync_tuning_group())
         root.addWidget(self._build_groups_group())
         root.addWidget(self._build_about_group())
 
@@ -96,29 +100,174 @@ class SettingsPage(QWidget):
 
         return group
 
+    def _build_sync_tuning_group(self) -> QGroupBox:
+        group = QGroupBox("Sync Tuning")
+        form = QFormLayout(group)
+        form.setSpacing(8)
+
+        # --- Monitor ---
+        self.smoothing_slider, smoothing_row, self.smoothing_label = self._slider_row(
+            5, 100, int(round(SYNC.smoothing * 100)), self._on_smoothing
+        )
+        self.smoothing_label.setText(f"{SYNC.smoothing:.2f}")
+        form.addRow("Monitor smoothing", smoothing_row)
+
+        self.saturation_slider, saturation_row, self.saturation_label = self._slider_row(
+            100, 200, int(round(SYNC.saturation * 100)), self._on_saturation
+        )
+        self.saturation_label.setText(f"{SYNC.saturation:.2f}×")
+        form.addRow("Color saturation", saturation_row)
+
+        self.fps_slider, fps_row, self.fps_label = self._slider_row(
+            10, 120, int(SYNC.monitor_fps), self._on_fps
+        )
+        self.fps_label.setText(f"{int(SYNC.monitor_fps)} fps")
+        form.addRow("Max frame rate", fps_row)
+
+        self.gamma_check = QCheckBox("Blend zone colors in linear light (recommended)")
+        self.gamma_check.setChecked(bool(SYNC.gamma_correct))
+        self.gamma_check.toggled.connect(self._on_gamma)
+        form.addRow("Gamma", self.gamma_check)
+
+        # --- Music ---
+        self.palette_combo = QComboBox()
+        for key in audio.PALETTES:
+            self.palette_combo.addItem(audio.PALETTE_LABELS.get(key, key), key)
+        current_palette = self.palette_combo.findData(SYNC.music_palette)
+        if current_palette >= 0:
+            self.palette_combo.setCurrentIndex(current_palette)
+        self.palette_combo.currentIndexChanged.connect(self._on_palette)
+        form.addRow("Music palette", self.palette_combo)
+
+        self.gain_slider, gain_row, self.gain_label = self._slider_row(
+            50, 400, int(round(SYNC.music_gain * 100)), self._on_gain
+        )
+        self.gain_label.setText(f"{SYNC.music_gain:.2f}×")
+        form.addRow("Music sensitivity", gain_row)
+
+        self.music_smoothing_slider, music_smoothing_row, self.music_smoothing_label = self._slider_row(
+            5, 100, int(round(SYNC.music_smoothing * 100)), self._on_music_smoothing
+        )
+        self.music_smoothing_label.setText(f"{SYNC.music_smoothing:.2f}")
+        form.addRow("Music smoothing", music_smoothing_row)
+
+        return group
+
+    def _slider_row(self, minimum, maximum, value, on_change):
+        """Build a horizontal slider paired with a right-aligned value label."""
+        row = QHBoxLayout()
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(minimum, maximum)
+        slider.setValue(max(minimum, min(maximum, value)))
+        slider.valueChanged.connect(on_change)
+        row.addWidget(slider, 1)
+        label = QLabel()
+        label.setMinimumWidth(48)
+        label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(label)
+        return slider, row, label
+
+    def _reload_sync(self) -> None:
+        load_sync_settings(self.settings)
+
+    def _on_smoothing(self, value: int) -> None:
+        self.smoothing_label.setText(f"{value / 100:.2f}")
+        self.settings.setValue(SYNC_SETTINGS_KEYS["smoothing"], value / 100)
+        self._reload_sync()
+
+    def _on_saturation(self, value: int) -> None:
+        self.saturation_label.setText(f"{value / 100:.2f}×")
+        self.settings.setValue(SYNC_SETTINGS_KEYS["saturation"], value / 100)
+        self._reload_sync()
+
+    def _on_fps(self, value: int) -> None:
+        self.fps_label.setText(f"{value} fps")
+        self.settings.setValue(SYNC_SETTINGS_KEYS["monitor_fps"], value)
+        self._reload_sync()
+
+    def _on_gamma(self, checked: bool) -> None:
+        self.settings.setValue(SYNC_SETTINGS_KEYS["gamma_correct"], bool(checked))
+        self._reload_sync()
+
+    def _on_palette(self) -> None:
+        key = self.palette_combo.currentData()
+        if key:
+            self.settings.setValue(SYNC_SETTINGS_KEYS["music_palette"], key)
+            self._reload_sync()
+
+    def _on_gain(self, value: int) -> None:
+        self.gain_label.setText(f"{value / 100:.2f}×")
+        self.settings.setValue(SYNC_SETTINGS_KEYS["music_gain"], value / 100)
+        self._reload_sync()
+
+    def _on_music_smoothing(self, value: int) -> None:
+        self.music_smoothing_label.setText(f"{value / 100:.2f}")
+        self.settings.setValue(SYNC_SETTINGS_KEYS["music_smoothing"], value / 100)
+        self._reload_sync()
+
     def _build_groups_group(self) -> QGroupBox:
         group = QGroupBox("Sync Groups")
         layout = QVBoxLayout(group)
         layout.setSpacing(8)
 
         info = QLabel(
-            "Group devices to sync them together with one click. "
-            "Available with multi-device sync."
+            "Select devices in the Devices tab and use 'Save as Group' to create "
+            "a group. Saved groups appear here."
         )
-        info.setProperty("disabledHint", True)
-        info.setStyleSheet(
-            f"color: {qcolor('text_disabled').name()}; font-style: italic; font-size: 9pt;"
-        )
+        info.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
         info.setWordWrap(True)
         layout.addWidget(info)
 
-        new_group_btn = QPushButton("New Group")
-        new_group_btn.setEnabled(False)
-        new_group_btn.setProperty("disabledHint", True)
-        new_group_btn.setToolTip("Available once multi-device sync ships.")
-        layout.addWidget(new_group_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        self._groups_list = QVBoxLayout()
+        self._groups_list.setSpacing(4)
+        layout.addLayout(self._groups_list)
+
+        controller = getattr(self._main_window, "device_controller", None)
+        if controller is not None:
+            controller.groups_changed.connect(lambda *_: self._refresh_groups())
+            self._refresh_groups()
 
         return group
+
+    def _refresh_groups(self) -> None:
+        controller = getattr(self._main_window, "device_controller", None)
+        if controller is None:
+            return
+        # Clear existing rows.
+        while self._groups_list.count():
+            item = self._groups_list.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+            elif item.layout() is not None:
+                self._clear_layout(item.layout())
+
+        groups = controller.get_groups()
+        if not groups:
+            empty = QLabel("No groups yet.")
+            empty.setStyleSheet(f"color: {qcolor('text_disabled').name()}; font-size: 9pt;")
+            self._groups_list.addWidget(empty)
+            return
+
+        for grp in groups:
+            row = QHBoxLayout()
+            label = QLabel(f"{grp['name']}  ·  {len(grp.get('devices', []))} device(s)")
+            row.addWidget(label)
+            row.addStretch(1)
+            delete_btn = QPushButton("Delete")
+            delete_btn.setObjectName("LinkButton")
+            delete_btn.clicked.connect(
+                lambda _checked=False, name=grp["name"]: controller.delete_group(name)
+            )
+            row.addWidget(delete_btn)
+            self._groups_list.addLayout(row)
+
+    def _clear_layout(self, layout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
     def _build_about_group(self) -> QGroupBox:
         group = QGroupBox("About")

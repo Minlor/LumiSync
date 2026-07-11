@@ -52,6 +52,13 @@ def fade_swap_stack(stack: QStackedWidget, target_index: int, *, duration: int =
         stack.setCurrentIndex(target_index)
         return
 
+    # A QGraphicsOpacityEffect conflicts with custom-paintEvent widgets (it spams
+    # "paint device can only be painted by one painter at a time"). Pages that do
+    # custom painting set the "noFadeEffect" property and get an instant swap.
+    if outgoing.property("noFadeEffect") or incoming.property("noFadeEffect"):
+        stack.setCurrentIndex(target_index)
+        return
+
     # Fade out current
     out_eff = QGraphicsOpacityEffect(outgoing)
     out_eff.setOpacity(1.0)

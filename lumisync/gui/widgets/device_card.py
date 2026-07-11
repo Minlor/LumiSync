@@ -50,6 +50,7 @@ class DeviceCard(QFrame):
     power_clicked = pyqtSignal(int)
     color_picked = pyqtSignal(int, QColor)
     brightness_changed = pyqtSignal(int, int)
+    color_temp_changed = pyqtSignal(int, int)  # index, kelvin
     remove_requested = pyqtSignal(int)
     zone_count_requested = pyqtSignal(int)
     zone_count_reset_requested = pyqtSignal(int)
@@ -173,6 +174,9 @@ class DeviceCard(QFrame):
         bright_row.addWidget(self.brightness_value)
         root.addLayout(bright_row)
 
+        # Color-temperature row — only for devices that support tunable white.
+        self._build_color_temp_row(root)
+
         # Action row: smart power toggle / color
         actions = QHBoxLayout()
         actions.setSpacing(6)
@@ -193,7 +197,49 @@ class DeviceCard(QFrame):
 
         root.addLayout(actions)
 
+    def _build_color_temp_row(self, root) -> None:
+        from ...sku_catalog import capabilities_for
+
+        cap = capabilities_for(self._device.get("model") or self._device.get("sku"))
+        supported = bool(cap and cap.color_temp_max > cap.color_temp_min > 0)
+        self._ct_min = cap.color_temp_min if supported else 2000
+        self._ct_max = cap.color_temp_max if supported else 9000
+
+        temp_row = QHBoxLayout()
+        temp_row.setSpacing(8)
+        temp_label = QLabel("🌡")
+        temp_label.setStyleSheet(f"color: {qcolor('text_dim').name()};")
+        temp_row.addWidget(temp_label)
+
+        self.color_temp_slider = QSlider(Qt.Orientation.Horizontal)
+        self.color_temp_slider.setRange(self._ct_min, self._ct_max)
+        self.color_temp_slider.setValue(min(self._ct_max, max(self._ct_min, 4000)))
+        self.color_temp_slider.valueChanged.connect(self._on_color_temp)
+        temp_row.addWidget(self.color_temp_slider, 1)
+
+        self.color_temp_value = QLabel(f"{self.color_temp_slider.value()}K")
+        self.color_temp_value.setMinimumWidth(44)
+        self.color_temp_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.color_temp_value.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
+        temp_row.addWidget(self.color_temp_value)
+
+        self._color_temp_row = temp_row
+        root.addLayout(temp_row)
+
+        # Hide the whole row for devices without a known white range.
+        for widget in (temp_label, self.color_temp_slider, self.color_temp_value):
+            widget.setVisible(supported)
+
+    def _on_color_temp(self, value: int) -> None:
+        self.color_temp_value.setText(f"{value}K")
+        self.color_temp_changed.emit(self._index, value)
+
     def _format_subline(self) -> str:
+        if str(self._device.get("transport", "")).lower() == "ble":
+            address = self._device.get("ble_address") or self._device.get("mac") or "?"
+            size = self._device.get("matrix_size", "32x32")
+            return f"{address} · Bluetooth · {size} matrix"
+
         ip = self._device.get("ip")
         if not ip:
             return "No LAN IP · Offline/Stale"

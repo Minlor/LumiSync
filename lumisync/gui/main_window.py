@@ -13,7 +13,7 @@ from .theme import apply_theme
 from ..utils.logging import setup_logger
 
 from .controllers.device_controller import DeviceController
-from .controllers.sync_controller import SyncController
+from .controllers.sync_controller import SyncController, load_sync_settings
 from .controllers.update_controller import UpdateController
 
 logger = setup_logger('lumisync_gui')
@@ -32,6 +32,15 @@ class LumiSyncMainWindow(QMainWindow):
         self.setMenuBar(None)
 
         self.settings = QSettings("Minlor", "LumiSync")
+        load_sync_settings(self.settings)
+
+        # If Govee Desktop is installed, learn real per-device segment counts and
+        # capabilities from its local cache. No-op on Linux / when absent.
+        from ..sku_catalog import import_govee_desktop_cache
+        try:
+            import_govee_desktop_cache()
+        except Exception:
+            pass
 
         logger.info("Creating controllers")
         self.device_controller = DeviceController()
@@ -60,11 +69,13 @@ class LumiSyncMainWindow(QMainWindow):
 
     def setup_ui(self):
         from .views.devices_view import DevicesView
+        from .views.draw_view import DrawView
         from .views.modes_view import ModesView
         from .views.settings_page import SettingsPage
 
         self.devices_view = DevicesView(self.device_controller)
         self.modes_view = ModesView(self.sync_controller, self.device_controller)
+        self.draw_view = DrawView(self.device_controller)
 
         self.nav_shell = NavigationShell(title="LumiSync", icon_only=True)
         self.setCentralWidget(self.nav_shell)
@@ -86,6 +97,12 @@ class LumiSyncMainWindow(QMainWindow):
             icon=app_icon(IconKey.SCREEN), widget=self.modes_view,
         )
         self.nav_shell.set_page_svg("modes", "screen.svg")
+
+        self.nav_shell.add_page(
+            key="draw", title="Draw",
+            icon=app_icon(IconKey.SCREEN), widget=self.draw_view,
+        )
+        self.nav_shell.set_page_svg("draw", "screen.svg")
 
         self.settings_page = SettingsPage(self.settings, self)
         self.nav_shell.add_page(
@@ -162,6 +179,18 @@ class LumiSyncMainWindow(QMainWindow):
             self.settings.setValue("geometry", self.saveGeometry())
             if hasattr(self.sync_controller, 'stop_sync'):
                 self.sync_controller.stop_sync()
+            draw_view = getattr(self, "draw_view", None)
+            if draw_view is not None:
+                try:
+                    draw_view._stop_send()
+                except Exception:
+                    pass
+            # Close any persistent BLE connections.
+            try:
+                from ..drivers import pool
+                pool.close_all()
+            except Exception:
+                pass
             event.accept()
         else:
             event.ignore()

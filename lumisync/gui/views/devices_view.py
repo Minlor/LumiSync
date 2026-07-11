@@ -73,6 +73,13 @@ class DevicesView(QWidget):
         self.add_button.clicked.connect(self._on_add_manual)
         toolbar.addWidget(self.add_button)
 
+        self.scan_ble_button = QPushButton("Scan Bluetooth")
+        self.scan_ble_button.setToolTip(
+            "Scan for iDotMatrix / Bluetooth devices (requires the 'bleak' package)."
+        )
+        self.scan_ble_button.clicked.connect(self.controller.scan_ble_devices)
+        toolbar.addWidget(self.scan_ble_button)
+
         toolbar.addSpacing(8)
         toolbar.addStretch(1)
 
@@ -116,6 +123,10 @@ class DevicesView(QWidget):
         self.bulk_color = QPushButton("Set Color")
         self.bulk_color.clicked.connect(self._bulk_color)
         bulk_layout.addWidget(self.bulk_color)
+
+        self.bulk_group = QPushButton("Save as Group")
+        self.bulk_group.clicked.connect(self._bulk_save_group)
+        bulk_layout.addWidget(self.bulk_group)
 
         self.bulk_remove = QPushButton("Remove")
         self.bulk_remove.setObjectName("DangerButton")
@@ -192,6 +203,7 @@ class DevicesView(QWidget):
             card.power_clicked.connect(self.controller.toggle_power_at)
             card.color_picked.connect(self._on_card_color_picked)
             card.brightness_changed.connect(self.controller.set_brightness_at)
+            card.color_temp_changed.connect(self.controller.set_color_temperature_at)
             card.zone_count_requested.connect(self._on_card_zone_count)
             card.zone_count_reset_requested.connect(self._on_card_zone_count_reset)
             card.remove_requested.connect(self._on_card_remove)
@@ -304,6 +316,15 @@ class DevicesView(QWidget):
         for idx in sorted(self._selected):
             self.controller.set_color_at(idx, color.red(), color.green(), color.blue())
 
+    def _bulk_save_group(self) -> None:
+        if not self._selected:
+            return
+        name, ok = QInputDialog.getText(
+            self, "Save Sync Group", "Group name:"
+        )
+        if ok and name.strip():
+            self.controller.save_group(name.strip(), sorted(self._selected))
+
     def _bulk_remove(self) -> None:
         if not self._selected:
             return
@@ -324,6 +345,13 @@ class DevicesView(QWidget):
     def _on_add_manual(self) -> None:
         dialog = AddDeviceDialog(self)
         if dialog.exec():
+            if dialog.device_type() == "ble":
+                address = dialog.ble_address_entry.text().strip()
+                model = dialog.model_entry.text() or "iDotMatrix"
+                self.controller.add_ble_device_manually(
+                    address, model, dialog.matrix_size()
+                )
+                return
             ip = dialog.ip_entry.text()
             model = dialog.model_entry.text() or "Manual Device"
             mac = dialog.mac_entry.text() or None

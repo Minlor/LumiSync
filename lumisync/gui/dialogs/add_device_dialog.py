@@ -4,13 +4,14 @@ This module provides a dialog for manually adding devices.
 """
 
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QLineEdit, QPushButton, QFormLayout, QDialogButtonBox
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
 from ..utils.validators import IPAddressValidator, MACAddressValidator, PortValidator
+from ...drivers.idotmatrix_ble import KNOWN_SIZES
 
 
 class AddDeviceDialog(QDialog):
@@ -53,14 +54,24 @@ class AddDeviceDialog(QDialog):
 
         layout.addSpacing(10)
 
+        # Device type selector
+        type_form = QFormLayout()
+        self.type_combo = QComboBox()
+        self.type_combo.addItem("Govee (LAN / Wi-Fi)", "lan")
+        self.type_combo.addItem("iDotMatrix (Bluetooth)", "ble")
+        self.type_combo.currentIndexChanged.connect(self._on_type_changed)
+        type_form.addRow("Device type:", self.type_combo)
+        layout.addLayout(type_form)
+
         # Form layout
         form = QFormLayout()
 
-        # IP Address (required)
+        # IP Address (required for LAN)
         self.ip_entry = QLineEdit()
         self.ip_entry.setPlaceholderText("e.g., 192.168.1.100")
         self.ip_entry.setValidator(IPAddressValidator())
-        form.addRow("IP Address *:", self.ip_entry)
+        self.ip_row_label = QLabel("IP Address *:")
+        form.addRow(self.ip_row_label, self.ip_entry)
 
         # Device Name (optional)
         self.model_entry = QLineEdit()
@@ -77,9 +88,24 @@ class AddDeviceDialog(QDialog):
         self.port_entry = QLineEdit()
         self.port_entry.setPlaceholderText("Default: 4003")
         self.port_entry.setValidator(PortValidator())
-        form.addRow("Port:", self.port_entry)
+        self.port_row_label = QLabel("Port:")
+        form.addRow(self.port_row_label, self.port_entry)
+
+        # --- BLE-only fields (hidden unless type == ble) ---
+        self.ble_address_entry = QLineEdit()
+        self.ble_address_entry.setPlaceholderText("e.g., AA:BB:CC:DD:EE:FF")
+        self.ble_address_label = QLabel("Bluetooth address *:")
+        form.addRow(self.ble_address_label, self.ble_address_entry)
+
+        self.matrix_size_combo = QComboBox()
+        for size in KNOWN_SIZES:
+            self.matrix_size_combo.addItem(size, size)
+        self.matrix_size_combo.setCurrentText("32x32")
+        self.matrix_size_label = QLabel("Matrix size:")
+        form.addRow(self.matrix_size_label, self.matrix_size_combo)
 
         layout.addLayout(form)
+        self._on_type_changed()
 
         # Status label
         self.status_label = QLabel("")
@@ -105,11 +131,39 @@ class AddDeviceDialog(QDialog):
         self.mac_entry.returnPressed.connect(self.validate_and_accept)
         self.port_entry.returnPressed.connect(self.validate_and_accept)
 
+    def device_type(self) -> str:
+        return self.type_combo.currentData() or "lan"
+
+    def matrix_size(self) -> str:
+        return self.matrix_size_combo.currentData() or "32x32"
+
+    def _on_type_changed(self, *_args) -> None:
+        is_ble = self.device_type() == "ble"
+        for widget in (self.ip_entry, self.ip_row_label, self.mac_entry,
+                       self.port_entry, self.port_row_label):
+            widget.setVisible(not is_ble)
+        # MAC row label is managed by the form; toggle the field only.
+        self.mac_entry.setVisible(not is_ble)
+        for widget in (self.ble_address_entry, self.ble_address_label,
+                       self.matrix_size_combo, self.matrix_size_label):
+            widget.setVisible(is_ble)
+        self.model_entry.setPlaceholderText(
+            "e.g., iDotMatrix 32x32" if is_ble else "e.g., Govee H6199"
+        )
+
     def validate_and_accept(self):
         """Validate input and accept dialog if valid."""
         # Clear previous status
         self.status_label.setText("")
         self.status_label.setStyleSheet("")
+
+        if self.device_type() == "ble":
+            if not self.ble_address_entry.text().strip():
+                self.show_error("Bluetooth address is required")
+                self.ble_address_entry.setFocus()
+                return
+            self.accept()
+            return
 
         # Check IP address (required)
         ip = self.ip_entry.text().strip()
