@@ -38,6 +38,7 @@ class ModesView(QWidget):
         self._sync_was_running = False
         self._sync_mode_before: Optional[str] = None
         self._mapping_anim = None
+        self._active_syncs_key: object = object()  # sentinel: always rebuild once
 
         self._build_ui()
         self._connect_signals()
@@ -388,6 +389,20 @@ class ModesView(QWidget):
     # ------------------------------------------------------------------ active syncs
 
     def _refresh_active_syncs(self) -> None:
+        # The 1s timer calls this constantly; only rebuild the rows when the
+        # visible state actually changed.
+        mode = self.controller.get_current_sync_mode()
+        is_running = self.controller.is_syncing()
+        device_names = [
+            device.get("model", "Device")
+            for device in self.controller.get_selected_devices()
+        ] if is_running else []
+
+        key = (mode, is_running, tuple(device_names))
+        if key == self._active_syncs_key:
+            return
+        self._active_syncs_key = key
+
         # Wipe existing rows
         while self.active_syncs_layout.count():
             item = self.active_syncs_layout.takeAt(0)
@@ -395,17 +410,9 @@ class ModesView(QWidget):
             if w is not None:
                 w.deleteLater()
 
-        mode = self.controller.get_current_sync_mode()
-        is_running = self.controller.is_syncing()
-
         if not is_running or mode is None:
             self.empty_active_label.setVisible(True)
             return
-
-        device_names = [
-            device.get("model", "Device")
-            for device in self.controller.get_selected_devices()
-        ]
 
         row = ActiveSyncRow(mode, device_names, self)
         row.stop_requested.connect(lambda _m: self.controller.stop_sync())
