@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ... import connection
+from ..resources.icons import IconKey, tinted_pixmap
 from ..theme import qcolor
 from ..utils.animations import PulseDot
 
@@ -146,8 +147,8 @@ class DeviceCard(QFrame):
         # Brightness row
         bright_row = QHBoxLayout()
         bright_row.setSpacing(8)
-        bright_label = QLabel("☀")
-        bright_label.setProperty("role", "icon")
+        bright_label = QLabel()
+        bright_label.setPixmap(tinted_pixmap(IconKey.SUN, qcolor("text_dim"), 14))
         bright_row.addWidget(bright_label)
 
         self.brightness_slider = QSlider(Qt.Orientation.Horizontal)
@@ -196,8 +197,8 @@ class DeviceCard(QFrame):
 
         temp_row = QHBoxLayout()
         temp_row.setSpacing(8)
-        temp_label = QLabel("🌡")
-        temp_label.setProperty("role", "icon")
+        temp_label = QLabel()
+        temp_label.setPixmap(tinted_pixmap(IconKey.THERMOMETER, qcolor("text_dim"), 14))
         temp_row.addWidget(temp_label)
 
         self.color_temp_slider = QSlider(Qt.Orientation.Horizontal)

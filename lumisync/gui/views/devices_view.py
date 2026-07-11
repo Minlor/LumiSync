@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
 from ... import connection
 from ..controllers.device_controller import DeviceController
 from ..dialogs.add_device_dialog import AddDeviceDialog
+from ..resources.icons import IconKey, tinted_icon
+from ..theme import qcolor
 from ..utils.animations import animate_height
 from ..utils.flow_layout import FlowLayout
 from ..widgets.device_card import DeviceCard
@@ -60,14 +62,17 @@ class DevicesView(QWidget):
         self.discover_button = QPushButton("Discover Devices")
         self.discover_button.setObjectName("Primary")
         self.discover_button.setProperty("role", "primary")
+        self.discover_button.setIcon(tinted_icon(IconKey.REFRESH, "#FFFFFF"))
         self.discover_button.clicked.connect(self.controller.discover_devices)
         toolbar.addWidget(self.discover_button)
 
         self.add_button = QPushButton("Add Manually")
+        self.add_button.setIcon(tinted_icon(IconKey.ADD, qcolor("text")))
         self.add_button.clicked.connect(self._on_add_manual)
         toolbar.addWidget(self.add_button)
 
         self.scan_ble_button = QPushButton("Scan Bluetooth")
+        self.scan_ble_button.setIcon(tinted_icon(IconKey.BLUETOOTH, qcolor("text")))
         self.scan_ble_button.setToolTip(
             "Scan for iDotMatrix / Bluetooth devices (requires the 'bleak' package)."
         )

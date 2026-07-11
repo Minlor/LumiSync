@@ -103,9 +103,9 @@ class LumiSyncMainWindow(QMainWindow):
 
         self.nav_shell.add_page(
             key="draw", title="Draw",
-            icon=app_icon(IconKey.SCREEN), widget=self.draw_view,
+            icon=app_icon(IconKey.DRAW), widget=self.draw_view,
         )
-        self.nav_shell.set_page_svg("draw", "screen.svg")
+        self.nav_shell.set_page_svg("draw", "pencil.svg")
 
         self.settings_page = SettingsPage(self.settings, self)
         self.nav_shell.add_page(
