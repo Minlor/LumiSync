@@ -522,3 +522,26 @@ QFrame#ActiveSyncRow {
     border: 1px solid {border};
     border-radius: {radius_md};
 }
+
+/* ---- Toasts ---- */
+
+QFrame#Toast {
+    background: {surface_alt};
+    border: 1px solid {border_strong};
+    border-left: 3px solid {accent};
+    border-radius: {radius_md};
+}
+
+QFrame#Toast[kind="success"] {
+    border-left-color: {success};
+}
+
+QFrame#Toast[kind="error"] {
+    border-left-color: {danger};
+}
+
+QLabel#ToastLabel {
+    color: {text};
+    background: transparent;
+    font-size: 9.5pt;
+}

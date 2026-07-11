@@ -9,6 +9,7 @@ from PySide6.QtGui import QDesktopServices
 
 from .resources.icons import IconKey, icon as app_icon
 from .widgets import NavigationShell
+from .widgets.toast import ToastManager
 from .theme import apply_theme
 from ..utils.logging import setup_logger
 
@@ -42,6 +43,8 @@ class LumiSyncMainWindow(QMainWindow):
         except Exception:
             pass
 
+        self.toasts = ToastManager(self)
+
         logger.info("Creating controllers")
         self.device_controller = DeviceController()
         self.sync_controller = SyncController()
@@ -59,7 +62,7 @@ class LumiSyncMainWindow(QMainWindow):
         self.device_controller.device_selected.connect(self.sync_controller.set_device)
         self.device_controller.status_updated.connect(self.show_status)
         self.sync_controller.status_updated.connect(self.show_status)
-        self.sync_controller.sync_error.connect(self.show_status)
+        self.sync_controller.sync_error.connect(self.show_error)
         self.update_controller.status_updated.connect(self.show_status)
         self.update_controller.update_available.connect(self._on_update_available)
 
@@ -119,8 +122,16 @@ class LumiSyncMainWindow(QMainWindow):
             self.statusBar().showMessage("Ready")
 
     def show_status(self, message: str, timeout: int = 5000):
-        self.statusBar().showMessage(message, timeout)
+        if self.statusBar().isVisible():
+            self.statusBar().showMessage(message, timeout)
+        self.toasts.show(message)
         logger.info(f"Status: {message}")
+
+    def show_error(self, message: str):
+        if self.statusBar().isVisible():
+            self.statusBar().showMessage(message, 8000)
+        self.toasts.error(message)
+        logger.error(f"Error: {message}")
 
     def show_about(self):
         from .. import __version__ as _version
