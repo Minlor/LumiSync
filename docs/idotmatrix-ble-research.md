@@ -97,10 +97,10 @@ Bluetooth device. Golden-byte tests pin the encoding.
    `build_pixel_frame()`, `pack_pixels()`, `chunk()`, `screen_to_pixels()`).
    These are pure and unit-tested (`tests/test_drivers.py`). This encoder is
    original LumiSync code, not a port of `python-idotmatrix`.
-2. **BLE backend — done.** `IDotMatrixBleAdapter` uses `bleak` (optional dep,
-   `pip install lumisync[ble]`) on a private asyncio loop so the sync/Qt threads
-   can call it synchronously. `discover()` scans for service `000000fa`. Missing
-   `bleak` or address raises a clear error (never a silent no-op).
+2. **BLE backend — done.** `IDotMatrixBleAdapter` uses `bleak` (bundled with
+   LumiSync) on a private asyncio loop so the sync/Qt threads can call it
+   synchronously. `discover()` scans for service `000000fa`. A missing `bleak`
+   or address raises a clear error (never a silent no-op).
 3. **Opcodes CONFIRMED via decompilation.** Brightness/power/color match the
    app's `BleProtocolN` byte-for-byte (golden-byte tests in `tests/test_drivers.py`).
    Writes use response=True and the driver subscribes to the notify characteristic.

@@ -33,11 +33,14 @@
 
 ### Supported devices
 
-| Family | Transport | Install | Notes |
-|--------|-----------|---------|-------|
-| Govee strips/bulbs | LAN (UDP) | base install | Enable "LAN Control" in the Govee app |
-| iDotMatrix panels | Bluetooth LE | `pip install lumisync[ble]` | Pixel displays; see [docs](docs/idotmatrix-ble-research.md) |
-| LSC / Tuya WiFi lights | LAN (Tuya local) | `pip install lumisync[tuya]` | Needs the device's local key — see [docs](docs/lsc-tuya-research.md) |
+Every device family works out of the box — a single `pip install lumisync` (or
+the packaged Windows build) bundles all transports, no extras to remember.
+
+| Family | Transport | Notes |
+|--------|-----------|-------|
+| Govee strips/bulbs | LAN (UDP) | Enable "LAN Control" in the Govee app |
+| iDotMatrix panels | Bluetooth LE | Pixel displays; see [docs](docs/idotmatrix-ble-research.md) |
+| LSC / Tuya WiFi lights | LAN (Tuya local) | Needs the device's local key — see [docs](docs/lsc-tuya-research.md) |
 
 <div align="center">
 <img src="https://via.placeholder.com/700x400?text=LumiSync+Screenshot" alt="LumiSync Screenshot" width="700"/>

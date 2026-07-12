@@ -2,7 +2,11 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
+from PyInstaller.utils.hooks import (
+    collect_all,
+    collect_dynamic_libs,
+    collect_submodules,
+)
 
 
 ROOT = Path(SPECPATH).resolve().parents[1]
@@ -20,6 +24,14 @@ def safe_collect_dynamic_libs(package_name):
         return collect_dynamic_libs(package_name)
     except Exception:
         return []
+
+
+def safe_collect_all(package_name):
+    """Return (datas, binaries, hiddenimports) for a package, or empty lists."""
+    try:
+        return collect_all(package_name)
+    except Exception:
+        return [], [], []
 
 
 datas = [
@@ -54,6 +66,16 @@ hiddenimports += [
     "soundcard",
     "win32timezone",
 ]
+
+# Device transports are bundled so the frozen app controls every supported
+# device family. bleak's Windows backend lives in the separate winrt.* packages,
+# and tinytuya pulls its own crypto deps — collect_all grabs their submodules,
+# data files, and dynamic libs so nothing is missing at runtime.
+for _pkg in ("bleak", "winrt", "tinytuya"):
+    _d, _b, _h = safe_collect_all(_pkg)
+    datas += _d
+    binaries += _b
+    hiddenimports += _h
 
 a = Analysis(
     [str(ROOT / "lumisync" / "lumisync.py")],

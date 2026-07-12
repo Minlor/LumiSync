@@ -95,7 +95,7 @@ project's local-first invariant; runtime code contains no account-service code).
      This LumiSync-specific mapping is pinned by golden-value tests in
      `tests/test_drivers.py` (no hardware or network needed).
    - **Transport (`TuyaLightAdapter`):** drives the encrypted session via
-     **`tinytuya`** (optional dependency: `pip install lumisync[tuya]`).
+     **`tinytuya`** (bundled with LumiSync — no extra install step).
 2. **Why `tinytuya` and not our own protocol.** The iDotMatrix driver
    deliberately ships LumiSync's own encoder because that protocol is a simple
    length-prefixed BLE format. Tuya is the opposite: five protocol versions,

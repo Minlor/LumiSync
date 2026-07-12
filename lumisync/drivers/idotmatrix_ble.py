@@ -12,8 +12,8 @@ Two layers:
   without hardware.
 * **Transport** (:class:`IDotMatrixBleAdapter`): a ``bleak`` GATT client driven
   from a private asyncio loop so the sync (Qt) threads can call it synchronously.
-  ``bleak`` is an optional dependency; the adapter raises a clear error if it is
-  missing.
+  ``bleak`` ships with LumiSync; the adapter raises a clear error if it is
+  somehow missing from the environment.
 
 PROVISIONAL opcodes are marked below. They match the app's structure but should
 be confirmed against a BLE capture on a real device before shipping; each is a
@@ -218,10 +218,11 @@ def _require_bleak():
     try:
         import bleak  # noqa: F401
         return bleak
-    except ImportError as exc:  # pragma: no cover - depends on optional dep
+    except ImportError as exc:  # pragma: no cover - bleak ships with lumisync
         raise RuntimeError(
-            "iDotMatrix support needs the 'bleak' package. Install it with "
-            "'pip install bleak' (or 'pip install lumisync[ble]')."
+            "The 'bleak' package is missing — it normally ships with LumiSync. "
+            "Reinstall LumiSync ('pip install --force-reinstall lumisync') or run "
+            "'pip install bleak' to restore Bluetooth support."
         ) from exc
 
 

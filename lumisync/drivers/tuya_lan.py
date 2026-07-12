@@ -22,10 +22,10 @@ Two layers, mirroring the iDotMatrix driver:
   operations onto Tuya light *data points* (DPs). This is the LumiSync-specific
   part and is verified with golden values, no hardware or network needed.
 * **Transport** (:class:`TuyaLightAdapter`): drives the encrypted session via
-  ``tinytuya`` (an optional dependency: ``pip install lumisync[tuya]``). Tuya's
-  five protocol versions plus the AES-GCM/HMAC session handshake are complex and
-  security-sensitive, so LumiSync uses the mature ``tinytuya`` implementation for
-  the wire/crypto rather than reimplementing it; the DP mapping above is ours.
+  ``tinytuya`` (bundled with LumiSync). Tuya's five protocol versions plus the
+  AES-GCM/HMAC session handshake are complex and security-sensitive, so LumiSync
+  uses the mature ``tinytuya`` implementation for the wire/crypto rather than
+  reimplementing it; the DP mapping above is ours.
 """
 
 from __future__ import annotations
@@ -135,10 +135,11 @@ def build_color_command(device: Dict[str, Any], r: int, g: int, b: int) -> Dict[
 def _require_tinytuya():
     try:
         import tinytuya  # noqa: F401
-    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+    except ImportError as exc:  # pragma: no cover - tinytuya ships with lumisync
         raise RuntimeError(
-            "Tuya/LSC support needs the 'tinytuya' package. Install it with "
-            "'pip install lumisync[tuya]'."
+            "The 'tinytuya' package is missing — it normally ships with LumiSync. "
+            "Reinstall LumiSync ('pip install --force-reinstall lumisync') or run "
+            "'pip install tinytuya' to restore Tuya/LSC support."
         ) from exc
     return tinytuya
 

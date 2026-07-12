@@ -28,16 +28,14 @@ dependencies = [
   "soundcard>=0.4.5",
   "webcolors>=24.11.1",
   "PySide6>=6.6.0",
+  # Device transports — bundled so every install controls every supported
+  # device family out of the box (no optional extras to remember).
+  "bleak>=0.22.0",       # iDotMatrix pixel panels (Bluetooth LE)
+  "tinytuya>=1.13.0",    # LSC / Tuya WiFi lights (local protocol)
   "opencv-python-headless>=4.10.0; sys_platform == 'win32'",
   "pywin32>=310; sys_platform == 'win32'",
   "mss>=10.1.0; sys_platform != 'win32'",
 ]
-
-[project.optional-dependencies]
-# Bluetooth LE devices (e.g. iDotMatrix pixel displays)
-ble = ["bleak>=0.22.0"]
-# Tuya / LSC Smart Connect WiFi devices (local control)
-tuya = ["tinytuya>=1.13.0"]
 
 [tool.ruff]
 target-version = "py311"
