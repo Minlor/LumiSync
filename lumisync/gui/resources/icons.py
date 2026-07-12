@@ -55,7 +55,7 @@ class IconKey(str, Enum):
 
 
 _ICON_FILES: Dict[IconKey, str] = {
-    IconKey.APP: "lightbulb-on.svg",
+    IconKey.APP: "app.png",
     IconKey.SETTINGS: "settings.svg",
     IconKey.REFRESH: "refresh.svg",
     IconKey.NETWORK: "network.svg",
@@ -213,4 +213,3 @@ __all__ = [
     "tinted_icon",
     "tinted_pixmap",
 ]
-

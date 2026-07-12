@@ -46,7 +46,7 @@ target-version = "py311"
 include = ["lumisync*"]
 
 [tool.setuptools.package-data]
-"lumisync.gui.resources" = ["icons/*.svg", "*.ico"]
+"lumisync.gui.resources" = ["icons/*.svg", "icons/*.png", "icons/*.ico"]
 "lumisync.gui.theme" = ["*.qss"]
 "lumisync.config" = ["*.toml"]
 
