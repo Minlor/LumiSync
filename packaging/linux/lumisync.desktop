@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=LumiSync
+Comment=Sync your lights with your screen and audio
+Exec=LumiSync
+Icon=lumisync
+Categories=Utility;AudioVideo;
+Terminal=false

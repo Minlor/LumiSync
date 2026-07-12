@@ -1,0 +1,41 @@
+# Flatpak manifest for LumiSync — SCAFFOLD, not yet validated.
+#
+# This is a starting point. It has NOT been built or tested on a Linux box
+# (see packaging/flatpak/README.md for the remaining steps and how to finish
+# it). The AppImage (tools/build_linux.sh) is the supported Linux build today.
+#
+# Build once finished:
+#   flatpak-builder --user --install --force-clean build-dir \
+#     packaging/flatpak/io.github.Minlor.LumiSync.yaml
+app-id: io.github.Minlor.LumiSync
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: lumisync
+
+finish-args:
+  # GUI
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  # LAN device discovery + control (Govee, Tuya)
+  - --share=network
+  # Music sync captures the audio output (loopback / monitor source)
+  - --socket=pulseaudio
+  # Bluetooth LE (iDotMatrix) via BlueZ on the system bus
+  - --system-talk-name=org.bluez
+  # Wayland screen capture, if/when the portal backend lands
+  - --talk-name=org.freedesktop.portal.ScreenCast
+
+modules:
+  # Third-party Python deps. Generate this file with flatpak-pip-generator
+  # (see README) so the build is fully offline/reproducible.
+  - python3-deps.json
+
+  - name: lumisync
+    buildsystem: simple
+    build-commands:
+      - pip3 install --no-index --prefix=${FLATPAK_DEST} .
+    sources:
+      - type: dir
+        path: ../..

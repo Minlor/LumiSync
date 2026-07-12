@@ -21,15 +21,25 @@ jobs:
           args: check lumisync tests
 
   test:
-    # Windows matches the release build environment and has working
-    # Qt/audio/capture stacks; the suite itself runs Qt offscreen.
-    runs-on: windows-latest
+    # Windows matches the release build environment; Linux guards the
+    # cross-platform paths (Qt runs offscreen on both).
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+
+      - name: Install Qt runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libdbus-1-3
 
       - name: Install package
         run: python -m pip install -e .

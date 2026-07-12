@@ -70,6 +70,19 @@ cd LumiSync
 pip install -e .
 ```
 
+### Prebuilt downloads
+
+- **Windows** — a portable `.zip` and a single-file `.exe` are attached to each
+  [GitHub release](https://github.com/Minlor/LumiSync/releases).
+- **Linux** — an `x86_64` **AppImage** is attached to each release; `chmod +x`
+  it and run. Build it yourself with `tools/build_linux.sh` (needs Python 3.12+
+  and `appimagetool` deps). A Flatpak is scaffolded in `packaging/flatpak/` but
+  not yet finished.
+
+> **Platform notes:** Windows is fully supported. On Linux, device control,
+> music sync, and manual control work on X11 and Wayland; **screen (monitor)
+> sync currently requires an X11/Xorg session** — Wayland capture is planned.
+
 ## 🚀 Usage
 
 ### Launch the App
