@@ -231,6 +231,14 @@ class MonitorSyncWorker(QObject):
                             adapter.set_segments(smoothed)
                             last_sent[key] = smoothed
 
+                except monitor.WaylandUnsupportedError as e:
+                    # Permanent on this session; retrying would spam. Report once
+                    # and stop the monitor sync cleanly.
+                    self.error_occurred.emit(str(e))
+                    return
+                except monitor.ScreenCaptureDependencyError as e:
+                    self.error_occurred.emit(str(e))
+                    return
                 except Exception as e:
                     self.error_occurred.emit(f"Error in monitor sync: {str(e)}")
                     time.sleep(1)  # Avoid tight loop on error
@@ -294,10 +302,9 @@ class MusicSyncWorker(QObject):
             while not self.stop_event.is_set():
                 try:
                     # Open the loopback recorder once, then stream frames from it.
-                    with music.sc.get_microphone(
-                        id=str(music.sc.default_speaker().name),
-                        include_loopback=True,
-                    ).recorder(samplerate=AUDIO.sample_rate) as mic:
+                    with music.default_loopback_microphone().recorder(
+                        samplerate=AUDIO.sample_rate
+                    ) as mic:
                         while not self.stop_event.is_set():
                             frame_start = time.monotonic()
                             # Try/except due to a soundcard error when no audio plays.

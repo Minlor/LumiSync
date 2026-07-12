@@ -18,6 +18,42 @@ from ..drivers.registry import create_adapter
 from . import audio, processing
 
 
+def default_loopback_microphone():
+    """Return a soundcard microphone that captures the system audio output.
+
+    On Windows this is the default speaker's WASAPI loopback. On Linux
+    (PulseAudio / PipeWire) the equivalent is the default sink's *monitor*
+    source; the ``include_loopback`` lookup usually resolves it, but if it
+    doesn't we fall back to picking a monitor/loopback source directly so
+    music sync works out of the box on Linux too.
+    """
+    speaker_name = None
+    try:
+        speaker_name = str(sc.default_speaker().name)
+    except Exception:
+        pass
+
+    if speaker_name:
+        try:
+            return sc.get_microphone(id=speaker_name, include_loopback=True)
+        except Exception:
+            pass
+
+    mics = sc.all_microphones(include_loopback=True)
+    loopbacks = [m for m in mics if getattr(m, "isloopback", False)] or mics
+    if speaker_name:
+        for mic in loopbacks:
+            if speaker_name.lower() in str(mic.name).lower():
+                return mic
+    if loopbacks:
+        return loopbacks[0]
+
+    raise RuntimeError(
+        "No audio loopback device found. On Linux, make sure PulseAudio or "
+        "PipeWire is running and a monitor source is available."
+    )
+
+
 def start(server: socket.socket, device: Dict[str, Any]) -> None:
     """Run the CLI music-sync loop for a single device.
 
@@ -39,9 +75,9 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
         frame_interval = 1.0 / max(1, SYNC.music_fps)
 
         while True:
-            with sc.get_microphone(
-                id=str(sc.default_speaker().name), include_loopback=True
-            ).recorder(samplerate=AUDIO.sample_rate) as mic:
+            with default_loopback_microphone().recorder(
+                samplerate=AUDIO.sample_rate
+            ) as mic:
                 while True:
                     frame_start = time.monotonic()
                     # NOTE: Try/except due to a soundcard error when no audio plays.

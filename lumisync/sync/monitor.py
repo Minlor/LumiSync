@@ -17,9 +17,20 @@ MISSING_CV2_MESSAGE = (
     "Install opencv-python-headless or use a LumiSync build that bundles it."
 )
 
+WAYLAND_MESSAGE = (
+    "Monitor (screen) sync isn't available on Wayland yet — Wayland has no "
+    "direct screen grab. Music sync and manual control still work. For screen "
+    "sync, log out and choose an X11/Xorg session (running under XWayland does "
+    "not help). Wayland capture via the desktop portal is planned."
+)
+
 
 class ScreenCaptureDependencyError(RuntimeError):
     """Raised when a required screen-capture dependency is unavailable."""
+
+
+class WaylandUnsupportedError(RuntimeError):
+    """Raised when monitor sync is attempted on a Wayland session."""
 
 
 def _create_dxcam_camera(dxcam_module, **kwargs):
@@ -94,8 +105,10 @@ class ScreenGrab:
                     monitor_idx = 1 if len(self.camera.monitors) > 1 else 0
                 self.capture_method = partial(self.camera.grab, self.camera.monitors[monitor_idx])
             else:
-                # TODO: Implement Wayland support
-                raise NotImplementedError("Wayland support is not yet implemented in ScreenGrab.")
+                # TODO: Wayland capture via xdg-desktop-portal ScreenCast +
+                # PipeWire. Until then, fail with an actionable message rather
+                # than a raw NotImplementedError.
+                raise WaylandUnsupportedError(WAYLAND_MESSAGE)
 
     def capture_array(self) -> Optional[np.ndarray]:
         """Capture the screen as a contiguous ``(H, W, 3)`` uint8 RGB array.

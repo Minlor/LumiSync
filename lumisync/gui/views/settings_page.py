@@ -78,13 +78,21 @@ class SettingsPage(QWidget):
         )
         form.addRow("Tray", self.tray_check)
 
-        self.autostart_check = QCheckBox("Start LumiSync when Windows starts")
+        import platform
+        start_label = (
+            "Start LumiSync when Windows starts"
+            if platform.system() == "Windows"
+            else "Start LumiSync when you log in"
+        )
+        self.autostart_check = QCheckBox(start_label)
         if autostart.is_supported():
             self.autostart_check.setChecked(autostart.is_enabled())
             self.autostart_check.toggled.connect(self._on_autostart_toggled)
         else:
             self.autostart_check.setEnabled(False)
-            self.autostart_check.setToolTip("Autostart is only supported on Windows.")
+            self.autostart_check.setToolTip(
+                "Autostart isn't supported on this platform."
+            )
         form.addRow("Startup", self.autostart_check)
 
         self.statusbar_check = QCheckBox("Show the status bar")
