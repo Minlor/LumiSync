@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import (
@@ -77,6 +78,17 @@ for _pkg in ("bleak", "winrt", "tinytuya"):
     binaries += _b
     hiddenimports += _h
 
+# Pillow's PyInstaller hook drags in tkinter (and the tcl/tk runtime) via
+# PIL.ImageTk even though the GUI is pure Qt, and its AVIF codec is an 8 MB
+# binary — the app only builds PIL images from in-memory capture arrays.
+excludes = [
+    "tkinter",
+    "_tkinter",
+    "PIL.ImageTk",
+    "PIL.AvifImagePlugin",
+    "PIL._avif",
+]
+
 a = Analysis(
     [str(ROOT / "lumisync" / "lumisync.py")],
     pathex=[str(ROOT)],
@@ -86,10 +98,54 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=excludes,
     noarchive=False,
-    optimize=0,
+    # Strip docstrings from the frozen bytecode (equivalent to python -OO).
+    optimize=2,
 )
+
+
+# Bundled files the app never loads at runtime. Windows-only names are kept
+# separate: the same trims are unverified against Linux's Qt platform plugins,
+# so the AppImage stays conservative.
+_BLOAT_MARKERS = (
+    "_avif.",  # PIL AVIF codec (belt and braces with the module exclude)
+)
+_WINDOWS_BLOAT_MARKERS = (
+    # Software-OpenGL fallback; the widgets UI renders with Qt's raster
+    # engine and never requests OpenGL.
+    "opengl32sw.dll",
+    # cv2's video-file codecs; cv2 only processes in-memory screen captures.
+    "opencv_videoio_ffmpeg",
+    # Qt Quick/QML stack, pulled in only by the virtual-keyboard input
+    # plugin — a desktop widgets app uses neither.
+    "qt6qml",
+    "qt6quick",
+    "qt6opengl.dll",
+    "qt6virtualkeyboard",
+    "qtvirtualkeyboardplugin",
+    # Qt6Pdf exists only to back the PDF imageformat plugin.
+    "qt6pdf.dll",
+    "qpdf.dll",
+    # Alternative platform plugin; Qt uses qwindows unless direct2d is
+    # explicitly requested.
+    "qdirect2d.dll",
+)
+if sys.platform == "win32":
+    _BLOAT_MARKERS += _WINDOWS_BLOAT_MARKERS
+
+
+def _is_bundle_bloat(entry):
+    dest = entry[0].replace("\\", "/").lower()
+    if "/translations/" in dest and dest.startswith("pyside6/"):
+        return True  # Qt translations: the UI is English-only
+    basename = dest.rsplit("/", 1)[-1]
+    return any(marker in basename for marker in _BLOAT_MARKERS)
+
+
+a.binaries = [entry for entry in a.binaries if not _is_bundle_bloat(entry)]
+a.datas = [entry for entry in a.datas if not _is_bundle_bloat(entry)]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
