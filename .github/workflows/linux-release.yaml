@@ -16,10 +16,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           # The build script installs into its own venv, but pip's download
@@ -40,13 +40,13 @@ jobs:
           RUN_TESTS=1 tools/build_linux.sh
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: LumiSync-Linux-x86_64-AppImage
           path: dist/LumiSync-x86_64.AppImage
 
       - name: Attach artifact to GitHub Release
         if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/LumiSync-x86_64.AppImage
