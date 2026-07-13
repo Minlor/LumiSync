@@ -12,10 +12,9 @@ if np.lib.NumpyVersion(np.__version__) >= '2.0.0':
 
 import soundcard as sc
 
-from .. import utils
-from ..config.options import AUDIO, BRIGHTNESS, COLORS, SYNC
+from ..config.options import AUDIO, BRIGHTNESS, SYNC
 from ..drivers.registry import create_adapter
-from . import audio, processing
+from . import artwork, audio, processing
 
 
 def default_loopback_microphone():
@@ -58,7 +57,7 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
     """Run the CLI music-sync loop for a single device.
 
     Each captured audio window is split into bass/mid/treble energy by an FFT
-    and mapped to a color, which scrolls along the strip to create motion.
+    and rendered using the selected palette and spatial reaction style.
     """
     # Initialize COM on Windows (required for soundcard library in threads)
     if sys.platform == "win32":
@@ -69,8 +68,12 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
         adapter = create_adapter(device, server)
         adapter.begin_stream()
         segment_count = adapter.capabilities.segment_count
-        COLORS.current = [(0, 0, 0)] * segment_count
-        color_smoother = processing.ColorSmoother(SYNC.music_smoothing, 1)
+        renderer = audio.MusicPatternRenderer(segment_count)
+        artwork_provider = artwork.ArtworkPaletteProvider()
+        smoother = processing.ColorSmoother(
+            SYNC.music_smoothing, segment_count
+        )
+        active_reaction = SYNC.music_reaction
         numframes = int(max(AUDIO.duration, AUDIO.music_window) * AUDIO.sample_rate)
         frame_interval = 1.0 / max(1, SYNC.music_fps)
 
@@ -86,22 +89,31 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
                     except TypeError:
                         data = None
 
-                    raw_color = audio.amplitude_color(
-                        data,
-                        AUDIO.sample_rate,
+                    if active_reaction != SYNC.music_reaction:
+                        active_reaction = SYNC.music_reaction
+                        renderer = audio.MusicPatternRenderer(segment_count)
+                        smoother = processing.ColorSmoother(
+                            SYNC.music_smoothing, segment_count
+                        )
+
+                    bands = audio.spectral_bands(data, AUDIO.sample_rate)
+                    palette_colors = (
+                        artwork_provider.get_colors()
+                        if SYNC.music_palette == audio.PALETTE_ALBUM_ART
+                        else None
+                    )
+                    frame = renderer.render(
+                        bands,
+                        reaction=SYNC.music_reaction,
                         gain=SYNC.music_gain,
                         palette=SYNC.music_palette,
+                        palette_colors=palette_colors,
                     )
-                    next_color = color_smoother.update([raw_color])[0]
-
-                    COLORS.current = utils.fit_colors_to_count(
-                        COLORS.current, segment_count
-                    )
-                    COLORS.current.append(next_color)
-                    COLORS.current.pop(0)
+                    smoother.alpha = SYNC.music_smoothing
+                    frame = smoother.update(frame)
 
                     adjusted = processing.apply_brightness(
-                        COLORS.current, BRIGHTNESS.music
+                        frame, BRIGHTNESS.music
                     )
                     adapter.set_segments(adjusted)
 

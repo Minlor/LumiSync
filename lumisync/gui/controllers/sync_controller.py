@@ -17,7 +17,7 @@ if platform.system() == "Windows":
 from ... import connection, led_mapping, utils
 from ...config.options import AUDIO, BRIGHTNESS, SYNC
 from ...drivers import pool
-from ...sync import audio, monitor, music, processing
+from ...sync import artwork, audio, monitor, music, processing
 
 
 DEFAULT_LED_MAPPING = led_mapping.DEFAULT_LEGACY_MAPPING
@@ -32,6 +32,9 @@ SYNC_SETTINGS_KEYS = {
     "music_gain": "sync/music_gain",
     "music_smoothing": "sync/music_smoothing",
     "music_palette": "sync/music_palette",
+    "music_reaction": "sync/music_reaction",
+    "monitor_brightness": "sync/monitor/brightness",
+    "music_brightness": "sync/music/brightness",
 }
 
 
@@ -73,6 +76,11 @@ def load_sync_settings(settings: QSettings) -> None:
     palette = str(settings.value(keys["music_palette"], SYNC.music_palette))
     if palette in audio.PALETTES:
         SYNC.music_palette = palette
+    reaction = str(
+        settings.value(keys["music_reaction"], SYNC.music_reaction)
+    )
+    if reaction in audio.REACTIONS:
+        SYNC.music_reaction = reaction
 
 
 def get_led_mapping_from_settings(
@@ -261,6 +269,7 @@ class MusicSyncWorker(QObject):
     # Signals
     status_updated = Signal(str)
     error_occurred = Signal(str)
+    auto_state_changed = Signal(str, object)  # reaction key, representative RGB
 
     def __init__(self, server, devices, stop_event, controller):
         super().__init__()
@@ -272,10 +281,9 @@ class MusicSyncWorker(QObject):
     def run(self):
         """Run music sync loop.
 
-        Each audio window is split into bass/mid/treble energy by an FFT and
-        mapped to a color that scrolls along the strip. The recorder is opened
-        once per connection instead of once per frame, and frames are paced, so
-        this reacts to the music itself rather than to raw volume.
+        Each audio window is split into bass/mid/treble energy by an FFT. The
+        selected reaction renderer then turns those bands into a spatial LED
+        frame, independently from the selected color palette.
         """
         try:
             # Initialize COM for this thread (Windows only)
@@ -289,13 +297,13 @@ class MusicSyncWorker(QObject):
                 adapter.begin_stream()
                 adapters[self._device_key(device)] = adapter
 
-            current_by_device = {
-                self._device_key(device): [
-                    (0, 0, 0)
-                ] * adapters[self._device_key(device)].capabilities.segment_count
-                for device in self.devices
-            }
-            color_smoother = processing.ColorSmoother(SYNC.music_smoothing, 1)
+            renderers = {}
+            smoothers = {}
+            active_reaction = None
+            artwork_provider = artwork.ArtworkPaletteProvider()
+            last_auto_reaction = ""
+            last_auto_color = (0, 0, 0)
+            last_auto_emit = 0.0
             numframes = int(max(AUDIO.duration, AUDIO.music_window) * AUDIO.sample_rate)
             frame_interval = 1.0 / max(1, SYNC.music_fps)
 
@@ -313,32 +321,96 @@ class MusicSyncWorker(QObject):
                             except TypeError:
                                 data = None
 
-                            raw_color = audio.amplitude_color(
-                                data,
-                                AUDIO.sample_rate,
-                                gain=SYNC.music_gain,
-                                palette=SYNC.music_palette,
+                            bands = audio.spectral_bands(
+                                data, AUDIO.sample_rate
                             )
-                            color_smoother.alpha = SYNC.music_smoothing  # live-apply
-                            next_color = color_smoother.update([raw_color])[0]
+                            palette_colors = (
+                                artwork_provider.get_colors()
+                                if SYNC.music_palette
+                                == audio.PALETTE_ALBUM_ART
+                                else None
+                            )
                             brightness = self.controller.get_music_brightness()
 
-                            for device in self.devices:
+                            # A live style change starts from a clean frame so
+                            # the previous motion does not smear into the new
+                            # one. Palette, gain, and smoothing remain live.
+                            if active_reaction != SYNC.music_reaction:
+                                active_reaction = SYNC.music_reaction
+                                renderers.clear()
+                                smoothers.clear()
+
+                            auto_state = None
+                            for device_index, device in enumerate(self.devices):
                                 key = self._device_key(device)
                                 adapter = adapters[key]
                                 segment_count = adapter.capabilities.segment_count
-                                current = current_by_device.get(
-                                    key,
-                                    [(0, 0, 0)] * segment_count,
+                                renderer = renderers.get(key)
+                                if renderer is None:
+                                    renderer = audio.MusicPatternRenderer(
+                                        segment_count
+                                    )
+                                    renderers[key] = renderer
+                                frame = renderer.render(
+                                    bands,
+                                    reaction=SYNC.music_reaction,
+                                    gain=SYNC.music_gain,
+                                    palette=SYNC.music_palette,
+                                    palette_colors=palette_colors,
                                 )
-                                current = utils.fit_colors_to_count(current, segment_count)
-                                current.append(next_color)
-                                current.pop(0)
-                                current_by_device[key] = current
+
+                                smoother = smoothers.get(key)
+                                if smoother is None:
+                                    smoother = processing.ColorSmoother(
+                                        SYNC.music_smoothing, segment_count
+                                    )
+                                    smoothers[key] = smoother
+                                else:
+                                    smoother.alpha = SYNC.music_smoothing
+                                frame = smoother.update(frame)
                                 adjusted_colors = processing.apply_brightness(
-                                    current, brightness
+                                    frame, brightness
                                 )
                                 adapter.set_segments(adjusted_colors)
+
+                                if (
+                                    device_index == 0
+                                    and active_reaction == audio.REACTION_AUTO
+                                    and sum(bands) > 1e-9
+                                ):
+                                    representative = max(
+                                        adjusted_colors,
+                                        key=sum,
+                                        default=(0, 0, 0),
+                                    )
+                                    auto_state = (
+                                        renderer.active_reaction,
+                                        representative,
+                                    )
+
+                            if auto_state is not None:
+                                reaction_key, color = auto_state
+                                now = time.monotonic()
+                                color_delta = max(
+                                    abs(first - second)
+                                    for first, second in zip(
+                                        color, last_auto_color
+                                    )
+                                )
+                                if (
+                                    reaction_key != last_auto_reaction
+                                    or (
+                                        now - last_auto_emit >= 0.10
+                                        and color_delta >= 4
+                                    )
+                                ):
+                                    self.auto_state_changed.emit(
+                                        reaction_key,
+                                        tuple(color),
+                                    )
+                                    last_auto_reaction = reaction_key
+                                    last_auto_color = tuple(color)
+                                    last_auto_emit = now
 
                             elapsed = time.monotonic() - frame_start
                             if elapsed < frame_interval:
@@ -371,6 +443,7 @@ class SyncController(QObject):
     sync_stopped = Signal()
     brightness_changed = Signal(str, float)  # mode, value
     sync_error = Signal(str)
+    music_auto_state_changed = Signal(str, object)
 
     def __init__(self):
         """Initialize the sync controller."""
@@ -384,9 +457,26 @@ class SyncController(QObject):
         self.selected_devices: List[Dict[str, Any]] = []
         self.active_devices: List[Dict[str, Any]] = []
 
-        # Initialize brightness settings from config
-        self.monitor_brightness = BRIGHTNESS.monitor
-        self.music_brightness = BRIGHTNESS.music
+        # Keep mode-specific brightness stable across launches.
+        self._settings = QSettings("Minlor", "LumiSync")
+        self.monitor_brightness = _coerce_float(
+            self._settings.value(
+                SYNC_SETTINGS_KEYS["monitor_brightness"], BRIGHTNESS.monitor
+            ),
+            BRIGHTNESS.monitor,
+            0.1,
+            1.0,
+        )
+        self.music_brightness = _coerce_float(
+            self._settings.value(
+                SYNC_SETTINGS_KEYS["music_brightness"], BRIGHTNESS.music
+            ),
+            BRIGHTNESS.music,
+            0.1,
+            1.0,
+        )
+        BRIGHTNESS.monitor = self.monitor_brightness
+        BRIGHTNESS.music = self.music_brightness
 
         # Monitor display selection (0-based)
         self.monitor_display_index = 0
@@ -398,8 +488,11 @@ class SyncController(QObject):
         Args:
             value: Brightness value between 0.0 and 1.0
         """
-        self.monitor_brightness = float(value)
+        self.monitor_brightness = max(0.1, min(1.0, float(value)))
         BRIGHTNESS.monitor = self.monitor_brightness
+        self._settings.setValue(
+            SYNC_SETTINGS_KEYS["monitor_brightness"], self.monitor_brightness
+        )
         self.brightness_changed.emit("monitor", self.monitor_brightness)
 
     def set_monitor_display(self, display_index: int) -> None:
@@ -415,8 +508,11 @@ class SyncController(QObject):
         Args:
             value: Brightness value between 0.0 and 1.0
         """
-        self.music_brightness = float(value)
+        self.music_brightness = max(0.1, min(1.0, float(value)))
         BRIGHTNESS.music = self.music_brightness
+        self._settings.setValue(
+            SYNC_SETTINGS_KEYS["music_brightness"], self.music_brightness
+        )
         self.brightness_changed.emit("music", self.music_brightness)
 
     def get_monitor_brightness(self) -> float:
@@ -426,6 +522,32 @@ class SyncController(QObject):
     def get_music_brightness(self) -> float:
         """Get brightness for music sync mode."""
         return self.music_brightness
+
+    def set_music_palette(self, palette: str) -> None:
+        """Apply and persist the live music color palette."""
+        palette = str(palette)
+        if palette not in audio.PALETTES:
+            return
+        SYNC.music_palette = palette
+        self._settings.setValue(
+            SYNC_SETTINGS_KEYS["music_palette"], palette
+        )
+
+    def get_music_palette(self) -> str:
+        return str(SYNC.music_palette)
+
+    def set_music_reaction(self, reaction: str) -> None:
+        """Apply and persist how music colors move across LED zones."""
+        reaction = str(reaction)
+        if reaction not in audio.REACTIONS:
+            return
+        SYNC.music_reaction = reaction
+        self._settings.setValue(
+            SYNC_SETTINGS_KEYS["music_reaction"], reaction
+        )
+
+    def get_music_reaction(self) -> str:
+        return str(SYNC.music_reaction)
 
     def set_device(self, device: Dict[str, Any]):
         """Compatibility wrapper: set one device for synchronization.
@@ -438,10 +560,6 @@ class SyncController(QObject):
     def set_devices(self, devices: List[Dict[str, Any]]):
         """Set the devices to use when no explicit mode selection is passed."""
         self.selected_devices = [dict(device) for device in devices if device]
-        if self.selected_devices:
-            self.status_updated.emit(
-                f"Ready to sync with {len(self.selected_devices)} device(s)"
-            )
 
     def get_selected_device(self) -> Optional[Dict[str, Any]]:
         """Get the first selected device for legacy single-device callers.
@@ -473,7 +591,7 @@ class SyncController(QObject):
             return
 
         if self.sync_thread and self.sync_thread.isRunning():
-            self.stop_sync()
+            self.stop_sync(announce=False)
 
         if mode == "monitor":
             BRIGHTNESS.monitor = self.monitor_brightness
@@ -494,7 +612,6 @@ class SyncController(QObject):
         self.current_sync_mode = mode
         self.active_devices = selected
         self.selected_devices = selected
-        self.status_updated.emit(f"Starting {mode} sync...")
 
         self.sync_thread = QThread()
         self.sync_worker = worker_cls(self.server, selected, self.stop_event, self)
@@ -503,16 +620,21 @@ class SyncController(QObject):
         self.sync_thread.started.connect(self.sync_worker.run)
         self.sync_worker.status_updated.connect(self.status_updated.emit)
         self.sync_worker.error_occurred.connect(self.sync_error.emit)
+        if isinstance(self.sync_worker, MusicSyncWorker):
+            self.sync_worker.auto_state_changed.connect(
+                self.music_auto_state_changed.emit
+            )
         self.sync_thread.finished.connect(self.sync_thread.deleteLater)
 
         self.sync_thread.start()
         self.sync_started.emit(mode)
+        device_word = "device" if len(selected) == 1 else "devices"
         self.status_updated.emit(
-            f"{display_mode} sync started with {len(selected)} device(s) "
+            f"{display_mode} sync started with {len(selected)} {device_word} "
             f"at {int(brightness * 100)}% brightness"
         )
 
-    def stop_sync(self):
+    def stop_sync(self, announce: bool = True):
         """Stop any active synchronization."""
         if self.sync_thread is None:
             self.close_server()
@@ -532,7 +654,6 @@ class SyncController(QObject):
         if is_running:
             self.stop_event.set()
             mode = self.current_sync_mode or "sync"
-            self.status_updated.emit(f"Stopping {mode}...")
 
             # Wait for thread to finish
             self.sync_thread.quit()
@@ -550,7 +671,8 @@ class SyncController(QObject):
             self.current_sync_mode = None
             self.active_devices = []
             self.sync_stopped.emit()
-            self.status_updated.emit("Sync stopped")
+            if announce:
+                self.status_updated.emit("Sync stopped")
 
         # Clear the reference to allow garbage collection
         self.sync_thread = None

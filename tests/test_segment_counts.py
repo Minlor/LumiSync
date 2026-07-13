@@ -271,6 +271,7 @@ class SegmentCountTests(unittest.TestCase):
             "sync/music_gain": "0.1",         # below range -> clamped to 0.5
             "sync/music_smoothing": "0.7",
             "sync/music_palette": "spectrum",
+            "sync/music_reaction": "center_burst",
         }
 
         class FakeSettings:
@@ -287,6 +288,7 @@ class SegmentCountTests(unittest.TestCase):
             self.assertEqual(SYNC.music_gain, 0.5)
             self.assertAlmostEqual(SYNC.music_smoothing, 0.7)
             self.assertEqual(SYNC.music_palette, "spectrum")
+            self.assertEqual(SYNC.music_reaction, "center_burst")
         finally:
             SYNC.__dict__.update(original)
 
@@ -302,6 +304,21 @@ class SegmentCountTests(unittest.TestCase):
             SYNC.music_palette = "rgb"
             load_sync_settings(FakeSettings())
             self.assertEqual(SYNC.music_palette, "rgb")
+        finally:
+            SYNC.__dict__.update(original)
+
+    def test_load_sync_settings_rejects_unknown_music_reaction(self):
+        class FakeSettings:
+            def value(self, key, default=None):
+                if key == "sync/music_reaction":
+                    return "not-a-reaction"
+                return default
+
+        original = dict(SYNC.__dict__)
+        try:
+            SYNC.music_reaction = "flow"
+            load_sync_settings(FakeSettings())
+            self.assertEqual(SYNC.music_reaction, "flow")
         finally:
             SYNC.__dict__.update(original)
 

@@ -57,5 +57,6 @@ SYNC = SimpleNamespace(
     music_fps=60,            # cap on how often music frames are emitted
     music_gain=1.7,          # scales band energy into the 0..255 color range
     music_smoothing=0.6,     # EMA factor for the scrolling music colors
-    music_palette="rgb",     # color theme: rgb / spectrum / warm / cool / mono
+    music_palette="rgb",     # selected audio-reactive color palette
+    music_reaction="flow",   # selected audio-driven spatial reaction
 )
