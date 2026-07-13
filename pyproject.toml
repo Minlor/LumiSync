@@ -1,19 +1,20 @@
 [build-system]
-requires = ["setuptools>=61.0.0", "wheel"]
+requires = ["setuptools>=77.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "lumisync"
 dynamic = ["version"]
-license = { file = "LICENSE" }
-description = "A Python library for syncing Govee led strips with audio and screen content."
+license = "MIT"
+license-files = ["LICENSE"]
+description = "A desktop app for syncing smart lights and pixel displays with screen and audio content."
 readme = "README.md"
 requires-python = ">=3.11"
 classifiers = [
   "Development Status :: 3 - Alpha",
-  "License :: OSI Approved :: MIT License",
   "Natural Language :: English",
   "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -34,6 +35,8 @@ dependencies = [
   "tinytuya>=1.13.0",    # LSC / Tuya WiFi lights (local protocol)
   "opencv-python-headless>=4.10.0; sys_platform == 'win32'",
   "pywin32>=310; sys_platform == 'win32'",
+  "winrt-Windows-Media-Control>=3.2.1; sys_platform == 'win32'",
+  "winrt-Windows-Storage-Streams>=3.2.1; sys_platform == 'win32'",
   "mss>=10.1.0; sys_platform != 'win32'",
 ]
 

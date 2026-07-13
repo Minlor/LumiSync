@@ -5,4 +5,3 @@
 # or their shebang breaks when run on Linux.
 *.sh text eol=lf
 AppRun text eol=lf
-
