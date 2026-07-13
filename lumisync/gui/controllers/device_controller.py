@@ -79,6 +79,8 @@ class DeviceStatusWorker(QObject):
                             {
                                 "online": False,
                                 "stale": True,
+                                "status_source": "offline",
+                                "readback_supported": True,
                                 "last_error": "No status reply",
                             },
                         )
@@ -87,6 +89,8 @@ class DeviceStatusWorker(QObject):
                             {
                                 "online": True,
                                 "stale": False,
+                                "status_source": "confirmed",
+                                "readback_supported": True,
                                 "last_error": None,
                                 "last_seen": time.time(),
                             }
@@ -98,6 +102,8 @@ class DeviceStatusWorker(QObject):
                         {
                             "online": False,
                             "stale": True,
+                            "status_source": "offline",
+                            "readback_supported": True,
                             "last_error": str(exc),
                         },
                     )
@@ -142,6 +148,8 @@ class DeviceController(QObject):
     discovery_finished = Signal()  # Discovery process finished
     ble_scan_started = Signal()  # Bluetooth scan started
     ble_scan_finished = Signal()  # Bluetooth scan finished
+    device_search_started = Signal()  # Combined LAN + Bluetooth search started
+    device_search_finished = Signal(dict)  # Per-transport availability/results
     groups_changed = Signal(list)  # Updated list of sync groups
 
     def __init__(self):
@@ -154,6 +162,11 @@ class DeviceController(QObject):
         self.discovery_worker: Optional[DeviceDiscoveryWorker] = None
         self.status_thread: Optional[QThread] = None
         self.status_worker: Optional[DeviceStatusWorker] = None
+        self._ble_scan_thread: Optional[QThread] = None
+        self._ble_scan_worker: Optional[BleScanWorker] = None
+        self._combined_search_active = False
+        self._search_pending: set[str] = set()
+        self._search_results: Dict[str, Dict[str, Any]] = {}
         self.server = None
         self.device_states: Dict[str, Dict[str, Any]] = {}
 
@@ -208,17 +221,91 @@ class DeviceController(QObject):
     def _clear_status_refs(self) -> None:
         self.status_thread = None
         self.status_worker = None
-        self._ble_scan_thread = None
-        self._ble_scan_worker = None
+
+    def _ble_scan_running(self) -> bool:
+        if self._ble_scan_thread is None:
+            return False
+        try:
+            return self._ble_scan_thread.isRunning()
+        except RuntimeError:
+            self._clear_ble_scan_refs()
+            return False
+
+    @staticmethod
+    def _local_network_available() -> bool:
+        """Return whether Windows exposes a usable non-loopback IPv4 address."""
+        try:
+            addresses = socket.getaddrinfo(
+                socket.gethostname(), None, socket.AF_INET, socket.SOCK_DGRAM
+            )
+        except OSError:
+            return False
+        return any(
+            address and not address.startswith("127.") and address != "0.0.0.0"
+            for *_, sockaddr in addresses
+            for address in [sockaddr[0]]
+        )
+
+    def find_devices(self) -> None:
+        """Search LAN and Bluetooth together, then refresh all known states."""
+        if (
+            self._combined_search_active
+            or self._discovery_running()
+            or self._ble_scan_running()
+        ):
+            self.status_updated.emit("A device search is already in progress.")
+            return
+
+        has_network = self._local_network_available()
+        self._combined_search_active = True
+        self._search_pending = {"bluetooth"}
+        self._search_results = {
+            "lan": {
+                "available": has_network,
+                "found": 0,
+                "error": None if has_network else "No active local network connection",
+            },
+            "bluetooth": {
+                "available": None,
+                "found": 0,
+                "added": 0,
+                "seen": 0,
+                "error": None,
+            },
+        }
+        if has_network:
+            self._search_pending.add("lan")
+
+        self.device_search_started.emit()
+        self.status_updated.emit(
+            "Finding devices on the local network and over Bluetooth..."
+        )
+
+        if has_network:
+            if not self._start_lan_discovery(announce=False):
+                self._search_results["lan"].update(
+                    {"available": False, "error": "Search could not be started"}
+                )
+                self._finish_search_transport("lan")
+        if not self._start_ble_scan(announce=False):
+            self._search_results["bluetooth"].update(
+                {"available": False, "error": "Search could not be started"}
+            )
+            self._finish_search_transport("bluetooth")
 
     def discover_devices(self):
         """Start device discovery in background thread."""
+        self._start_lan_discovery(announce=True)
+
+    def _start_lan_discovery(self, *, announce: bool) -> bool:
         if self._discovery_running():
-            self.status_updated.emit("Discovery already in progress...")
-            return
+            if announce:
+                self.status_updated.emit("Local-network discovery is already in progress.")
+            return False
 
         self.discovery_started.emit()
-        self.status_updated.emit("Discovering devices...")
+        if announce:
+            self.status_updated.emit("Searching the local network for devices...")
 
         thread = QThread()
         worker = DeviceDiscoveryWorker()
@@ -240,6 +327,7 @@ class DeviceController(QObject):
         self.discovery_thread = thread
         self.discovery_worker = worker
         thread.start()
+        return True
 
     def _on_discovery_finished(
         self,
@@ -253,18 +341,52 @@ class DeviceController(QObject):
             discovered_devices: List of discovered devices
             selected_index: Index of the selected device
         """
-        self.devices = discovered_devices
-        self.selected_device_index = selected_index
+        selected_key = None
+        selected = self.get_selected_device()
+        if selected:
+            selected_key = self._device_key(selected)
 
-        if last_discovery_count == 0 and self.devices:
+        # LAN and Bluetooth search concurrently. Preserve a Bluetooth device
+        # that may have been added while the LAN worker was still running.
+        merged_devices = [dict(device) for device in discovered_devices]
+        discovered_keys = {self._device_key(device) for device in merged_devices}
+        for device in self.devices:
+            key = self._device_key(device)
+            if key not in discovered_keys:
+                merged_devices.append(dict(device))
+                discovered_keys.add(key)
+
+        self.devices = merged_devices
+        if selected_key:
+            self.selected_device_index = next(
+                (
+                    index
+                    for index, device in enumerate(self.devices)
+                    if self._device_key(device) == selected_key
+                ),
+                min(selected_index, max(0, len(self.devices) - 1)),
+            )
+        else:
+            self.selected_device_index = min(
+                selected_index, max(0, len(self.devices) - 1)
+            )
+
+        if self._combined_search_active:
+            self._search_results["lan"].update(
+                {"available": True, "found": last_discovery_count, "error": None}
+            )
+        elif last_discovery_count == 0 and self.devices:
             self.status_updated.emit(
                 f"No new LAN devices found; kept {len(self.devices)} saved device(s)"
             )
-        else:
+        elif not self._combined_search_active:
             self.status_updated.emit(f"Found {len(self.devices)} device(s)")
         self.devices_discovered.emit(self.devices)
         self.discovery_finished.emit()
-        self.refresh_device_states()
+        if self._combined_search_active:
+            self._finish_search_transport("lan")
+        else:
+            self.refresh_device_states()
 
         # Emit selected device
         device = self.get_selected_device()
@@ -277,8 +399,15 @@ class DeviceController(QObject):
         Args:
             error_message: Error message from discovery
         """
-        self.status_updated.emit(f"Discovery error: {error_message}")
+        if self._combined_search_active:
+            self._search_results["lan"].update(
+                {"available": False, "found": 0, "error": error_message}
+            )
+        else:
+            self.status_updated.emit(f"Local-network search unavailable: {error_message}")
         self.discovery_finished.emit()
+        if self._combined_search_active:
+            self._finish_search_transport("lan")
 
     def get_devices(self) -> List[Dict[str, Any]]:
         """Get the list of discovered devices.
@@ -299,14 +428,20 @@ class DeviceController(QObject):
         return str(device.get("mac") or device.get("ip") or device.get("model") or "?")
 
     def _default_state(self, device: Dict[str, Any]) -> Dict[str, Any]:
+        is_ble = self._is_ble(device)
         return {
             "power_on": None,
             "brightness": None,
             "color": None,
             "color_temp": None,
             "online": False,
-            "stale": True,
+            "stale": not is_ble,
+            "status_source": "unknown" if is_ble else "pending",
+            "readback_supported": not is_ble,
             "last_seen": None,
+            "last_command_at": None,
+            "last_output": None,
+            "active_output": None,
             "last_error": None,
             "device_key": self._device_key(device),
         }
@@ -334,6 +469,88 @@ class DeviceController(QObject):
         self.device_states[key] = state
         self.device_state_updated.emit(index, dict(state))
 
+    def _record_command_state(
+        self,
+        index: int,
+        updates: Dict[str, Any],
+        *,
+        output: Optional[str] = None,
+    ) -> None:
+        """Cache a successful command without pretending BLE has readback."""
+        device = self._device_at(index)
+        if not device:
+            return
+        is_ble = self._is_ble(device)
+        payload = {
+            "online": True,
+            "stale": not is_ble,
+            "status_source": "commanded" if is_ble else "pending",
+            "readback_supported": not is_ble,
+            "last_seen": time.time(),
+            "last_command_at": time.time(),
+            "last_error": None,
+        }
+        payload.update(updates)
+        if output:
+            payload["last_output"] = output
+        self._merge_device_state(index, payload)
+
+    def mark_sync_active(
+        self, mode: str, active_devices: List[Dict[str, Any]]
+    ) -> None:
+        """Expose active monitor/music output on matching device cards."""
+        active_keys = {self._device_key(device) for device in active_devices}
+        label = "Monitor sync" if mode == "monitor" else "Music sync"
+        for index, device in enumerate(self.devices):
+            if self._device_key(device) in active_keys:
+                self._merge_device_state(
+                    index,
+                    {
+                        "active_output": label,
+                        "online": True,
+                        "last_seen": time.time(),
+                        "last_error": None,
+                    },
+                )
+
+    def clear_sync_activity(self) -> None:
+        for index in range(len(self.devices)):
+            state = self.get_device_state_at(index)
+            if state.get("active_output") in {"Monitor sync", "Music sync"}:
+                self._merge_device_state(index, {"active_output": None})
+
+    def mark_device_output(
+        self,
+        device: Dict[str, Any],
+        label: str,
+        *,
+        active: bool = False,
+    ) -> None:
+        """Record output produced outside the standard color controls."""
+        key = self._device_key(device)
+        index = next(
+            (
+                candidate
+                for candidate, saved in enumerate(self.devices)
+                if self._device_key(saved) == key
+            ),
+            -1,
+        )
+        if index < 0:
+            return
+        updates: Dict[str, Any] = {
+            "active_output": label if active else None,
+            "last_output": None if active else label,
+        }
+        self._record_command_state(index, updates, output=None)
+
+    def clear_device_activity(self, device: Dict[str, Any]) -> None:
+        key = self._device_key(device)
+        for index, saved in enumerate(self.devices):
+            if self._device_key(saved) == key:
+                self._merge_device_state(index, {"active_output": None})
+                return
+
     def refresh_device_states(self) -> None:
         """Refresh current state for all known devices."""
         indexes = list(range(len(self.devices)))
@@ -345,6 +562,9 @@ class DeviceController(QObject):
 
     def _schedule_status_refresh(self, index: int) -> None:
         """Confirm an optimistic command with a few short LAN status retries."""
+        device = self._device_at(index)
+        if not device or self._is_ble(device):
+            return
         for delay_ms in (250, 700, 1300):
             QTimer.singleShot(
                 delay_ms,
@@ -355,11 +575,25 @@ class DeviceController(QObject):
         if self._status_running():
             return
 
-        indexed_devices = [
-            (idx, self.devices[idx])
-            for idx in indexes
-            if 0 <= idx < len(self.devices)
-        ]
+        indexed_devices = []
+        for idx in indexes:
+            if not (0 <= idx < len(self.devices)):
+                continue
+            device = self.devices[idx]
+            if self._is_ble(device):
+                state = self.get_device_state_at(idx)
+                if state.get("status_source") == "pending":
+                    self._merge_device_state(
+                        idx,
+                        {
+                            "stale": False,
+                            "status_source": "unknown",
+                            "readback_supported": False,
+                            "last_error": None,
+                        },
+                    )
+                continue
+            indexed_devices.append((idx, device))
         if not indexed_devices:
             return
 
@@ -489,15 +723,13 @@ class DeviceController(QObject):
             transport = self._send_color_temp(device, int(kelvin))
             from ...utils.colors import kelvin_to_rgb
 
-            self._merge_device_state(
+            self._record_command_state(
                 index,
                 {
                     "color": kelvin_to_rgb(int(kelvin)),
                     "color_temp": int(kelvin),
-                    "online": True,
-                    "stale": True,
-                    "last_error": None,
                 },
+                output=f"White {int(kelvin)}K",
             )
             self.status_updated.emit(
                 f"{device.get('model', 'Device')}: white {int(kelvin)}K via {transport}"
@@ -576,17 +808,21 @@ class DeviceController(QObject):
         address: str,
         model: str = "iDotMatrix",
         matrix_size: str = "32x32",
+        *,
+        announce: bool = True,
     ) -> bool:
         """Add a Bluetooth-LE device (e.g. an iDotMatrix pixel display)."""
         try:
             address = (address or "").strip()
             if not address:
-                self.status_updated.emit("A Bluetooth address is required.")
+                if announce:
+                    self.status_updated.emit("A Bluetooth address is required.")
                 return False
 
             for device in self.devices:
                 if device.get("ble_address") == address or device.get("mac") == address:
-                    self.status_updated.emit("Device already exists")
+                    if announce:
+                        self.status_updated.emit("Device already exists")
                     return False
 
             new_device = {
@@ -608,7 +844,10 @@ class DeviceController(QObject):
 
             self.device_added.emit(new_device)
             self.devices_discovered.emit(self.devices)
-            self.status_updated.emit(f"Added Bluetooth device: {model} ({address})")
+            if announce:
+                self.status_updated.emit(
+                    f"Added Bluetooth device: {model} ({address})"
+                )
             return True
         except Exception as e:
             self.status_updated.emit(f"Error adding device: {str(e)}")
@@ -672,12 +911,17 @@ class DeviceController(QObject):
         advertisement looks like an iDotMatrix panel; if none match, reports
         what was seen so the user can add by address instead.
         """
-        if getattr(self, "_ble_scan_thread", None) is not None:
-            self.status_updated.emit("Bluetooth scan already in progress...")
-            return
+        self._start_ble_scan(announce=True)
+
+    def _start_ble_scan(self, *, announce: bool) -> bool:
+        if self._ble_scan_running():
+            if announce:
+                self.status_updated.emit("Bluetooth search is already in progress.")
+            return False
 
         self.ble_scan_started.emit()
-        self.status_updated.emit("Scanning for Bluetooth devices...")
+        if announce:
+            self.status_updated.emit("Searching for nearby Bluetooth devices...")
 
         thread = QThread()
         worker = BleScanWorker()
@@ -696,25 +940,88 @@ class DeviceController(QObject):
         self._ble_scan_thread = thread
         self._ble_scan_worker = worker
         thread.start()
+        return True
 
     def _clear_ble_scan_refs(self) -> None:
         self._ble_scan_thread = None
         self._ble_scan_worker = None
 
     def _on_ble_scan_error(self, message: str) -> None:
-        self.status_updated.emit(f"Bluetooth scan unavailable: {message}")
+        if self._combined_search_active:
+            self._search_results["bluetooth"].update(
+                {"available": False, "found": 0, "error": message}
+            )
+        else:
+            self.status_updated.emit(f"Bluetooth search unavailable: {message}")
         self.ble_scan_finished.emit()
+        if self._combined_search_active:
+            self._finish_search_transport("bluetooth")
 
     def _on_ble_scan_finished(self, found: List[Dict[str, Any]]) -> None:
         likely = [d for d in found if d.get("likely")]
         added = 0
         for entry in likely:
             if self.add_ble_device_manually(
-                entry.get("ble_address", ""), entry.get("model") or "iDotMatrix"
+                entry.get("ble_address", ""),
+                entry.get("model") or "iDotMatrix",
+                announce=not self._combined_search_active,
             ):
                 added += 1
 
-        if added:
+        visible_addresses = {
+            str(entry.get("ble_address") or "").casefold()
+            for entry in found
+            if entry.get("ble_address")
+        }
+        for index, device in enumerate(self.devices):
+            if not self._is_ble(device):
+                continue
+            address = str(
+                device.get("ble_address") or device.get("mac") or ""
+            ).casefold()
+            if address and address in visible_addresses:
+                self._merge_device_state(
+                    index,
+                    {
+                        "online": True,
+                        "stale": False,
+                        "status_source": "seen",
+                        "readback_supported": False,
+                        "last_seen": time.time(),
+                        "last_error": None,
+                    },
+                )
+                continue
+
+            state = self.get_device_state_at(index)
+            # A connected BLE panel often stops advertising. Keep a successful
+            # command or active stream as the stronger signal; otherwise say
+            # only that the latest search could not see it.
+            if state.get("status_source") != "commanded" and not state.get(
+                "active_output"
+            ):
+                self._merge_device_state(
+                    index,
+                    {
+                        "online": False,
+                        "stale": False,
+                        "status_source": "not_seen",
+                        "readback_supported": False,
+                        "last_error": None,
+                    },
+                )
+
+        if self._combined_search_active:
+            self._search_results["bluetooth"].update(
+                {
+                    "available": True,
+                    "found": len(likely),
+                    "added": added,
+                    "seen": len(found),
+                    "error": None,
+                }
+            )
+        elif added:
             self.status_updated.emit(
                 f"Bluetooth scan added {added} iDotMatrix device(s)."
             )
@@ -738,6 +1045,43 @@ class DeviceController(QObject):
                 "panel is advertising (disconnect it from the phone app first)."
             )
         self.ble_scan_finished.emit()
+        if self._combined_search_active:
+            self._finish_search_transport("bluetooth")
+
+    def _finish_search_transport(self, transport: str) -> None:
+        self._search_pending.discard(transport)
+        if self._search_pending or not self._combined_search_active:
+            return
+
+        summary = {
+            name: dict(result) for name, result in self._search_results.items()
+        }
+        self._combined_search_active = False
+        self.device_search_finished.emit(summary)
+
+        lan = summary.get("lan", {})
+        bluetooth = summary.get("bluetooth", {})
+        issues = []
+        if not lan.get("available"):
+            issues.append("local network unavailable")
+        if not bluetooth.get("available"):
+            issues.append("Bluetooth unavailable")
+
+        found = int(lan.get("found", 0)) + int(bluetooth.get("found", 0))
+        if issues:
+            self.status_updated.emit(
+                "Device search complete — " + "; ".join(issues) + "."
+            )
+        elif found:
+            self.status_updated.emit(
+                f"Device search complete — found {found} supported "
+                f"device{'s' if found != 1 else ''}."
+            )
+        else:
+            self.status_updated.emit(
+                "Device search complete — no new supported devices found."
+            )
+        self.refresh_device_states()
 
     def remove_device(self, index: int) -> bool:
         """Remove device by index.
@@ -838,14 +1182,12 @@ class DeviceController(QObject):
                 return
 
             transport = self._send_turn(device, on)
-            self._merge_device_state(
+            self._record_command_state(
                 self.selected_device_index,
                 {
                     "power_on": on,
-                    "online": True,
-                    "stale": True,
-                    "last_error": None,
                 },
+                output="Off" if not on else "On",
             )
             self.status_updated.emit(
                 f"Device turned {'on' if on else 'off'} via {transport}"
@@ -871,13 +1213,10 @@ class DeviceController(QObject):
                 connection.switch_razer(self.server, device, on)
             finally:
                 self._close_server()
-            self._merge_device_state(
+            self._record_command_state(
                 self.selected_device_index,
-                {
-                    "online": True,
-                    "stale": True,
-                    "last_error": None,
-                },
+                {},
+                output="Razer mode" if on else "Standard mode",
             )
             self.status_updated.emit(f"Razer mode {'enabled' if on else 'disabled'}")
             self._schedule_status_refresh(self.selected_device_index)
@@ -899,14 +1238,12 @@ class DeviceController(QObject):
                 return
 
             transport = self._send_color(device, r, g, b)
-            self._merge_device_state(
+            self._record_command_state(
                 self.selected_device_index,
                 {
                     "color": (r, g, b),
-                    "online": True,
-                    "stale": True,
-                    "last_error": None,
                 },
+                output=f"#{r:02X}{g:02X}{b:02X}",
             )
             self.status_updated.emit(f"Set color to ({r}, {g}, {b}) via {transport}")
             self._schedule_status_refresh(self.selected_device_index)
@@ -927,13 +1264,10 @@ class DeviceController(QObject):
 
             bounded = max(0, min(100, brightness))
             transport = self._send_brightness(device, bounded)
-            self._merge_device_state(
+            self._record_command_state(
                 self.selected_device_index,
                 {
                     "brightness": bounded,
-                    "online": True,
-                    "stale": True,
-                    "last_error": None,
                 },
             )
             self.status_updated.emit(f"Set brightness to {bounded}% via {transport}")
@@ -955,14 +1289,12 @@ class DeviceController(QObject):
             return
         try:
             transport = self._send_turn(device, on)
-            self._merge_device_state(
+            self._record_command_state(
                 index,
                 {
                     "power_on": on,
-                    "online": True,
-                    "stale": True,
-                    "last_error": None,
                 },
+                output="Off" if not on else "On",
             )
             self.status_updated.emit(
                 f"{device.get('model', 'Device')} turned {'on' if on else 'off'} via {transport}"
@@ -982,14 +1314,12 @@ class DeviceController(QObject):
             return
         try:
             transport = self._send_color(device, r, g, b)
-            self._merge_device_state(
+            self._record_command_state(
                 index,
                 {
                     "color": (r, g, b),
-                    "online": True,
-                    "stale": True,
-                    "last_error": None,
                 },
+                output=f"#{r:02X}{g:02X}{b:02X}",
             )
             self.status_updated.emit(
                 f"{device.get('model', 'Device')}: color ({r}, {g}, {b}) via {transport}"
@@ -1005,13 +1335,10 @@ class DeviceController(QObject):
         try:
             bounded = max(0, min(100, brightness))
             transport = self._send_brightness(device, bounded)
-            self._merge_device_state(
+            self._record_command_state(
                 index,
                 {
                     "brightness": bounded,
-                    "online": True,
-                    "stale": True,
-                    "last_error": None,
                 },
             )
             self.status_updated.emit(
@@ -1096,7 +1423,11 @@ class DeviceController(QObject):
             pool.close_all()
         except Exception:
             pass
-        for thread_attr in ("status_thread", "discovery_thread"):
+        for thread_attr in (
+            "status_thread",
+            "discovery_thread",
+            "_ble_scan_thread",
+        ):
             thread = getattr(self, thread_attr, None)
             if thread is not None:
                 try:

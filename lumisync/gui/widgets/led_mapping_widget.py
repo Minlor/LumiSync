@@ -11,9 +11,9 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
-    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from ... import connection, led_mapping, utils
 from ...led_mapping import NormalizedRect
 from ..theme import qcolor
+from .product_controls import ProductSlider
 
 if TYPE_CHECKING:
     from ..controllers.sync_controller import SyncController
@@ -357,7 +358,7 @@ class LedMappingWidget(QWidget):
 
         depth_layout = QHBoxLayout()
         depth_layout.addWidget(QLabel("Capture depth"))
-        self.capture_depth_slider = QSlider(Qt.Orientation.Horizontal)
+        self.capture_depth_slider = ProductSlider(Qt.Orientation.Horizontal)
         self.capture_depth_slider.setRange(
             int(led_mapping.MIN_CAPTURE_DEPTH * 100),
             int(led_mapping.MAX_CAPTURE_DEPTH * 100),
@@ -607,6 +608,15 @@ class LedMappingWidget(QWidget):
                 self.selection_label.setText(f"Connection error: {str(e)[:30]}")
 
     def _reset_to_default(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Reset LED Mapping",
+            "Replace the current zone layout with the default mapping?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
         self.screen_preview.set_mapping(
             led_mapping.generate_screen_mapping(
                 self._segment_count,

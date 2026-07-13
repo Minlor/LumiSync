@@ -7,7 +7,7 @@ from typing import Set
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QColorDialog,
+    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -24,13 +25,14 @@ from ..controllers.device_controller import DeviceController
 from ..dialogs.add_device_dialog import AddDeviceDialog
 from ..resources.icons import IconKey, tinted_icon
 from ..theme import qcolor
-from ..utils.animations import animate_height
+from ..utils.animations import animate_height, animate_width
 from ..utils.flow_layout import FlowLayout
 from ..widgets.device_card import DeviceCard
+from ..widgets.device_inspector import DeviceInspector
 
 
 class DevicesView(QWidget):
-    """Card grid of devices with multi-select and bulk actions."""
+    """Quick device controls with a full-height details inspector."""
 
     def __init__(self, device_controller: DeviceController):
         super().__init__()
@@ -38,6 +40,10 @@ class DevicesView(QWidget):
 
         self._cards: list[DeviceCard] = []
         self._selected: Set[int] = set()
+        self._inspected_index = -1
+        self._inspected_key = ""
+        self._inspector_animation = None
+        self._group_selection_mode = False
 
         self._build()
         self._connect_signals()
@@ -46,38 +52,49 @@ class DevicesView(QWidget):
     # ------------------------------------------------------------------ build
 
     def _build(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 18)
-        root.setSpacing(14)
+        shell = QHBoxLayout(self)
+        shell.setContentsMargins(28, 24, 28, 28)
+        shell.setSpacing(16)
+
+        self.main_column = QWidget()
+        root = QVBoxLayout(self.main_column)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(18)
+        shell.addWidget(self.main_column, 1)
 
         # Header
+        page_header = QVBoxLayout()
+        page_header.setSpacing(3)
         header = QLabel("Devices")
         header.setProperty("role", "title")
-        root.addWidget(header)
+        page_header.addWidget(header)
+
+        intro = QLabel("Find, organize, and control the lights connected to LumiSync.")
+        intro.setProperty("role", "pageDescription")
+        intro.setWordWrap(True)
+        page_header.addWidget(intro)
+        root.addLayout(page_header)
 
         # Toolbar row
         toolbar = QHBoxLayout()
-        toolbar.setSpacing(8)
+        toolbar.setSpacing(10)
 
-        self.discover_button = QPushButton("Discover Devices")
-        self.discover_button.setObjectName("Primary")
-        self.discover_button.setProperty("role", "primary")
-        self.discover_button.setIcon(tinted_icon(IconKey.REFRESH, "#FFFFFF"))
-        self.discover_button.clicked.connect(self.controller.discover_devices)
-        toolbar.addWidget(self.discover_button)
+        self.find_devices_button = QPushButton("Find Devices")
+        self.find_devices_button.setObjectName("Primary")
+        self.find_devices_button.setProperty("role", "primary")
+        self.find_devices_button.setIcon(tinted_icon(IconKey.REFRESH, "#FFFFFF"))
+        self.find_devices_button.setToolTip(
+            "Search the local network and Bluetooth, then refresh saved devices"
+        )
+        self.find_devices_button.setAccessibleName("Find and refresh devices")
+        self.find_devices_button.clicked.connect(self.controller.find_devices)
+        toolbar.addWidget(self.find_devices_button)
 
-        self.add_button = QPushButton("Add Manually")
+        self.add_button = QPushButton("Add Device")
         self.add_button.setIcon(tinted_icon(IconKey.ADD, qcolor("text")))
+        self.add_button.setToolTip("Add a device using its connection details")
         self.add_button.clicked.connect(self._on_add_manual)
         toolbar.addWidget(self.add_button)
-
-        self.scan_ble_button = QPushButton("Scan Bluetooth")
-        self.scan_ble_button.setIcon(tinted_icon(IconKey.BLUETOOTH, qcolor("text")))
-        self.scan_ble_button.setToolTip(
-            "Scan for iDotMatrix / Bluetooth devices (requires the 'bleak' package)."
-        )
-        self.scan_ble_button.clicked.connect(self.controller.scan_ble_devices)
-        toolbar.addWidget(self.scan_ble_button)
 
         toolbar.addSpacing(8)
         toolbar.addStretch(1)
@@ -86,54 +103,65 @@ class DevicesView(QWidget):
         self.summary_label.setProperty("role", "subtle")
         toolbar.addWidget(self.summary_label)
 
-        self.select_all_button = QPushButton("Select all")
-        self.select_all_button.setObjectName("LinkButton")
-        self.select_all_button.clicked.connect(self._select_all)
-        toolbar.addWidget(self.select_all_button)
-
-        self.clear_select_button = QPushButton("Clear")
-        self.clear_select_button.setObjectName("LinkButton")
-        self.clear_select_button.clicked.connect(self._clear_selection)
-        toolbar.addWidget(self.clear_select_button)
+        self.group_mode_button = QPushButton("Create Group")
+        self.group_mode_button.setIcon(
+            tinted_icon(IconKey.ADD, qcolor("text"))
+        )
+        self.group_mode_button.setToolTip(
+            "Choose devices by clicking their cards, then save them as a group"
+        )
+        self.group_mode_button.clicked.connect(self._start_group_selection)
+        toolbar.addWidget(self.group_mode_button)
 
         root.addLayout(toolbar)
 
-        # Bulk action bar (animated, hidden until selection)
-        self.bulk_bar = QFrame()
-        self.bulk_bar.setObjectName("BulkBar")
-        self.bulk_bar.setMaximumHeight(0)
-        bulk_layout = QHBoxLayout(self.bulk_bar)
-        bulk_layout.setContentsMargins(12, 8, 12, 8)
-        bulk_layout.setSpacing(8)
+        # A combined search can partially succeed. Keep each transport visible
+        # so an empty result is not confused with unavailable hardware.
+        self.search_status = QFrame()
+        self.search_status.setObjectName("DeviceSearchStatus")
+        status_layout = QHBoxLayout(self.search_status)
+        status_layout.setContentsMargins(14, 9, 14, 9)
+        status_layout.setSpacing(18)
 
-        self.bulk_label = QLabel("")
-        self.bulk_label.setProperty("role", "strong")
-        bulk_layout.addWidget(self.bulk_label)
-        bulk_layout.addStretch(1)
+        self.network_status = QLabel("Local network · Not checked")
+        self.network_status.setProperty("role", "status")
+        status_layout.addWidget(self.network_status)
 
-        self.bulk_on = QPushButton("Turn On")
-        self.bulk_on.clicked.connect(lambda: self._bulk_power(True))
-        bulk_layout.addWidget(self.bulk_on)
+        self.bluetooth_status = QLabel("Bluetooth · Not checked")
+        self.bluetooth_status.setProperty("role", "status")
+        status_layout.addWidget(self.bluetooth_status)
+        status_layout.addStretch(1)
 
-        self.bulk_off = QPushButton("Turn Off")
-        self.bulk_off.clicked.connect(lambda: self._bulk_power(False))
-        bulk_layout.addWidget(self.bulk_off)
+        self.search_status.setVisible(False)
+        root.addWidget(self.search_status)
 
-        self.bulk_color = QPushButton("Set Color")
-        self.bulk_color.clicked.connect(self._bulk_color)
-        bulk_layout.addWidget(self.bulk_color)
+        # Group picking is an explicit mode. In this mode the whole device card
+        # becomes the selection target; outside it, the card opens details.
+        self.group_bar = QFrame()
+        self.group_bar.setObjectName("GroupSelectionBar")
+        self.group_bar.setMaximumHeight(0)
+        group_layout = QHBoxLayout(self.group_bar)
+        group_layout.setContentsMargins(16, 10, 12, 10)
+        group_layout.setSpacing(10)
 
-        self.bulk_group = QPushButton("Save as Group")
-        self.bulk_group.clicked.connect(self._bulk_save_group)
-        bulk_layout.addWidget(self.bulk_group)
+        self.group_selection_label = QLabel(
+            "Choose the devices that belong in this group"
+        )
+        self.group_selection_label.setProperty("role", "strong")
+        group_layout.addWidget(self.group_selection_label)
+        group_layout.addStretch(1)
 
-        self.bulk_remove = QPushButton("Remove")
-        self.bulk_remove.setObjectName("DangerButton")
-        self.bulk_remove.setProperty("role", "danger")
-        self.bulk_remove.clicked.connect(self._bulk_remove)
-        bulk_layout.addWidget(self.bulk_remove)
+        self.cancel_group_button = QPushButton("Cancel")
+        self.cancel_group_button.clicked.connect(self._cancel_group_selection)
+        group_layout.addWidget(self.cancel_group_button)
 
-        root.addWidget(self.bulk_bar)
+        self.save_group_button = QPushButton("Save Group")
+        self.save_group_button.setObjectName("Primary")
+        self.save_group_button.setProperty("role", "primary")
+        self.save_group_button.setEnabled(False)
+        self.save_group_button.clicked.connect(self._save_group_selection)
+        group_layout.addWidget(self.save_group_button)
+        root.addWidget(self.group_bar)
 
         # Card grid (FlowLayout in a scroll area)
         self.scroll = QScrollArea()
@@ -141,23 +169,67 @@ class DevicesView(QWidget):
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         self.grid_host = QWidget()
-        self.grid_layout = FlowLayout(self.grid_host, h_spacing=14, v_spacing=14)
+        self.grid_layout = FlowLayout(self.grid_host, h_spacing=16, v_spacing=16)
         self.grid_layout.setContentsMargins(0, 0, 0, 0)
 
         self.scroll.setWidget(self.grid_host)
-        root.addWidget(self.scroll, 1)
+
+        self.inspector = DeviceInspector()
+        self.inspector.close_requested.connect(self._close_inspector)
+        self.inspector.power_clicked.connect(self.controller.toggle_power_at)
+        self.inspector.set_default_requested.connect(
+            self._on_card_primary_clicked
+        )
+        self.inspector.color_picked.connect(self._on_card_color_picked)
+        self.inspector.brightness_changed.connect(
+            self.controller.set_brightness_at
+        )
+        self.inspector.color_temp_changed.connect(
+            self.controller.set_color_temperature_at
+        )
+        self.inspector.zone_count_requested.connect(self._on_card_zone_count)
+        self.inspector.zone_count_reset_requested.connect(
+            self._on_card_zone_count_reset
+        )
+        self.inspector.remove_requested.connect(self._on_card_remove)
+
+        self.inspector_scroll = QScrollArea()
+        self.inspector_scroll.setObjectName("DeviceInspectorScroll")
+        self.inspector_scroll.setWidgetResizable(True)
+        self.inspector_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.inspector_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.inspector_scroll.setWidget(self.inspector)
+        self.inspector_scroll.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding
+        )
+        self.inspector_scroll.setMinimumWidth(0)
+        self.inspector_scroll.setMaximumWidth(0)
+        self.inspector_scroll.setVisible(False)
+
+        self.content_host = QWidget()
+        content_layout = QVBoxLayout(self.content_host)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        content_layout.addWidget(self.scroll, 1)
+        root.addWidget(self.content_host, 1)
 
         # Empty state label
         self.empty_label = QLabel(
-            "No devices yet.\n\nClick “Discover Devices” to find Govee lights on your "
-            "network, “Scan Bluetooth” for iDotMatrix panels, or “Add Manually” "
-            "to add one by IP or Bluetooth address."
+            "No devices yet\n\nChoose Find Devices to search your local network and "
+            "nearby Bluetooth panels, or add a device using its connection details."
         )
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_label.setWordWrap(True)
         self.empty_label.setProperty("role", "empty")
         self.empty_label.setVisible(False)
         root.addWidget(self.empty_label)
+
+        # The inspector is a peer of the entire page column, so it spans from
+        # the page header to the bottom edge instead of starting below the
+        # toolbar like a small card drawer.
+        shell.addWidget(self.inspector_scroll)
 
     # ------------------------------------------------------------------ wiring
 
@@ -166,26 +238,83 @@ class DevicesView(QWidget):
         self.controller.device_added.connect(lambda *_: self._rebuild_cards())
         self.controller.device_removed.connect(lambda *_: self._rebuild_cards())
         self.controller.device_state_updated.connect(self._on_device_state_updated)
-        self.controller.discovery_started.connect(self._on_discovery_started)
-        self.controller.discovery_finished.connect(self._on_discovery_finished)
-        self.controller.ble_scan_started.connect(self._on_ble_scan_started)
-        self.controller.ble_scan_finished.connect(self._on_ble_scan_finished)
+        self.controller.device_search_started.connect(self._on_search_started)
+        self.controller.device_search_finished.connect(self._on_search_finished)
 
-    def _on_discovery_started(self) -> None:
-        self.discover_button.setEnabled(False)
-        self.discover_button.setText("Discovering…")
+    def _set_transport_status(
+        self,
+        label: QLabel,
+        text: str,
+        state: str,
+        tooltip: str = "",
+    ) -> None:
+        label.setText(text)
+        label.setProperty("statusState", state)
+        label.setToolTip(tooltip)
+        label.style().unpolish(label)
+        label.style().polish(label)
 
-    def _on_discovery_finished(self) -> None:
-        self.discover_button.setEnabled(True)
-        self.discover_button.setText("Discover Devices")
+    def _on_search_started(self) -> None:
+        self.find_devices_button.setEnabled(False)
+        self.find_devices_button.setText("Finding devices…")
+        self.search_status.setVisible(True)
+        self._set_transport_status(
+            self.network_status, "Local network · Checking…", "warning"
+        )
+        self._set_transport_status(
+            self.bluetooth_status, "Bluetooth · Checking…", "warning"
+        )
 
-    def _on_ble_scan_started(self) -> None:
-        self.scan_ble_button.setEnabled(False)
-        self.scan_ble_button.setText("Scanning…")
+    def _on_search_finished(self, summary: dict) -> None:
+        self.find_devices_button.setEnabled(True)
+        self.find_devices_button.setText("Find Devices")
 
-    def _on_ble_scan_finished(self) -> None:
-        self.scan_ble_button.setEnabled(True)
-        self.scan_ble_button.setText("Scan Bluetooth")
+        lan = summary.get("lan", {})
+        if lan.get("available"):
+            found = int(lan.get("found", 0))
+            text = (
+                f"Local network · {found} device{'s' if found != 1 else ''} found"
+                if found
+                else "Local network · Ready, no new devices"
+            )
+            self._set_transport_status(self.network_status, text, "online")
+        else:
+            error = str(lan.get("error") or "No active network connection")
+            self._set_transport_status(
+                self.network_status,
+                "Local network · Unavailable",
+                "warning",
+                error,
+            )
+
+        bluetooth = summary.get("bluetooth", {})
+        if bluetooth.get("available"):
+            found = int(bluetooth.get("found", 0))
+            seen = int(bluetooth.get("seen", 0))
+            text = (
+                f"Bluetooth · {found} supported panel{'s' if found != 1 else ''} found"
+                if found
+                else "Bluetooth · Ready, no supported panels"
+            )
+            tooltip = (
+                f"{seen} Bluetooth device{'s' if seen != 1 else ''} were visible."
+                if seen
+                else "Bluetooth is available, but no devices were advertising."
+            )
+            self._set_transport_status(
+                self.bluetooth_status, text, "online", tooltip
+            )
+        else:
+            error = str(
+                bluetooth.get("error")
+                or "Bluetooth is turned off or unavailable"
+            )
+            self._set_transport_status(
+                self.bluetooth_status,
+                "Bluetooth · Unavailable",
+                "warning",
+                error,
+            )
 
     # ------------------------------------------------------------------ cards
 
@@ -201,22 +330,35 @@ class DevicesView(QWidget):
         max_idx = len(self.controller.devices) - 1
         self._selected = {i for i in self._selected if 0 <= i <= max_idx}
 
+        self._inspected_index = next(
+            (
+                index
+                for index, device in enumerate(self.controller.devices)
+                if self._device_key(device) == self._inspected_key
+            ),
+            -1,
+        )
+        if self._inspected_index < 0:
+            self._inspected_key = ""
+
         for idx, device in enumerate(self.controller.devices):
             card = DeviceCard(idx, device, self.grid_host)
+            card.set_group_selection_mode(self._group_selection_mode)
             card.set_checked(idx in self._selected)
             card.set_primary(idx == self.controller.selected_device_index)
+            card.set_inspected(idx == self._inspected_index)
             card.set_state(self.controller.get_device_state_at(idx))
             card.selection_changed.connect(self._on_card_selection_changed)
-            card.primary_clicked.connect(self._on_card_primary_clicked)
+            card.details_requested.connect(self._open_inspector)
             card.power_clicked.connect(self.controller.toggle_power_at)
-            card.color_picked.connect(self._on_card_color_picked)
             card.brightness_changed.connect(self.controller.set_brightness_at)
-            card.color_temp_changed.connect(self.controller.set_color_temperature_at)
-            card.zone_count_requested.connect(self._on_card_zone_count)
-            card.zone_count_reset_requested.connect(self._on_card_zone_count_reset)
-            card.remove_requested.connect(self._on_card_remove)
             self._cards.append(card)
             self.grid_layout.addWidget(card)
+
+        if self._inspected_index >= 0:
+            self._populate_inspector()
+        elif self.inspector_scroll.isVisible():
+            self._hide_inspector_immediately()
 
         self._update_summary()
         self._update_empty_state()
@@ -225,42 +367,115 @@ class DevicesView(QWidget):
     def _update_empty_state(self) -> None:
         empty = not self.controller.devices
         self.empty_label.setVisible(empty)
-        self.scroll.setVisible(not empty)
-        # Hide selection actions when there's only 1 or 0 devices
-        multi = len(self.controller.devices) > 1
-        self.select_all_button.setVisible(multi)
-        self.clear_select_button.setVisible(multi)
+        self.content_host.setVisible(not empty)
 
     def _update_summary(self) -> None:
         total = len(self.controller.devices)
         if total == 0:
             self.summary_label.setText("")
-        elif self._selected:
-            self.summary_label.setText(f"{len(self._selected)} of {total} selected")
         else:
             self.summary_label.setText(f"{total} device{'s' if total != 1 else ''}")
-        self._update_bulk_bar()
+        self.group_mode_button.setEnabled(total > 0 and not self._group_selection_mode)
+        self._update_group_bar()
 
-    def _update_bulk_bar(self) -> None:
+    def _update_group_bar(self) -> None:
         n = len(self._selected)
-        target = 56 if n > 0 else 0
-        self.bulk_label.setText(f"{n} selected" if n else "")
-        if self.bulk_bar.maximumHeight() != target:
-            animate_height(self.bulk_bar, target, duration=180)
+        target = 60 if self._group_selection_mode else 0
+        self.group_selection_label.setText(
+            f"{n} device{'s' if n != 1 else ''} chosen · click cards to change"
+            if n
+            else "Choose devices by clicking their cards"
+        )
+        self.save_group_button.setEnabled(n > 0)
+        if self.group_bar.maximumHeight() != target:
+            animate_height(self.group_bar, target, duration=180)
+
+    @staticmethod
+    def _device_key(device: dict) -> str:
+        return str(
+            device.get("ble_address")
+            or device.get("mac")
+            or device.get("ip")
+            or device.get("model")
+            or ""
+        )
+
+    def _open_inspector(self, index: int) -> None:
+        if not (0 <= index < len(self.controller.devices)):
+            return
+        self._stop_inspector_animation()
+        self._inspected_index = index
+        self._inspected_key = self._device_key(self.controller.devices[index])
+        for card in self._cards:
+            card.set_inspected(card._index == index)
+        self._populate_inspector()
+
+        if not self.inspector_scroll.isVisible():
+            self.inspector_scroll.setMaximumWidth(0)
+            self.inspector_scroll.setVisible(True)
+        self._inspector_animation = animate_width(
+            self.inspector_scroll, 444, duration=210
+        )
+
+    def _populate_inspector(self) -> None:
+        index = self._inspected_index
+        if not (0 <= index < len(self.controller.devices)):
+            return
+        self.inspector.set_device(
+            index,
+            self.controller.devices[index],
+            self.controller.get_device_state_at(index),
+            primary=index == self.controller.selected_device_index,
+        )
+
+    def _close_inspector(self) -> None:
+        self._stop_inspector_animation()
+        self._inspected_index = -1
+        self._inspected_key = ""
+        for card in self._cards:
+            card.set_inspected(False)
+
+        def finish() -> None:
+            if self._inspected_index < 0:
+                self.inspector_scroll.setVisible(False)
+
+        self._inspector_animation = animate_width(
+            self.inspector_scroll, 0, duration=150, on_finished=finish
+        )
+
+    def _hide_inspector_immediately(self) -> None:
+        self._stop_inspector_animation()
+        self._inspected_index = -1
+        self._inspected_key = ""
+        self.inspector_scroll.setMaximumWidth(0)
+        self.inspector_scroll.setVisible(False)
+
+    def _stop_inspector_animation(self) -> None:
+        if self._inspector_animation is None:
+            return
+        try:
+            self._inspector_animation.stop()
+        except RuntimeError:
+            pass
+        self._inspector_animation = None
 
     # ------------------------------------------------------------------ card slots
 
     def _on_card_selection_changed(self, index: int, selected: bool) -> None:
+        if not self._group_selection_mode:
+            return
         if selected:
             self._selected.add(index)
         else:
             self._selected.discard(index)
-        self._update_summary()
+        self._update_group_bar()
 
     def _on_card_primary_clicked(self, index: int) -> None:
         self.controller.select_device(index)
         for card in self._cards:
             card.set_primary(card._index == index)
+        if self._inspected_index >= 0:
+            self._populate_inspector()
 
     def _on_card_color_picked(self, index: int, color: QColor) -> None:
         self.controller.set_color_at(index, color.red(), color.green(), color.blue())
@@ -268,85 +483,117 @@ class DevicesView(QWidget):
     def _on_device_state_updated(self, index: int, state: dict) -> None:
         if 0 <= index < len(self._cards):
             self._cards[index].set_state(state)
+        if index == self._inspected_index:
+            self.inspector.set_state(state)
 
     def _on_card_remove(self, index: int) -> None:
+        if not (0 <= index < len(self.controller.devices)):
+            return
         device = self.controller.devices[index]
+        address = (
+            device.get("ble_address")
+            or device.get("ip")
+            or device.get("mac")
+            or "unknown address"
+        )
         reply = QMessageBox.question(
             self, "Remove device",
-            f"Remove '{device.get('model', 'Unknown')}' ({device.get('ip', '?')})?",
+            f"Remove '{device.get('model', 'Unknown')}' ({address})?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
             self.controller.remove_device(index)
 
     def _on_card_zone_count(self, index: int) -> None:
+        if not (0 <= index < len(self.controller.devices)):
+            return
         device = self.controller.devices[index]
         current = connection.get_segment_count(device)
-        value, accepted = QInputDialog.getInt(
-            self,
-            "Set zone count",
-            "Zones:",
-            current,
-            1,
-            255,
-            1,
-        )
-        if accepted:
-            self.controller.set_zone_count_at(index, value)
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("Set Zone Count")
+        dialog.setLabelText("Number of LED zones")
+        dialog.setInputMode(QInputDialog.InputMode.IntInput)
+        dialog.setIntRange(1, 255)
+        dialog.setIntStep(1)
+        dialog.setIntValue(current)
+        dialog.setOkButtonText("Save Zones")
+        if dialog.exec():
+            self.controller.set_zone_count_at(index, dialog.intValue())
 
     def _on_card_zone_count_reset(self, index: int) -> None:
         self.controller.set_zone_count_at(index, None)
 
-    # ------------------------------------------------------------------ bulk
+    # ---------------------------------------------------------- group builder
 
-    def _select_all(self) -> None:
-        self._selected = set(range(len(self.controller.devices)))
+    def _start_group_selection(self) -> None:
+        if not self.controller.devices:
+            return
+        self._group_selection_mode = True
+        self._selected.clear()
+        self._close_inspector()
         for card in self._cards:
-            card.set_checked(True)
+            card.set_group_selection_mode(True)
+            card.set_checked(False)
+        self.group_mode_button.setEnabled(False)
         self._update_summary()
 
-    def _clear_selection(self) -> None:
+    def _cancel_group_selection(self) -> None:
+        self._finish_group_selection()
+
+    def _finish_group_selection(self) -> None:
+        self._group_selection_mode = False
         self._selected.clear()
         for card in self._cards:
             card.set_checked(False)
+            card.set_group_selection_mode(False)
         self._update_summary()
 
-    def _bulk_power(self, on: bool) -> None:
-        for idx in sorted(self._selected):
-            self.controller.turn_on_off_at(idx, on)
-
-    def _bulk_color(self) -> None:
+    def _save_group_selection(self) -> None:
         if not self._selected:
             return
-        color = QColorDialog.getColor(QColor("#7C5CFF"), self, "Choose color")
-        if not color.isValid():
-            return
-        for idx in sorted(self._selected):
-            self.controller.set_color_at(idx, color.red(), color.green(), color.blue())
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("Save Sync Group")
+        dialog.setLabelText("Group name")
+        dialog.setInputMode(QInputDialog.InputMode.TextInput)
+        dialog.setOkButtonText("Save Group")
+        dialog.setCancelButtonText("Cancel")
 
-    def _bulk_save_group(self) -> None:
-        if not self._selected:
-            return
-        name, ok = QInputDialog.getText(
-            self, "Save Sync Group", "Group name:"
+        button_box = dialog.findChild(QDialogButtonBox)
+        save_button = (
+            button_box.button(QDialogButtonBox.StandardButton.Ok)
+            if button_box is not None
+            else None
         )
-        if ok and name.strip():
-            self.controller.save_group(name.strip(), sorted(self._selected))
+        if save_button is not None:
+            save_button.setEnabled(False)
+            dialog.textValueChanged.connect(
+                lambda text: save_button.setEnabled(bool(text.strip()))
+            )
 
-    def _bulk_remove(self) -> None:
-        if not self._selected:
+        if not dialog.exec():
             return
-        reply = QMessageBox.question(
-            self, "Remove devices",
-            f"Remove {len(self._selected)} selected device(s)?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        name = dialog.textValue().strip()
+        if not name:
+            self.controller.status_updated.emit("Enter a name for the sync group.")
             return
-        # Remove from highest index down to keep lower indices valid
-        for idx in sorted(self._selected, reverse=True):
-            self.controller.remove_device(idx)
-        self._selected.clear()
+
+        existing = {
+            str(group.get("name", "")).strip().casefold()
+            for group in self.controller.get_groups()
+        }
+        if name.casefold() in existing:
+            replace = QMessageBox.question(
+                self,
+                "Replace Sync Group",
+                f"A group named '{name}' already exists. Replace its device list?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if replace != QMessageBox.StandardButton.Yes:
+                return
+        if self.controller.save_group(name, sorted(self._selected)):
+            self._finish_group_selection()
 
     # ------------------------------------------------------------------ misc
 

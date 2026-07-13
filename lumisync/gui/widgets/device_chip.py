@@ -1,169 +1,260 @@
-"""Device chip + chip strip — used by the Sync Modes view to pick which
-devices participate in each sync mode.
+"""Visible target controls used by the Sync Modes view.
+
+Every device and saved group is shown directly.  The controls behave like
+small power buttons: enabled targets participate in the mode, while a group
+button enables or disables all of its current members.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QMenu,
     QPushButton,
-    QToolButton,
+    QVBoxLayout,
     QWidget,
 )
 
+from ..resources.icons import IconKey, tinted_icon
+from ..theme.tokens import TOKENS
+from ..utils.flow_layout import FlowLayout
 
 
 def device_id(device: Dict[str, Any]) -> str:
-    """Stable identifier for a device — MAC if available, else IP."""
+    """Return the stable identifier used by sync target selections."""
     return str(device.get("mac") or device.get("ip") or device.get("model") or "?")
 
 
-class DeviceChipStrip(QFrame):
-    """Horizontal strip of device chips for "devices included in this sync".
+def group_member_ids(group: Dict[str, Any], valid_ids: Iterable[str]) -> List[str]:
+    """Return a group's valid device ids, preserving its stored order."""
+    valid = set(valid_ids)
+    return [str(member) for member in group.get("devices", []) if str(member) in valid]
 
-    Emits `selection_changed(list[str])` of selected device ids.
+
+class DeviceChipStrip(QFrame):
+    """Direct device and group enable controls for one sync mode.
+
+    ``selection_changed`` always emits resolved device ids. Group selection is
+    therefore a convenient UI operation rather than a second persistence model.
     """
 
     selection_changed = Signal(list)
 
-    def __init__(self, label: str = "Devices", parent: Optional[QWidget] = None):
+    def __init__(self, label: str = "Targets", parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setObjectName("DeviceChipStrip")
 
         self._devices: List[Dict[str, Any]] = []
+        self._groups: List[Dict[str, Any]] = []
         self._selected_ids: Set[str] = set()
+        self._target_buttons: List[QPushButton] = []
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(7)
 
-        self._label = QLabel(label + ":")
-        self._label.setProperty("role", "subtle")
-        layout.addWidget(self._label)
+        heading = QHBoxLayout()
+        heading.setSpacing(8)
+        self._label = QLabel(label)
+        self._label.setProperty("role", "sectionLabel")
+        heading.addWidget(self._label)
+        heading.addStretch(1)
+        self._summary = QLabel()
+        self._summary.setProperty("role", "subtle")
+        heading.addWidget(self._summary)
+        root.addLayout(heading)
 
-        # Chip container — chips added dynamically
-        self._chips_layout = QHBoxLayout()
-        self._chips_layout.setSpacing(4)
-        layout.addLayout(self._chips_layout)
-        layout.addStretch(1)
+        self._device_host = QWidget()
+        self._device_layout = FlowLayout(
+            self._device_host,
+            h_spacing=6,
+            v_spacing=6,
+        )
+        root.addWidget(self._device_host)
 
-        self._edit_button = QToolButton()
-        self._edit_button.setText("Edit ▾")
-        self._edit_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._edit_button.setProperty("role", "link")
-        self._edit_button.clicked.connect(self._open_picker)
-        layout.addWidget(self._edit_button)
+        self._group_heading = QLabel("Saved groups")
+        self._group_heading.setProperty("role", "subtle")
+        root.addWidget(self._group_heading)
+
+        self._group_host = QWidget()
+        self._group_layout = FlowLayout(
+            self._group_host,
+            h_spacing=6,
+            v_spacing=6,
+        )
+        root.addWidget(self._group_host)
+
+        self._empty_groups = QLabel(
+            "No groups yet — create one from these targets or on Devices."
+        )
+        self._empty_groups.setProperty("role", "hint")
+        self._empty_groups.setWordWrap(True)
+        root.addWidget(self._empty_groups)
 
     # ------------------------------------------------------------------ public
 
-    def set_devices(self, devices: List[Dict[str, Any]], default_ids: Optional[List[str]] = None) -> None:
+    def set_devices(
+        self,
+        devices: List[Dict[str, Any]],
+        default_ids: Optional[List[str]] = None,
+    ) -> None:
         self._devices = list(devices)
-        # Keep selection only for ids that still exist; if empty, use caller
-        # defaults so new mode selections start conservatively.
-        valid_ids = {device_id(d) for d in self._devices}
-        self._selected_ids = {sid for sid in self._selected_ids if sid in valid_ids}
+        valid_ids = {device_id(device) for device in self._devices}
+        self._selected_ids.intersection_update(valid_ids)
         if not self._selected_ids and self._devices:
             defaults = [sid for sid in (default_ids or []) if sid in valid_ids]
             self._selected_ids = set(defaults or [device_id(self._devices[0])])
-        self._refresh_chips()
+        self._refresh_targets()
+
+    def set_groups(self, groups: List[Dict[str, Any]]) -> None:
+        self._groups = [dict(group) for group in groups if group.get("name")]
+        self._refresh_targets()
 
     def set_selected_ids(self, ids: List[str]) -> None:
-        valid_ids = {device_id(d) for d in self._devices}
+        valid_ids = {device_id(device) for device in self._devices}
         self._selected_ids = {sid for sid in ids if sid in valid_ids}
-        self._refresh_chips()
+        self._refresh_targets()
 
     def selected_ids(self) -> List[str]:
-        return [sid for sid in (device_id(d) for d in self._devices) if sid in self._selected_ids]
+        return [
+            sid
+            for sid in (device_id(device) for device in self._devices)
+            if sid in self._selected_ids
+        ]
 
     def selected_devices(self) -> List[Dict[str, Any]]:
-        return [d for d in self._devices if device_id(d) in self._selected_ids]
+        return [
+            device
+            for device in self._devices
+            if device_id(device) in self._selected_ids
+        ]
 
     # ------------------------------------------------------------------ render
 
-    def _refresh_chips(self) -> None:
-        # Clear chips
-        while self._chips_layout.count():
-            item = self._chips_layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
+    @staticmethod
+    def _clear_layout(layout: FlowLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.deleteLater()
+
+    @staticmethod
+    def _repolish(widget: QWidget) -> None:
+        style = widget.style()
+        style.unpolish(widget)
+        style.polish(widget)
+        widget.update()
+
+    def _refresh_targets(self) -> None:
+        self._clear_layout(self._device_layout)
+        self._clear_layout(self._group_layout)
+        self._target_buttons = []
+
+        valid_ids = {device_id(device) for device in self._devices}
+        for device in self._devices:
+            sid = device_id(device)
+            model = str(device.get("model") or "Device")
+            location = str(device.get("ip") or device.get("mac") or "")
+            button = self._make_target_button(
+                model,
+                sid in self._selected_ids,
+                "device",
+                f"Include or exclude {model} from this sync mode"
+                + (f"\n{location}" if location else ""),
+            )
+            button.clicked.connect(
+                lambda checked=False, target_id=sid: self._toggle_device(target_id)
+            )
+            self._device_layout.addWidget(button)
 
         if not self._devices:
-            empty = QLabel("No devices")
-            empty.setProperty("role", "hint")
-            self._chips_layout.addWidget(empty)
-            return
+            empty = QLabel("No devices available")
+            empty.setProperty("role", "warn")
+            self._device_layout.addWidget(empty)
 
-        # Show up to 4 chips inline; overflow → "+N more"
-        selected = self.selected_devices()
-        visible = selected[:4]
-        overflow = max(0, len(selected) - len(visible))
+        group_count = 0
+        for group in self._groups:
+            members = group_member_ids(group, valid_ids)
+            if not members:
+                continue
+            group_count += 1
+            enabled = all(member in self._selected_ids for member in members)
+            name = str(group.get("name") or "Group")
+            count_text = "device" if len(members) == 1 else "devices"
+            button = self._make_target_button(
+                f"{name} · {len(members)}",
+                enabled,
+                "group",
+                f"Enable or disable all {len(members)} {count_text} in {name}",
+            )
+            button.clicked.connect(
+                lambda checked=False, member_ids=tuple(members): self._toggle_group(member_ids)
+            )
+            self._group_layout.addWidget(button)
 
-        for d in visible:
-            chip = self._make_chip(d)
-            self._chips_layout.addWidget(chip)
+        self._group_heading.setVisible(bool(group_count))
+        self._group_host.setVisible(bool(group_count))
+        self._empty_groups.setVisible(not group_count)
 
-        if overflow:
-            more = QLabel(f"+{overflow} more")
-            more.setProperty("role", "subtle")
-            self._chips_layout.addWidget(more)
+        selected = len(self._selected_ids)
+        total = len(self._devices)
+        self._summary.setText(f"{selected} of {total} on" if total else "None available")
+        self._summary.setProperty("state", "active" if selected else "inactive")
+        self._repolish(self._summary)
 
-        if not selected:
-            none = QLabel("(none — sync disabled)")
-            none.setProperty("role", "warn")
-            self._chips_layout.addWidget(none)
+    def _make_target_button(
+        self,
+        text: str,
+        enabled: bool,
+        kind: str,
+        tooltip: str,
+    ) -> QPushButton:
+        button = QPushButton(text)
+        button.setCheckable(True)
+        button.setChecked(enabled)
+        button.setProperty("chip", True)
+        button.setProperty("active", enabled)
+        button.setProperty("targetKind", kind)
+        button.setIcon(
+            tinted_icon(
+                IconKey.POWER,
+                TOKENS["accent_bright"] if enabled else TOKENS["text_disabled"],
+                14,
+            )
+        )
+        button.setIconSize(QSize(14, 14))
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setToolTip(tooltip)
+        state = "enabled" if enabled else "disabled"
+        button.setAccessibleName(f"{text}, {state} for this sync mode")
+        self._target_buttons.append(button)
+        return button
 
-    def _make_chip(self, device: Dict[str, Any]) -> QPushButton:
-        chip = QPushButton(device.get("model", "?"))
-        chip.setProperty("chip", True)
-        chip.setProperty("active", True)
-        chip.setCursor(Qt.CursorShape.PointingHandCursor)
-        chip.setToolTip(device.get("ip", ""))
-        chip.clicked.connect(self._open_picker)
-        return chip
+    # ------------------------------------------------------------------ actions
 
-    def _open_picker(self) -> None:
-        if not self._devices:
-            return
-        menu = QMenu(self)
-        actions = []
-        for d in self._devices:
-            sid = device_id(d)
-            label = f"{d.get('model', '?')}  ({d.get('ip', '?')})"
-            act = menu.addAction(label)
-            act.setCheckable(True)
-            act.setChecked(sid in self._selected_ids)
-            actions.append((act, sid))
-
-        menu.addSeparator()
-        all_act = menu.addAction("Select all")
-        none_act = menu.addAction("Select none")
-
-        chosen = menu.exec(self._edit_button.mapToGlobal(self._edit_button.rect().bottomLeft()))
-        if chosen is None:
-            return
-
-        if chosen is all_act:
-            self._selected_ids = {device_id(d) for d in self._devices}
-        elif chosen is none_act:
-            self._selected_ids = set()
+    def _toggle_device(self, target_id: str) -> None:
+        if target_id in self._selected_ids:
+            self._selected_ids.remove(target_id)
         else:
-            for act, sid in actions:
-                if act is chosen:
-                    if act.isChecked():
-                        self._selected_ids.add(sid)
-                    else:
-                        self._selected_ids.discard(sid)
-                    break
+            self._selected_ids.add(target_id)
+        self._commit_selection()
 
-        self._refresh_chips()
+    def _toggle_group(self, member_ids: Iterable[str]) -> None:
+        members = set(member_ids)
+        if members and members.issubset(self._selected_ids):
+            self._selected_ids.difference_update(members)
+        else:
+            self._selected_ids.update(members)
+        self._commit_selection()
+
+    def _commit_selection(self) -> None:
+        self._refresh_targets()
         self.selection_changed.emit(self.selected_ids())
 
 
-__all__ = ["DeviceChipStrip", "device_id"]
+__all__ = ["DeviceChipStrip", "device_id", "group_member_ids"]

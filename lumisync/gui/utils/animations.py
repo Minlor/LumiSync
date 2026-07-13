@@ -10,6 +10,7 @@ from typing import Callable, Optional
 from PySide6.QtCore import (
     QAbstractAnimation,
     QEasingCurve,
+    QParallelAnimationGroup,
     QPropertyAnimation,
     Qt,
     Property,
@@ -32,6 +33,32 @@ def animate_height(
     anim.setStartValue(widget.maximumHeight())
     anim.setEndValue(end_height)
     anim.setEasingCurve(easing)
+    if on_finished is not None:
+        anim.finished.connect(on_finished)
+    anim.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
+    return anim
+
+
+def animate_width(
+    widget: QWidget,
+    end_width: int,
+    *,
+    duration: int = 190,
+    easing: QEasingCurve.Type = QEasingCurve.Type.OutCubic,
+    on_finished: Optional[Callable[[], None]] = None,
+) -> QParallelAnimationGroup:
+    """Animate a drawer's constrained width without leaving clipped content."""
+    anim = QParallelAnimationGroup(widget)
+    for property_name, start_value in (
+        (b"minimumWidth", widget.minimumWidth()),
+        (b"maximumWidth", widget.maximumWidth()),
+    ):
+        width_anim = QPropertyAnimation(widget, property_name, anim)
+        width_anim.setDuration(duration)
+        width_anim.setStartValue(start_value)
+        width_anim.setEndValue(end_width)
+        width_anim.setEasingCurve(easing)
+        anim.addAnimation(width_anim)
     if on_finished is not None:
         anim.finished.connect(on_finished)
     anim.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
@@ -152,4 +179,4 @@ class PulseDot(QWidget):
         painter.drawEllipse(cx - self._size // 2, cy - self._size // 2, self._size, self._size)
 
 
-__all__ = ["animate_height", "fade_swap_stack", "PulseDot"]
+__all__ = ["animate_height", "animate_width", "fade_swap_stack", "PulseDot"]

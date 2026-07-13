@@ -4,14 +4,14 @@ This module provides a dialog for manually adding devices.
 """
 
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QLabel, QComboBox,
+    QDialog, QVBoxLayout, QLabel,
     QLineEdit, QFormLayout, QDialogButtonBox
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
 
 from ..utils.validators import IPAddressValidator, MACAddressValidator, PortValidator
 from ...drivers.idotmatrix_ble import KNOWN_SIZES
+from ..widgets.product_controls import ProductComboBox
 
 
 class AddDeviceDialog(QDialog):
@@ -19,7 +19,7 @@ class AddDeviceDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Add Device Manually")
+        self.setWindowTitle("Add Device")
         self.setModal(True)
         self.setMinimumWidth(400)
 
@@ -37,26 +37,21 @@ class AddDeviceDialog(QDialog):
         layout = QVBoxLayout(self)
 
         # Header
-        header = QLabel("Add Device Manually")
-        header_font = QFont()
-        header_font.setPointSize(14)
-        header_font.setBold(True)
-        header.setFont(header_font)
+        header = QLabel("Add Device")
+        header.setProperty("role", "title")
         layout.addWidget(header)
 
         # Description
-        desc = QLabel(
-            "Enter the device information below. IP address is required.\n"
-            "Other fields are optional and will be auto-generated if not provided."
-        )
-        desc.setWordWrap(True)
-        layout.addWidget(desc)
+        self.description_label = QLabel()
+        self.description_label.setProperty("role", "pageDescription")
+        self.description_label.setWordWrap(True)
+        layout.addWidget(self.description_label)
 
         layout.addSpacing(10)
 
         # Device type selector
         type_form = QFormLayout()
-        self.type_combo = QComboBox()
+        self.type_combo = ProductComboBox()
         self.type_combo.addItem("Govee (LAN / Wi-Fi)", "lan")
         self.type_combo.addItem("iDotMatrix (Bluetooth)", "ble")
         self.type_combo.addItem("LSC / Tuya (Wi-Fi)", "tuya")
@@ -83,7 +78,8 @@ class AddDeviceDialog(QDialog):
         self.mac_entry = QLineEdit()
         self.mac_entry.setPlaceholderText("e.g., 00:11:22:33:44:55")
         self.mac_entry.setValidator(MACAddressValidator())
-        form.addRow("MAC Address:", self.mac_entry)
+        self.mac_row_label = QLabel("MAC Address:")
+        form.addRow(self.mac_row_label, self.mac_entry)
 
         # Port (optional)
         self.port_entry = QLineEdit()
@@ -98,7 +94,7 @@ class AddDeviceDialog(QDialog):
         self.ble_address_label = QLabel("Bluetooth address *:")
         form.addRow(self.ble_address_label, self.ble_address_entry)
 
-        self.matrix_size_combo = QComboBox()
+        self.matrix_size_combo = ProductComboBox()
         for size in KNOWN_SIZES:
             self.matrix_size_combo.addItem(size, size)
         self.matrix_size_combo.setCurrentText("32x32")
@@ -116,7 +112,7 @@ class AddDeviceDialog(QDialog):
         self.tuya_key_label = QLabel("Local key *:")
         form.addRow(self.tuya_key_label, self.tuya_key_entry)
 
-        self.tuya_version_combo = QComboBox()
+        self.tuya_version_combo = ProductComboBox()
         for ver in ("3.3", "3.1", "3.2", "3.4", "3.5"):
             self.tuya_version_combo.addItem(ver, ver)
         self.tuya_version_label = QLabel("Protocol version:")
@@ -136,6 +132,7 @@ class AddDeviceDialog(QDialog):
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
+        button_box.button(QDialogButtonBox.StandardButton.Ok).setText("Add Device")
         button_box.accepted.connect(self.validate_and_accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
@@ -148,6 +145,9 @@ class AddDeviceDialog(QDialog):
         self.model_entry.returnPressed.connect(self.validate_and_accept)
         self.mac_entry.returnPressed.connect(self.validate_and_accept)
         self.port_entry.returnPressed.connect(self.validate_and_accept)
+        self.ble_address_entry.returnPressed.connect(self.validate_and_accept)
+        self.tuya_id_entry.returnPressed.connect(self.validate_and_accept)
+        self.tuya_key_entry.returnPressed.connect(self.validate_and_accept)
 
     def device_type(self) -> str:
         return self.type_combo.currentData() or "lan"
@@ -173,7 +173,12 @@ class AddDeviceDialog(QDialog):
         # Govee LAN fields: IP + MAC + port.
         for widget in (self.ip_entry, self.ip_row_label):
             widget.setVisible(is_lan or is_tuya)  # IP is needed by Tuya too
-        for widget in (self.mac_entry, self.port_entry, self.port_row_label):
+        for widget in (
+            self.mac_entry,
+            self.mac_row_label,
+            self.port_entry,
+            self.port_row_label,
+        ):
             widget.setVisible(is_lan)
 
         # iDotMatrix BLE fields.
@@ -193,11 +198,25 @@ class AddDeviceDialog(QDialog):
         }.get(kind, "e.g., Govee H6199")
         self.model_entry.setPlaceholderText(placeholder)
 
+        descriptions = {
+            "ble": "Enter the Bluetooth address printed by or reported for your matrix panel.",
+            "tuya": "Enter the local connection details for your LSC or Tuya light.",
+            "lan": "Enter the light's local IP address. The name, MAC address, and port are optional.",
+        }
+        self.description_label.setText(descriptions[kind])
+
+        if is_ble:
+            self.ble_address_entry.setFocus()
+        else:
+            self.ip_entry.setFocus()
+
     def validate_and_accept(self):
         """Validate input and accept dialog if valid."""
         # Clear previous status
         self.status_label.setText("")
-        self.status_label.setStyleSheet("")
+        self.status_label.setProperty("state", "")
+        self.status_label.style().unpolish(self.status_label)
+        self.status_label.style().polish(self.status_label)
 
         if self.device_type() == "ble":
             if not self.ble_address_entry.text().strip():
