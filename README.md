@@ -1,9 +1,11 @@
 
 <div align="center">
 
-# 💡 LumiSync
+<img src="assets/brand/png/social/lumisync-github-banner-1280x640.png" alt="LumiSync — Screen. Sound. Light. In sync." width="100%"/>
 
-**Sync your Govee LED strips with your screen or music**
+# LumiSync
+
+**Synchronize Govee, iDotMatrix, and LSC/Tuya lights with your screen or music.**
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![PyPI version](https://img.shields.io/pypi/v/lumisync.svg)](https://pypi.org/project/lumisync/)
@@ -26,7 +28,7 @@
 | 🖥️ **Monitor Sync** | Sample colors from screen regions and sync to your LED strip in real-time |
 | 🎵 **Music Sync** | React to audio with dynamic color patterns |
 | 🎨 **Color Control** | Set custom colors and brightness directly from the app |
-| 🖌️ **Modern GUI** | PySide6 interface with Windows 11-style navigation and theme support |
+| 🖌️ **Modern GUI** | Blue-accented PySide6 interface with selectable Acrylic, Mica, and Solid Dark window materials |
 | 🔌 **Multi-Vendor** | Govee (LAN), iDotMatrix pixel panels (Bluetooth), and LSC/Tuya WiFi lights |
 | 🔍 **Auto-Discovery** | Automatically finds Govee devices on your LAN via UDP broadcast |
 | ⚡ **Low Latency** | Direct LAN communication, no cloud required |
@@ -42,9 +44,32 @@ the packaged Windows build) bundles all transports, no extras to remember.
 | iDotMatrix panels | Bluetooth LE | Pixel displays; see [docs](docs/idotmatrix-ble-research.md) |
 | LSC / Tuya WiFi lights | LAN (Tuya local) | Needs the device's local key — see [docs](docs/lsc-tuya-research.md) |
 
+## 📸 Screenshots
+
+### Devices
+
 <div align="center">
-<img src="https://via.placeholder.com/700x400?text=LumiSync+Screenshot" alt="LumiSync Screenshot" width="700"/>
+<img src="docs/images/lumisync-devices.png" alt="LumiSync Devices screen with Govee and iDotMatrix device cards" width="100%"/>
+
+<sub>Discover, organize, and directly control LAN and Bluetooth lights.</sub>
 </div>
+
+### Monitor and music sync
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/images/lumisync-monitor-sync.png" alt="LumiSync Monitor Sync screen"/>
+    </td>
+    <td width="50%">
+      <img src="docs/images/lumisync-music-sync.png" alt="LumiSync Music Sync screen with Auto Director controls"/>
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Monitor Sync</strong><br/>Map display colors across one or more lights.</td>
+    <td align="center"><strong>Music Sync</strong><br/>Choose reactions and palettes or let Auto Director decide.</td>
+  </tr>
+</table>
 
 ## 📦 Installation
 
@@ -91,21 +116,31 @@ pip install -e .
 lumisync
 ```
 
-Select option `3` to launch the GUI, or choose `1` (Monitor Sync) / `2` (Music Sync) for CLI mode.
+The GUI opens by default. The legacy interactive terminal is still available
+with `lumisync --cli`; direct headless modes are available through
+`lumisync --monitor` and `lumisync --music`.
 
 ### Quick Start
 
-1. **Discover devices** - Click "Discover Devices" in the Devices tab
-2. **Select your LED strip** - Click on the discovered device
-3. **Control your lights** - Use "Set Color" to pick a color, adjust brightness with the slider, or toggle power on/off
-4. **Start syncing** - Go to Sync Modes and click "Start Monitor Sync" or "Start Music Sync"
+1. **Discover devices** — Click "Discover Devices" for Govee LAN lights or "Scan Bluetooth" for pixel panels.
+2. **Select your lights** — Choose one or more devices from the Devices page.
+3. **Control your lights** — Set color, brightness and power directly from each device card.
+4. **Start syncing** — Open Monitor Sync or Music Sync, choose the target devices and start the mode.
+
+### Interface
+
+- **Devices** — Discover, add and control LAN or Bluetooth lights; multi-select devices for bulk actions.
+- **Monitor Sync** — Map display colors to selected devices, groups, zones, and custom LED regions.
+- **Music Sync** — Choose reactions, palettes, targets and brightness, or use Auto Director.
+- **Draw** — Paint still images or frame-by-frame animations for compatible iDotMatrix panels.
+- **Settings** — Choose Acrylic, Mica, or Solid Dark; select a display, tune sync behavior, manage groups, startup and system-tray options.
 
 ### Configuration
 
 - **LED Mapping** - Customize which screen regions map to which LEDs
 - **Brightness** - Adjust per-mode brightness (10-100%)
 - **Display Selection** - Choose which monitor to capture (multi-monitor support)
-- **Themes** - Switch between light/dark themes via Settings
+- **Sync Tuning** - Tune smoothing, saturation, frame rate, gamma and music response
 
 ## 🛠️ Development
 
@@ -128,7 +163,24 @@ lumisync/
 ### Run Tests
 
 ```bash
-python tests/test_color.py
+python -m unittest discover -s tests
+```
+
+### Brand and documentation assets
+
+The production app icon, transparent mark, tray variants, Windows `.ico`, and
+GitHub banner live in [`assets/brand`](assets/brand). Regenerate the complete
+icon set from its single SVG geometry with:
+
+```bash
+python tools/generate_brand_assets.py
+```
+
+Fresh README screenshots can be captured from the real PySide application on
+Windows with:
+
+```bash
+python tools/capture_readme_screenshots.py --material acrylic
 ```
 
 ### Platform Support

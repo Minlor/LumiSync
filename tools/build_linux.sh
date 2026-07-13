@@ -50,7 +50,7 @@ mkdir -p "$APPDIR/usr/bin"
 cp -r "$DIST/LumiSync/." "$APPDIR/usr/bin/"
 install -m 0755 "$ROOT/packaging/linux/AppRun" "$APPDIR/AppRun"
 cp "$ROOT/packaging/linux/lumisync.desktop" "$APPDIR/lumisync.desktop"
-cp "$ROOT/lumisync/gui/resources/icons/app.png" "$APPDIR/lumisync.png"
+cp "$ROOT/lumisync/gui/resources/icons/app.svg" "$APPDIR/lumisync.svg"
 
 step "Fetching appimagetool"
 TOOL="$BUILD/appimagetool"
