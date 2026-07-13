@@ -7,18 +7,16 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from PyQt6.QtCore import (
+from PySide6.QtCore import (
     QAbstractAnimation,
     QEasingCurve,
+    QParallelAnimationGroup,
     QPropertyAnimation,
-    QObject,
-    QTimer,
     Qt,
-    pyqtProperty,
-    pyqtSignal,
+    Property,
 )
-from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import QGraphicsOpacityEffect, QStackedWidget, QWidget
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QStackedWidget, QWidget
 
 
 def animate_height(
@@ -41,6 +39,32 @@ def animate_height(
     return anim
 
 
+def animate_width(
+    widget: QWidget,
+    end_width: int,
+    *,
+    duration: int = 190,
+    easing: QEasingCurve.Type = QEasingCurve.Type.OutCubic,
+    on_finished: Optional[Callable[[], None]] = None,
+) -> QParallelAnimationGroup:
+    """Animate a drawer's constrained width without leaving clipped content."""
+    anim = QParallelAnimationGroup(widget)
+    for property_name, start_value in (
+        (b"minimumWidth", widget.minimumWidth()),
+        (b"maximumWidth", widget.maximumWidth()),
+    ):
+        width_anim = QPropertyAnimation(widget, property_name, anim)
+        width_anim.setDuration(duration)
+        width_anim.setStartValue(start_value)
+        width_anim.setEndValue(end_width)
+        width_anim.setEasingCurve(easing)
+        anim.addAnimation(width_anim)
+    if on_finished is not None:
+        anim.finished.connect(on_finished)
+    anim.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
+    return anim
+
+
 def fade_swap_stack(stack: QStackedWidget, target_index: int, *, duration: int = 140) -> None:
     """Cross-fade transition between pages of a QStackedWidget."""
     if target_index == stack.currentIndex() or target_index < 0:
@@ -49,6 +73,13 @@ def fade_swap_stack(stack: QStackedWidget, target_index: int, *, duration: int =
     outgoing = stack.currentWidget()
     incoming = stack.widget(target_index)
     if outgoing is None or incoming is None:
+        stack.setCurrentIndex(target_index)
+        return
+
+    # A QGraphicsOpacityEffect conflicts with custom-paintEvent widgets (it spams
+    # "paint device can only be painted by one painter at a time"). Pages that do
+    # custom painting set the "noFadeEffect" property and get an instant swap.
+    if outgoing.property("noFadeEffect") or incoming.property("noFadeEffect"):
         stack.setCurrentIndex(target_index)
         return
 
@@ -121,10 +152,10 @@ class PulseDot(QWidget):
         self._pulse = float(value)
         self.update()
 
-    pulse = pyqtProperty(float, _get_pulse, _set_pulse)
+    pulse = Property(float, _get_pulse, _set_pulse)
 
     def paintEvent(self, _event) -> None:
-        from PyQt6.QtGui import QPainter, QBrush
+        from PySide6.QtGui import QPainter, QBrush
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -148,4 +179,4 @@ class PulseDot(QWidget):
         painter.drawEllipse(cx - self._size // 2, cy - self._size // 2, self._size, self._size)
 
 
-__all__ = ["animate_height", "fade_swap_stack", "PulseDot"]
+__all__ = ["animate_height", "animate_width", "fade_swap_stack", "PulseDot"]

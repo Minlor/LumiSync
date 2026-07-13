@@ -1,15 +1,15 @@
 """
 Resource management for LumiSync GUI.
-Handles loading of icons and other resources for PyQt6.
+Handles loading of icons and other resources for PySide6.
 """
 
-import os
+
 import sys
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtGui import QIcon, QPixmap
-from PyQt6.QtCore import QSize, Qt
+from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtCore import QSize, Qt
 
 
 class ResourceManager:

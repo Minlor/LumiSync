@@ -13,7 +13,7 @@ QWidget {
     font-size: 10pt;
 }
 
-/* Top-level surfaces paint the canvas color. */
+/* Solid fallback canvas for non-Windows platforms and older Windows builds. */
 QMainWindow,
 QDialog {
     background: {bg};
@@ -26,6 +26,147 @@ QStackedWidget {
 
 QStackedWidget > QWidget {
     background: {bg};
+}
+
+/* Windows 11 backdrops are enabled only after DWM accepts the request. */
+QMainWindow[backdrop="mica"],
+QMainWindow[backdrop="acrylic"] {
+    background: transparent;
+}
+
+QMainWindow[backdrop="mica"] QStackedWidget#ContentStack {
+    background: {mica_bg};
+}
+
+QMainWindow[backdrop="mica"] QStackedWidget#ContentStack > QWidget {
+    background: transparent;
+}
+
+QMainWindow[backdrop="mica"] QFrame#Sidebar {
+    background: {mica_sidebar};
+}
+
+QMainWindow[backdrop="mica"] QGroupBox,
+QMainWindow[backdrop="mica"] QFrame[card="true"],
+QMainWindow[backdrop="mica"] QFrame#ActiveSyncRow,
+QMainWindow[backdrop="mica"] QFrame#GroupSelectionBar,
+QMainWindow[backdrop="mica"] QFrame#DrawToolsPanel,
+QMainWindow[backdrop="mica"] QFrame#DrawCanvasPanel,
+QMainWindow[backdrop="mica"] QFrame#DrawTimelinePanel {
+    background: {mica_surface};
+    border-color: {mica_border};
+}
+
+QMainWindow[backdrop="mica"] QFrame#DeviceCard {
+    background: {mica_device_surface};
+    border-color: {mica_border};
+}
+
+QMainWindow[backdrop="mica"] QFrame#DeviceInspector {
+    background: {mica_inspector_surface};
+    border-color: {mica_border};
+}
+
+QMainWindow[backdrop="mica"] QPushButton,
+QMainWindow[backdrop="mica"] QComboBox,
+QMainWindow[backdrop="mica"] QLineEdit,
+QMainWindow[backdrop="mica"] QSpinBox,
+QMainWindow[backdrop="mica"] QDoubleSpinBox,
+QMainWindow[backdrop="mica"] QTextEdit,
+QMainWindow[backdrop="mica"] QPlainTextEdit,
+QMainWindow[backdrop="mica"] QListWidget {
+    background: {mica_control};
+    border-color: {mica_border};
+}
+
+/* Desktop Acrylic continuously blurs what is behind the whole window. The
+   canvas is the most transparent layer, followed by navigation and panels. */
+QMainWindow[backdrop="acrylic"] QStackedWidget#ContentStack {
+    background: {acrylic_bg};
+}
+
+QMainWindow[backdrop="acrylic"] QStackedWidget#ContentStack > QWidget {
+    background: transparent;
+}
+
+QMainWindow[backdrop="acrylic"] QFrame#Sidebar {
+    background: {acrylic_sidebar};
+}
+
+QMainWindow[backdrop="acrylic"] QGroupBox,
+QMainWindow[backdrop="acrylic"] QFrame[card="true"],
+QMainWindow[backdrop="acrylic"] QFrame#ActiveSyncRow,
+QMainWindow[backdrop="acrylic"] QFrame#GroupSelectionBar,
+QMainWindow[backdrop="acrylic"] QFrame#DrawToolsPanel,
+QMainWindow[backdrop="acrylic"] QFrame#DrawCanvasPanel,
+QMainWindow[backdrop="acrylic"] QFrame#DrawTimelinePanel {
+    background: {acrylic_surface};
+    border-color: {acrylic_border};
+}
+
+QMainWindow[backdrop="acrylic"] QFrame#DeviceCard {
+    background: {acrylic_device_surface};
+    border-color: {acrylic_border};
+}
+
+QMainWindow[backdrop="acrylic"] QFrame#DeviceInspector {
+    background: {acrylic_inspector_surface};
+    border-color: {acrylic_border};
+}
+
+QMainWindow[backdrop="acrylic"] QPushButton,
+QMainWindow[backdrop="acrylic"] QComboBox,
+QMainWindow[backdrop="acrylic"] QLineEdit,
+QMainWindow[backdrop="acrylic"] QSpinBox,
+QMainWindow[backdrop="acrylic"] QDoubleSpinBox,
+QMainWindow[backdrop="acrylic"] QTextEdit,
+QMainWindow[backdrop="acrylic"] QPlainTextEdit,
+QMainWindow[backdrop="acrylic"] QListWidget {
+    background: {acrylic_control};
+    border-color: {acrylic_border};
+}
+
+/* Preserve semantic actions after the scoped translucent-control override. */
+QMainWindow[backdrop="mica"] QPushButton#Primary:enabled,
+QMainWindow[backdrop="mica"] QPushButton[role="primary"]:enabled,
+QMainWindow[backdrop="acrylic"] QPushButton#Primary:enabled,
+QMainWindow[backdrop="acrylic"] QPushButton[role="primary"]:enabled {
+    background: {accent_surface};
+    color: white;
+    border-color: {accent_border};
+}
+
+QMainWindow[backdrop="mica"] QPushButton#Primary:enabled:hover,
+QMainWindow[backdrop="mica"] QPushButton[role="primary"]:enabled:hover,
+QMainWindow[backdrop="acrylic"] QPushButton#Primary:enabled:hover,
+QMainWindow[backdrop="acrylic"] QPushButton[role="primary"]:enabled:hover {
+    background: {accent_hover};
+    border-color: {accent_bright};
+}
+
+QMainWindow[backdrop="mica"] QPushButton#Primary:enabled:pressed,
+QMainWindow[backdrop="mica"] QPushButton[role="primary"]:enabled:pressed,
+QMainWindow[backdrop="acrylic"] QPushButton#Primary:enabled:pressed,
+QMainWindow[backdrop="acrylic"] QPushButton[role="primary"]:enabled:pressed {
+    background: {accent_pressed};
+    border-color: {accent_border};
+}
+
+QMainWindow[backdrop="mica"] QPushButton#DangerButton:enabled,
+QMainWindow[backdrop="mica"] QPushButton[role="danger"]:enabled,
+QMainWindow[backdrop="acrylic"] QPushButton#DangerButton:enabled,
+QMainWindow[backdrop="acrylic"] QPushButton[role="danger"]:enabled {
+    background: {danger};
+    color: white;
+    border-color: {danger};
+}
+
+QMainWindow[backdrop="mica"] QPushButton#DangerButton:enabled:hover,
+QMainWindow[backdrop="mica"] QPushButton[role="danger"]:enabled:hover,
+QMainWindow[backdrop="acrylic"] QPushButton#DangerButton:enabled:hover,
+QMainWindow[backdrop="acrylic"] QPushButton[role="danger"]:enabled:hover {
+    background: {danger_bright};
+    border-color: {danger_bright};
 }
 
 /* Scroll viewport stays transparent so the page bg shows through it. */
@@ -47,27 +188,145 @@ QToolTip {
     padding: 4px 8px;
 }
 
+/* ---- Text & control roles ----
+   Views set `role` properties instead of inline stylesheets so typography
+   and colors stay consistent and live in one place. */
+
+QLabel[role="title"] {
+    font-size: {font_title};
+    font-weight: 700;
+    color: {text};
+    padding: 0 0 4px 0;
+}
+
+QLabel[role="pageDescription"] {
+    color: {text_dim};
+    font-size: {font_body};
+    padding: 0 0 4px 0;
+}
+
+QLabel[role="subtle"] {
+    color: {text_dim};
+    font-size: {font_small};
+}
+
+QLabel[role="strong"] {
+    font-weight: 600;
+}
+
+QLabel[role="link"] {
+    color: {accent_bright};
+    font-size: {font_small};
+    font-weight: 600;
+}
+
+QLabel[role="eyebrow"] {
+    color: {text_disabled};
+    font-size: {font_caption};
+    font-weight: 700;
+}
+
+QLabel[role="inspectorTitle"] {
+    color: {text};
+    font-size: 14pt;
+    font-weight: 700;
+}
+
+QLabel[role="hint"] {
+    color: {text_disabled};
+    font-size: {font_small};
+    font-style: italic;
+}
+
+QLabel[role="status"] {
+    color: {text_disabled};
+    font-size: {font_small};
+}
+
+QLabel[role="status"][statusState="online"] {
+    color: {success};
+}
+
+QLabel[role="status"][statusState="warning"] {
+    color: {warning};
+}
+
+QLabel[role="status"][statusState="offline"] {
+    color: {text_disabled};
+}
+
+QLabel[role="warn"] {
+    color: {warning};
+    font-size: {font_small};
+}
+
+QLabel[role="icon"] {
+    color: {text_dim};
+}
+
+QLabel[role="empty"] {
+    color: {text_dim};
+    font-size: 11pt;
+    padding: 40px;
+}
+
+QLabel[role="pill"] {
+    background: {accent_dim};
+    color: {text};
+    border-radius: 8px;
+    padding: 2px 7px;
+    font-size: {font_caption};
+}
+
+QToolButton[role="ghost"] {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: {radius_md};
+    color: {text_dim};
+    padding: 0;
+    font-size: 14pt;
+    min-width: 40px;
+    min-height: 40px;
+}
+
+QToolButton[role="ghost"]:hover {
+    background: {hover};
+    border-color: {border};
+    color: {text};
+}
+
+QToolButton[role="link"] {
+    background: transparent;
+    border: none;
+    color: {accent_bright};
+    padding: 2px 4px;
+    font-size: {font_small};
+}
+
+QToolButton[role="link"]:hover {
+    color: white;
+}
+
 /* ---- GroupBox / Cards ---- */
 
 QGroupBox {
     background: {surface};
     border: 1px solid {border};
     border-radius: {radius_lg};
-    margin-top: 18px;
-    padding: 14px 14px 12px 14px;
+    margin-top: 20px;
+    padding: 18px 18px 16px 18px;
     font-weight: 600;
 }
 
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    left: 14px;
-    padding: 0 6px;
+    left: 18px;
+    padding: 0 7px;
     color: {text_dim};
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    font-size: 8pt;
+    letter-spacing: 0.4px;
+    font-size: 9pt;
 }
 
 QFrame[card="true"] {
@@ -77,12 +336,126 @@ QFrame[card="true"] {
 }
 
 QFrame[card="true"][hovered="true"] {
-    border-color: {accent_dim};
+    border-color: {border_strong};
+    background: {surface_alt};
 }
 
 QFrame[card="true"][selected="true"] {
     border: 1px solid {accent};
     background: {surface_alt};
+}
+
+/* Device tiles intentionally sit a shade deeper than general cards.  This
+   makes their live output and power state the visual focus of the page. */
+QFrame#DeviceCard {
+    background: {device_surface};
+    border: 1px solid {border_dim};
+    border-radius: {radius_lg};
+}
+
+QFrame#DeviceCard[hovered="true"] {
+    background: {device_hover};
+    border-color: {border_strong};
+}
+
+QFrame#DeviceCard[inspected="true"] {
+    background: {device_hover};
+    border-color: {accent};
+}
+
+QFrame#DeviceCard[groupSelection="true"] {
+    border-style: dashed;
+}
+
+QFrame#DeviceCard[groupSelection="true"][selected="true"] {
+    border-style: solid;
+    border-color: {accent_bright};
+    background: {accent_glow};
+}
+
+QMainWindow[backdrop="acrylic"] QFrame#DeviceCard[inspected="true"] {
+    border-color: {accent};
+}
+
+QMainWindow[backdrop="mica"] QFrame#DeviceCard[inspected="true"] {
+    border-color: {accent};
+}
+
+QToolButton#DevicePowerButton {
+    background: {surface_alt};
+    border: 1px solid {border_strong};
+    border-radius: 23px;
+    padding: 0;
+}
+
+QToolButton#DevicePowerButton:hover {
+    background: {hover};
+    border-color: {accent_bright};
+}
+
+QToolButton#DevicePowerButton:pressed {
+    background: {pressed};
+    border-color: {accent};
+}
+
+QToolButton#DevicePowerButton[powerState="on"] {
+    background: {accent};
+    border-color: {accent_bright};
+}
+
+QToolButton#DevicePowerButton[powerState="on"]:hover {
+    background: {accent_hover};
+    border-color: white;
+}
+
+QToolButton#DevicePowerButton[powerState="unknown"] {
+    border-color: {border_dim};
+}
+
+QFrame#DeviceOutputPreview {
+    min-width: 52px;
+}
+
+QScrollArea#DeviceInspectorScroll {
+    background: transparent;
+    border: none;
+}
+
+QFrame#DeviceInspector {
+    background: {surface};
+    border: 1px solid {border};
+    border-radius: {radius_lg};
+}
+
+QFrame#InspectorSection {
+    background: {surface_alt};
+    border: 1px solid {border_dim};
+    border-radius: {radius_md};
+}
+
+QMainWindow[backdrop="acrylic"] QFrame#InspectorSection {
+    background: {acrylic_control};
+    border-color: {acrylic_border};
+}
+
+QMainWindow[backdrop="mica"] QFrame#InspectorSection {
+    background: {mica_control};
+    border-color: {mica_border};
+}
+
+QToolButton#InspectorCloseButton {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 20px;
+    color: {text_dim};
+    font-size: 18pt;
+    padding: 0;
+}
+
+QToolButton#InspectorCloseButton:hover {
+    background: {hover};
+    border-color: {border};
+    color: {text};
 }
 
 /* ---- Buttons ---- */
@@ -92,8 +465,8 @@ QPushButton {
     color: {text};
     border: 1px solid {border};
     border-radius: {radius_md};
-    padding: 7px 14px;
-    min-height: 18px;
+    padding: 8px 16px;
+    min-height: 22px;
 }
 
 QPushButton:hover {
@@ -101,8 +474,14 @@ QPushButton:hover {
     border-color: {border_strong};
 }
 
+QPushButton:focus,
+QToolButton:focus {
+    border-color: {accent};
+}
+
 QPushButton:pressed {
     background: {pressed};
+    border-color: {accent};
 }
 
 QPushButton:disabled {
@@ -113,21 +492,22 @@ QPushButton:disabled {
 
 QPushButton#Primary,
 QPushButton[role="primary"] {
-    background: {accent};
+    background: {accent_surface};
     color: white;
-    border: 1px solid {accent};
+    border: 1px solid {accent_border};
     font-weight: 600;
 }
 
 QPushButton#Primary:hover,
 QPushButton[role="primary"]:hover {
-    background: {accent_bright};
+    background: {accent_hover};
     border-color: {accent_bright};
 }
 
 QPushButton#Primary:pressed,
 QPushButton[role="primary"]:pressed {
-    background: {accent};
+    background: {accent_pressed};
+    border-color: {accent_border};
 }
 
 QPushButton#Primary:disabled,
@@ -182,6 +562,7 @@ QPushButton#LinkButton {
     color: {accent_bright};
     text-align: left;
     padding: 4px 6px;
+    min-height: 0;
 }
 
 QPushButton#LinkButton:hover {
@@ -190,11 +571,11 @@ QPushButton#LinkButton:hover {
 
 QPushButton#ColorSwatch {
     border: 2px solid {border};
-    border-radius: {radius_sm};
-    min-width: 28px;
-    min-height: 28px;
-    max-width: 28px;
-    max-height: 28px;
+    border-radius: {radius_md};
+    min-width: 36px;
+    min-height: 36px;
+    max-width: 36px;
+    max-height: 36px;
     padding: 0;
 }
 
@@ -204,37 +585,55 @@ QPushButton#ColorSwatch:hover {
 
 /* ---- Sliders ---- */
 
+QSlider {
+    min-height: 32px;
+}
+
 QSlider::groove:horizontal {
     background: {surface_alt};
-    height: 4px;
-    border-radius: 2px;
+    height: 8px;
+    border: 1px solid {border_dim};
+    border-radius: 4px;
 }
 
 QSlider::sub-page:horizontal {
     background: {accent};
-    border-radius: 2px;
+    border: 1px solid {accent_border};
+    border-radius: 4px;
 }
 
 QSlider::add-page:horizontal {
     background: {surface_alt};
-    border-radius: 2px;
+    border: 1px solid {border_dim};
+    border-radius: 4px;
 }
 
 QSlider::handle:horizontal {
-    background: {text};
-    width: 14px;
-    height: 14px;
+    background: {accent_bright};
+    width: 18px;
+    height: 18px;
     margin: -6px 0;
-    border-radius: 7px;
-    border: none;
+    border-radius: 9px;
+    border: 3px solid {text};
 }
 
 QSlider::handle:horizontal:hover {
-    background: {accent_bright};
+    background: white;
+    border-color: {accent_bright};
+}
+
+QSlider::handle:horizontal:pressed {
+    background: white;
+    border-color: {accent};
+}
+
+QSlider:focus::groove:horizontal {
+    border-color: {accent};
 }
 
 QSlider::handle:horizontal:disabled {
     background: {text_disabled};
+    border-color: {surface_alt};
 }
 
 /* ---- List / device list ---- */
@@ -286,7 +685,45 @@ QListWidget#SidebarNavBottom::item:selected {
 QFrame#Sidebar {
     background: {surface};
     border: none;
-    border-right: 1px solid {border};
+}
+
+QListWidget#SettingsSectionNav {
+    background: {surface};
+    border: 1px solid {border};
+    border-radius: {radius_lg};
+    padding: 8px;
+}
+
+QListWidget#SettingsSectionNav::item {
+    min-height: 40px;
+    padding: 2px 12px;
+    margin: 2px 0;
+    border-radius: {radius_md};
+    color: {text_dim};
+}
+
+QListWidget#SettingsSectionNav::item:hover {
+    background: {hover};
+    color: {text};
+}
+
+QListWidget#SettingsSectionNav::item:selected {
+    background: {accent_dim};
+    color: white;
+    font-weight: 600;
+}
+
+QStackedWidget#SettingsSectionStack,
+QStackedWidget#SettingsSectionStack > QWidget,
+QWidget#SettingsSectionPage {
+    background: transparent;
+    border: none;
+}
+
+QLabel#SidebarTitle {
+    color: {text};
+    font-size: 15pt;
+    font-weight: 700;
 }
 
 /* ---- Inputs ---- */
@@ -299,10 +736,15 @@ QTextEdit {
     background: {surface_alt};
     color: {text};
     border: 1px solid {border};
-    border-radius: {radius_sm};
-    padding: 6px 8px;
+    border-radius: {radius_md};
+    padding: 8px 10px;
+    min-height: 20px;
     selection-background-color: {accent_dim};
     selection-color: {text};
+}
+
+QComboBox {
+    padding: 8px 40px 8px 12px;
 }
 
 QLineEdit:focus,
@@ -311,6 +753,11 @@ QSpinBox:focus,
 QPlainTextEdit:focus,
 QTextEdit:focus {
     border-color: {accent};
+}
+
+QComboBox:hover {
+    background: {hover};
+    border-color: {border_strong};
 }
 
 QLineEdit:disabled,
@@ -322,18 +769,76 @@ QSpinBox:disabled {
 
 QComboBox::drop-down {
     border: none;
-    width: 22px;
+    border-left: 1px solid {border_dim};
+    width: 34px;
     subcontrol-origin: padding;
     subcontrol-position: top right;
 }
 
+QComboBox::down-arrow {
+    image: url({icon_dir}/chevron-down.svg);
+    width: 13px;
+    height: 13px;
+}
+
+QComboBox::drop-down:hover {
+    background: {accent_dim};
+}
+
+QSpinBox::up-button,
+QSpinBox::down-button {
+    subcontrol-origin: border;
+    width: 18px;
+    border: none;
+    background: transparent;
+    border-radius: {radius_sm};
+}
+
+QSpinBox::up-button {
+    subcontrol-position: top right;
+}
+
+QSpinBox::down-button {
+    subcontrol-position: bottom right;
+}
+
+QSpinBox::up-button:hover,
+QSpinBox::down-button:hover {
+    background: {hover};
+}
+
+QSpinBox::up-arrow {
+    image: url({icon_dir}/chevron-up.svg);
+    width: 10px;
+    height: 10px;
+}
+
+QSpinBox::down-arrow {
+    image: url({icon_dir}/chevron-down.svg);
+    width: 10px;
+    height: 10px;
+}
+
 QComboBox QAbstractItemView {
     background: {surface_alt};
-    border: 1px solid {border};
-    border-radius: {radius_sm};
+    border: 1px solid {border_strong};
+    border-radius: {radius_md};
     selection-background-color: {accent_dim};
     color: {text};
-    padding: 2px;
+    padding: 5px;
+    outline: 0;
+}
+
+QComboBox QAbstractItemView::item {
+    min-height: 32px;
+    padding: 5px 10px;
+    border-radius: {radius_sm};
+}
+
+QComboBox QAbstractItemView::item:hover,
+QComboBox QAbstractItemView::item:selected {
+    background: {accent_dim};
+    color: white;
 }
 
 QCheckBox {
@@ -342,8 +847,8 @@ QCheckBox {
 }
 
 QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
+    width: 18px;
+    height: 18px;
     border: 1px solid {border_strong};
     border-radius: 4px;
     background: {surface_alt};
@@ -356,6 +861,10 @@ QCheckBox::indicator:hover {
 QCheckBox::indicator:checked {
     background: {accent};
     border-color: {accent};
+}
+
+QCheckBox:focus {
+    color: {accent_bright};
 }
 
 /* ---- State labels ---- */
@@ -479,6 +988,11 @@ QMenu::item:selected {
     background: {accent_dim};
 }
 
+QMenu::item:disabled {
+    color: {text_disabled};
+    background: transparent;
+}
+
 QMenu::separator {
     height: 1px;
     background: {border};
@@ -486,6 +1000,19 @@ QMenu::separator {
 }
 
 /* ---- Chips ---- */
+
+QLabel[role="sectionLabel"] {
+    color: {text};
+    font-weight: 600;
+}
+
+QLabel[state="active"] {
+    color: {success};
+}
+
+QLabel[state="inactive"] {
+    color: {text_disabled};
+}
 
 QPushButton[chip="true"] {
     background: {surface_alt};
@@ -507,12 +1034,87 @@ QPushButton[chip="true"][active="true"] {
     color: white;
 }
 
-/* ---- Bulk action bar ---- */
+QPushButton[chip="true"][targetKind="group"] {
+    border-style: dashed;
+}
 
-QFrame#BulkBar {
+QFrame#MusicReactionPicker {
+    background: transparent;
+    border: none;
+}
+
+QPushButton[reactionOption="true"] {
+    min-height: 26px;
+    padding: 8px 14px;
+    text-align: left;
+    color: {text_dim};
+}
+
+QPushButton[reactionOption="true"]:hover {
+    color: {text};
+    border-color: {accent};
+}
+
+QPushButton[reactionOption="true"]:checked {
+    background: {accent_dim};
+    border-color: {accent_bright};
+    color: white;
+    font-weight: 600;
+}
+
+QPushButton[reactionOption="true"][autoActive="true"] {
+    border: 1px solid {accent_bright};
+}
+
+QFrame#AutoDirectorStatus {
     background: {accent_glow};
     border: 1px solid {accent_dim};
     border-radius: {radius_md};
+}
+
+QFrame#AutoDirectorColorDot {
+    background: {bg};
+    border: 2px solid {border_strong};
+    border-radius: 14px;
+}
+
+QLabel[role="autoDirectorTitle"] {
+    color: {text};
+    font-weight: 600;
+}
+
+QLabel[role="autoDirectorMeta"] {
+    color: {text_dim};
+    font-size: {font_caption};
+}
+
+/* ---- Device discovery and group selection ---- */
+
+QFrame#DeviceSearchStatus {
+    background: {surface_alt};
+    border: 1px solid {border};
+    border-radius: {radius_md};
+}
+
+QFrame#GroupSelectionBar {
+    background: {accent_glow};
+    border: 1px solid {accent_dim};
+    border-radius: {radius_md};
+}
+
+/* ---- Draw workspace ---- */
+
+QFrame#DrawToolsPanel,
+QFrame#DrawCanvasPanel,
+QFrame#DrawTimelinePanel {
+    background: {surface};
+    border: 1px solid {border};
+    border-radius: {radius_lg};
+}
+
+QLabel#DrawColorSwatch {
+    min-width: 32px;
+    min-height: 32px;
 }
 
 /* ---- Active sync row ---- */
@@ -521,4 +1123,27 @@ QFrame#ActiveSyncRow {
     background: {surface_alt};
     border: 1px solid {border};
     border-radius: {radius_md};
+}
+
+/* ---- Toasts ---- */
+
+QFrame#Toast {
+    background: {surface_alt};
+    border: 1px solid {border_strong};
+    border-left: 3px solid {accent};
+    border-radius: {radius_md};
+}
+
+QFrame#Toast[kind="success"] {
+    border-left-color: {success};
+}
+
+QFrame#Toast[kind="error"] {
+    border-left-color: {danger};
+}
+
+QLabel#ToastLabel {
+    color: {text};
+    background: transparent;
+    font-size: 9.5pt;
 }

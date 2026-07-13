@@ -1,0 +1,7 @@
+#!/bin/sh
+# AppImage entrypoint. The PyInstaller onedir bundle (executable + _internal)
+# lives under usr/bin/; run the LumiSync binary from there.
+HERE="$(dirname "$(readlink -f "$0")")"
+APPBIN="$HERE/usr/bin"
+export LD_LIBRARY_PATH="$APPBIN:$APPBIN/_internal:${LD_LIBRARY_PATH:-}"
+exec "$APPBIN/LumiSync" "$@"

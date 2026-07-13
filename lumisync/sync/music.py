@@ -1,5 +1,6 @@
 import socket
 import sys
+import time
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
@@ -11,39 +12,121 @@ if np.lib.NumpyVersion(np.__version__) >= '2.0.0':
 
 import soundcard as sc
 
-from .. import connection, utils
-from ..config.options import AUDIO, COLORS, BRIGHTNESS
+from ..config.options import AUDIO, BRIGHTNESS, SYNC
+from ..drivers.registry import create_adapter
+from . import artwork, audio, processing
+
+
+def default_loopback_microphone():
+    """Return a soundcard microphone that captures the system audio output.
+
+    On Windows this is the default speaker's WASAPI loopback. On Linux
+    (PulseAudio / PipeWire) the equivalent is the default sink's *monitor*
+    source; the ``include_loopback`` lookup usually resolves it, but if it
+    doesn't we fall back to picking a monitor/loopback source directly so
+    music sync works out of the box on Linux too.
+    """
+    speaker_name = None
+    try:
+        speaker_name = str(sc.default_speaker().name)
+    except Exception:
+        pass
+
+    if speaker_name:
+        try:
+            return sc.get_microphone(id=speaker_name, include_loopback=True)
+        except Exception:
+            pass
+
+    mics = sc.all_microphones(include_loopback=True)
+    loopbacks = [m for m in mics if getattr(m, "isloopback", False)] or mics
+    if speaker_name:
+        for mic in loopbacks:
+            if speaker_name.lower() in str(mic.name).lower():
+                return mic
+    if loopbacks:
+        return loopbacks[0]
+
+    raise RuntimeError(
+        "No audio loopback device found. On Linux, make sure PulseAudio or "
+        "PipeWire is running and a monitor source is available."
+    )
+
 
 def start(server: socket.socket, device: Dict[str, Any]) -> None:
+    """Run the CLI music-sync loop for a single device.
+
+    Each captured audio window is split into bass/mid/treble energy by an FFT
+    and rendered using the selected palette and spatial reaction style.
+    """
     # Initialize COM on Windows (required for soundcard library in threads)
     if sys.platform == "win32":
         import pythoncom
         pythoncom.CoInitialize()
 
     try:
-        connection.switch_razer(server, device, True)
-        COLORS.current = [
-            (0, 0, 0)
-        ] * connection.get_segment_count(device, default=10)
-        while True:
-            with sc.get_microphone(
-                id=str(sc.default_speaker().name), include_loopback=True
-            ).recorder(samplerate=AUDIO.sample_rate) as mic:
+        adapter = create_adapter(device, server)
+        adapter.begin_stream()
+        segment_count = adapter.capabilities.segment_count
+        renderer = audio.MusicPatternRenderer(segment_count)
+        artwork_provider = artwork.ArtworkPaletteProvider()
+        smoother = processing.ColorSmoother(
+            SYNC.music_smoothing, segment_count
+        )
+        active_reaction = SYNC.music_reaction
+        numframes = int(max(AUDIO.duration, AUDIO.music_window) * AUDIO.sample_rate)
+        frame_interval = 1.0 / max(1, SYNC.music_fps)
 
-                # NOTE: Try and except due to a soundcard error when no audio is playing
-                try:
-                    data = mic.record(numframes=int(AUDIO.duration * AUDIO.sample_rate))
-                except TypeError:
-                    data = None
-                amp = get_amplitude(data)
-                wave_color(server, device, amp)
+        while True:
+            with default_loopback_microphone().recorder(
+                samplerate=AUDIO.sample_rate
+            ) as mic:
+                while True:
+                    frame_start = time.monotonic()
+                    # NOTE: Try/except due to a soundcard error when no audio plays.
+                    try:
+                        data = mic.record(numframes=numframes)
+                    except TypeError:
+                        data = None
+
+                    if active_reaction != SYNC.music_reaction:
+                        active_reaction = SYNC.music_reaction
+                        renderer = audio.MusicPatternRenderer(segment_count)
+                        smoother = processing.ColorSmoother(
+                            SYNC.music_smoothing, segment_count
+                        )
+
+                    bands = audio.spectral_bands(data, AUDIO.sample_rate)
+                    palette_colors = (
+                        artwork_provider.get_colors()
+                        if SYNC.music_palette == audio.PALETTE_ALBUM_ART
+                        else None
+                    )
+                    frame = renderer.render(
+                        bands,
+                        reaction=SYNC.music_reaction,
+                        gain=SYNC.music_gain,
+                        palette=SYNC.music_palette,
+                        palette_colors=palette_colors,
+                    )
+                    smoother.alpha = SYNC.music_smoothing
+                    frame = smoother.update(frame)
+
+                    adjusted = processing.apply_brightness(
+                        frame, BRIGHTNESS.music
+                    )
+                    adapter.set_segments(adjusted)
+
+                    elapsed = time.monotonic() - frame_start
+                    if elapsed < frame_interval:
+                        time.sleep(frame_interval - elapsed)
     finally:
         if sys.platform == "win32":
             pythoncom.CoUninitialize()
 
 
 def get_amplitude(mic_data=None) -> float:
-    """Gets the audio amplitude."""
+    """Gets the peak audio amplitude (0..1). Retained for compatibility."""
     if mic_data is None:
         return 0
 
@@ -54,42 +137,5 @@ def get_amplitude(mic_data=None) -> float:
 
 
 def apply_brightness(colors: List[Tuple[int, int, int]], brightness_factor: float) -> List[Tuple[int, int, int]]:
-    """Apply brightness factor to a list of colors.
-
-    Args:
-        colors: List of RGB color tuples
-        brightness_factor: Brightness factor (0.0 to 1.0)
-
-    Returns:
-        List of adjusted RGB color tuples
-    """
-    return [(
-        int(r * brightness_factor),
-        int(g * brightness_factor),
-        int(b * brightness_factor)
-    ) for r, g, b in colors]
-
-
-# TODO: Is this a valid approach for multiple devices?
-def wave_color(server: socket.socket, device: Dict[str, Any], amplitude: float) -> None:
-    """Determines the wave color from the amplitude."""
-    match amplitude:
-        case amplitude if amplitude < 0.04:
-            COLORS.current.append([int(amplitude * 255), 0, 0])
-        case amplitude if 0.04 <= amplitude < 0.08:
-            COLORS.current.append([0, int(amplitude * 255), 0])
-        case _:
-            COLORS.current.append([0, 0, int(amplitude * 255)])
-
-    COLORS.current.pop(0)
-
-    # Apply brightness to current colors
-    segment_count = connection.get_segment_count(device, default=10)
-    COLORS.current = utils.fit_colors_to_count(COLORS.current, segment_count)
-    adjusted_colors = apply_brightness(COLORS.current, BRIGHTNESS.music)
-
-    connection.send_razer_data(
-        server,
-        device,
-        utils.convert_colors(utils.fit_colors_to_count(adjusted_colors, segment_count)),
-    )
+    """Apply a 0..1 brightness factor to a list of RGB colors."""
+    return processing.apply_brightness(colors, brightness_factor)

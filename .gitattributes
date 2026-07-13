@@ -1,2 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Shell scripts and the AppImage entrypoint must stay LF on every platform,
+# or their shebang breaks when run on Linux.
+*.sh text eol=lf
+AppRun text eol=lf

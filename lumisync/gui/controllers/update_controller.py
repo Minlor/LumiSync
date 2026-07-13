@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal
+from PySide6.QtCore import QObject, QThread, Signal
 
 from ... import __version__
 from ...updates import UpdateCheckResult, check_for_update
 
 
 class UpdateCheckWorker(QObject):
-    finished = pyqtSignal(object)
+    finished = Signal(object)
 
     def run(self) -> None:
         try:
@@ -25,16 +25,17 @@ class UpdateCheckWorker(QObject):
 
 
 class UpdateController(QObject):
-    check_started = pyqtSignal()
-    check_finished = pyqtSignal(object)
-    update_available = pyqtSignal(object)
-    status_updated = pyqtSignal(str)
+    check_started = Signal()
+    check_finished = Signal(object)
+    update_available = Signal(object)
+    status_updated = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
         self.check_thread: Optional[QThread] = None
         self.check_worker: Optional[UpdateCheckWorker] = None
         self.last_result: Optional[UpdateCheckResult] = None
+        self._silent_check = False
 
     def _check_running(self) -> bool:
         if self.check_thread is None:
@@ -49,13 +50,16 @@ class UpdateController(QObject):
         self.check_thread = None
         self.check_worker = None
 
-    def check_now(self) -> None:
+    def check_now(self, *, silent: bool = False) -> None:
         if self._check_running():
-            self.status_updated.emit("Update check already in progress...")
+            if not silent:
+                self.status_updated.emit("Update check already in progress...")
             return
 
+        self._silent_check = silent
         self.check_started.emit()
-        self.status_updated.emit("Checking for updates...")
+        if not silent:
+            self.status_updated.emit("Checking for updates...")
 
         thread = QThread()
         worker = UpdateCheckWorker()
@@ -73,19 +77,24 @@ class UpdateController(QObject):
         thread.start()
 
     def _on_finished(self, result: UpdateCheckResult) -> None:
+        silent = self._silent_check
+        self._silent_check = False
         self.last_result = result
         self.check_finished.emit(result)
 
         if result.error:
-            self.status_updated.emit(f"Update check failed: {result.error}")
+            if not silent:
+                self.status_updated.emit(f"Update check failed: {result.error}")
             return
 
         if result.is_update_available and result.latest_version:
-            self.status_updated.emit(f"Update available: v{result.latest_version}")
+            if not silent:
+                self.status_updated.emit(f"Update available: v{result.latest_version}")
             self.update_available.emit(result)
             return
 
-        self.status_updated.emit("LumiSync is up to date")
+        if not silent:
+            self.status_updated.emit("LumiSync is up to date")
 
     def __del__(self) -> None:
         thread = self.check_thread

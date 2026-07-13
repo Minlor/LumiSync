@@ -20,6 +20,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          # The build script installs into its own venv, but pip's download
+          # cache is user-wide, so this still skips re-downloading the large
+          # PySide6 / numpy / opencv wheels.
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Build Windows artifacts
         shell: pwsh

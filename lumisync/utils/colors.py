@@ -4,10 +4,13 @@ This module provides functions for color manipulation and conversion.
 """
 
 import base64
+import math
 from typing import Iterable, List, Tuple
 
 import webcolors
-from matplotlib.colors import CSS4_COLORS
+
+# webcolors ships the CSS3 named-color table; CSS4 added exactly one name.
+_CSS4_EXTRAS = {"rebeccapurple": "#663399"}
 
 
 def lerp(start: float, end: float, step: float) -> float:
@@ -46,10 +49,44 @@ def get_color(name: str, format: str = "rgb") -> Tuple[int, int, int] | str:
     color : str or tuple of int
         Either a string if "hexadecimal" or a tuple of ints if "rgb".
     """
-    color = CSS4_COLORS.get(name.lower())
+    key = name.lower()
+    hex_value = _CSS4_EXTRAS.get(key) or webcolors.name_to_hex(key)
     if format == "rgb":
-        color = webcolors.hex_to_rgb(color)
-    return color
+        return tuple(webcolors.hex_to_rgb(hex_value))
+    return hex_value
+
+
+def kelvin_to_rgb(kelvin: int) -> Tuple[int, int, int]:
+    """Approximate an sRGB color for a white color temperature in Kelvin.
+
+    Based on Tanner Helland's widely used piecewise fit, clamped to the range
+    Govee strips accept (~2000-9000 K). Used for tunable-white control and as a
+    fallback where a device has no native white channel.
+    """
+    temp = max(1000, min(40000, int(kelvin))) / 100.0
+
+    if temp <= 66:
+        red = 255.0
+    else:
+        red = 329.698727446 * ((temp - 60) ** -0.1332047592)
+
+    if temp <= 66:
+        green = 99.4708025861 * math.log(temp) - 161.1195681661 if temp > 0 else 0.0
+    else:
+        green = 288.1221695283 * ((temp - 60) ** -0.0755148492)
+
+    if temp >= 66:
+        blue = 255.0
+    elif temp <= 19:
+        blue = 0.0
+    else:
+        blue = 138.5177312231 * math.log(temp - 10) - 305.0447927307
+
+    return (
+        int(max(0, min(255, round(red)))),
+        int(max(0, min(255, round(green)))),
+        int(max(0, min(255, round(blue)))),
+    )
 
 
 def clamp_channel(value: int) -> int:

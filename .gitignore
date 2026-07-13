@@ -180,3 +180,12 @@ cython_debug/
 # Project specific ignores
 .idea/
 *.json
+
+# Reverse-engineering / capture artifacts (large, local-only, may hold PII)
+*.xapk
+*.apk
+*.dex
+*.pcapng
+*.etl
+*.etl.tmp
+govee-*.log

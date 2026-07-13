@@ -5,16 +5,19 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
 
 from lumisync import connection, led_mapping
+from lumisync.drivers import pool
 from lumisync.gui.controllers.device_controller import DeviceController
 from lumisync.gui.controllers.sync_controller import (
     SyncController,
     fit_led_mapping_to_count,
     get_led_mapping_from_settings,
+    load_sync_settings,
     sample_region_color,
 )
+from lumisync.config.options import SYNC
 from lumisync.gui.widgets.led_mapping_widget import (
     LedMappingWidget,
     fit_led_colors_to_device,
@@ -259,6 +262,66 @@ class SegmentCountTests(unittest.TestCase):
         self.assertTrue(server.closed)
         self.assertIsNone(controller.server)
 
+    def test_load_sync_settings_coerces_and_clamps(self):
+        saved = {
+            "sync/smoothing": "0.4",          # string round-trip from QSettings
+            "sync/saturation": "5.0",         # above range -> clamped to 2.0
+            "sync/gamma_correct": "false",
+            "sync/monitor_fps": "9999",       # clamped to 144
+            "sync/music_gain": "0.1",         # below range -> clamped to 0.5
+            "sync/music_smoothing": "0.7",
+            "sync/music_palette": "spectrum",
+            "sync/music_reaction": "center_burst",
+        }
+
+        class FakeSettings:
+            def value(self, key, default=None):
+                return saved.get(key, default)
+
+        original = dict(SYNC.__dict__)
+        try:
+            load_sync_settings(FakeSettings())
+            self.assertAlmostEqual(SYNC.smoothing, 0.4)
+            self.assertEqual(SYNC.saturation, 2.0)
+            self.assertFalse(SYNC.gamma_correct)
+            self.assertEqual(SYNC.monitor_fps, 144)
+            self.assertEqual(SYNC.music_gain, 0.5)
+            self.assertAlmostEqual(SYNC.music_smoothing, 0.7)
+            self.assertEqual(SYNC.music_palette, "spectrum")
+            self.assertEqual(SYNC.music_reaction, "center_burst")
+        finally:
+            SYNC.__dict__.update(original)
+
+    def test_load_sync_settings_rejects_unknown_palette(self):
+        class FakeSettings:
+            def value(self, key, default=None):
+                if key == "sync/music_palette":
+                    return "not-a-palette"
+                return default
+
+        original = dict(SYNC.__dict__)
+        try:
+            SYNC.music_palette = "rgb"
+            load_sync_settings(FakeSettings())
+            self.assertEqual(SYNC.music_palette, "rgb")
+        finally:
+            SYNC.__dict__.update(original)
+
+    def test_load_sync_settings_rejects_unknown_music_reaction(self):
+        class FakeSettings:
+            def value(self, key, default=None):
+                if key == "sync/music_reaction":
+                    return "not-a-reaction"
+                return default
+
+        original = dict(SYNC.__dict__)
+        try:
+            SYNC.music_reaction = "flow"
+            load_sync_settings(FakeSettings())
+            self.assertEqual(SYNC.music_reaction, "flow")
+        finally:
+            SYNC.__dict__.update(original)
+
     def test_device_controller_saves_zone_count_override(self):
         saved = {
             "devices": [
@@ -283,6 +346,70 @@ class SegmentCountTests(unittest.TestCase):
         self.assertEqual(controller.devices[0]["segment_count_override"], 20)
         written = write_json.call_args.args[0]
         self.assertEqual(written["devices"][0]["segment_count_override"], 20)
+
+    def test_ble_device_control_routes_through_adapter(self):
+        saved = {"devices": [], "selectedDevice": 0, "time": 1}
+
+        calls = []
+
+        class FakeAdapter:
+            def __init__(self, device, *a, **k):
+                self.device = device
+
+            def set_color(self, r, g, b):
+                calls.append(("color", r, g, b))
+
+            def close(self):
+                calls.append(("close",))
+
+        def fake_create(device, server=None):
+            return FakeAdapter(device)
+
+        with (
+            patch("lumisync.gui.controllers.device_controller.devices.get_data", return_value=saved),
+            patch("lumisync.gui.controllers.device_controller.devices.writeJSON"),
+            patch("lumisync.drivers.pool.create_adapter", side_effect=fake_create),
+        ):
+            controller = DeviceController()
+            controller.add_ble_device_manually("AA:BB:CC:DD:EE:FF", "iDotMatrix", "16x16")
+            self.assertEqual(controller.devices[0]["transport"], "ble")
+            controller.set_color_at(0, 10, 20, 30)
+            # BLE adapters are pooled and persistent; app shutdown closes them.
+            pool.close_all()
+
+        self.assertIn(("color", 10, 20, 30), calls)
+        self.assertIn(("close",), calls)
+
+    def test_device_controller_saves_and_resolves_group(self):
+        saved = {
+            "devices": [
+                {"mac": "aa:bb", "model": "H619C", "ip": "192.168.0.10", "port": 4003},
+                {"mac": "cc:dd", "model": "H6199", "ip": "192.168.0.20", "port": 4003},
+            ],
+            "selectedDevice": 0,
+            "time": 1,
+        }
+
+        store = {}
+
+        def fake_write(settings):
+            store.update(settings)
+
+        def fake_load(*_a, **_k):
+            return dict(saved, **({"groups": store["groups"]} if "groups" in store else {}))
+
+        with (
+            patch("lumisync.gui.controllers.device_controller.devices.get_data", return_value=saved),
+            patch("lumisync.gui.controllers.device_controller.devices.load_settings", side_effect=fake_load),
+            patch("lumisync.gui.controllers.device_controller.devices.writeJSON", side_effect=fake_write),
+        ):
+            controller = DeviceController()
+            ok = controller.save_group("Desk", [0, 1])
+            self.assertTrue(ok)
+            names = [g["name"] for g in controller.get_groups()]
+            self.assertIn("Desk", names)
+            resolved = controller.get_group_devices("Desk")
+            self.assertEqual({d["mac"] for d in resolved}, {"aa:bb", "cc:dd"})
 
     def test_device_controller_clears_zone_count_override(self):
         saved = {

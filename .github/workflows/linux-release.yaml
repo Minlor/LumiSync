@@ -1,0 +1,52 @@
+name: Build Linux Release
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  linux-appimage:
+    # Build on the oldest supported Ubuntu so the AppImage's glibc is broadly
+    # compatible.
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          # The build script installs into its own venv, but pip's download
+          # cache is user-wide, so this still skips re-downloading the large
+          # PySide6 / numpy wheels.
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfuse2
+
+      - name: Build AppImage
+        run: |
+          chmod +x tools/build_linux.sh
+          RUN_TESTS=1 tools/build_linux.sh
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LumiSync-Linux-x86_64-AppImage
+          path: dist/LumiSync-x86_64.AppImage
+
+      - name: Attach artifact to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/LumiSync-x86_64.AppImage

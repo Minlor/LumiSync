@@ -5,12 +5,17 @@ This module handles device discovery and management.
 
 import copy
 import json
+import os
+from pathlib import Path
+import shutil
 import socket
+import sys
 import time
 from typing import Dict, List, Any
 
 from colorama import Fore
 
+from . import connection
 from .connection import connect, listen as connection_listen, parse
 from .config.options import CONNECTION
 from .utils import write_json, get_logger
@@ -26,10 +31,83 @@ def _empty_settings() -> Dict[str, Any]:
     return {"devices": [], "selectedDevice": 0, "time": time.time()}
 
 
-def _load_saved_settings(filename: str = "settings.json") -> Dict[str, Any]:
-    """Load persisted devices without triggering a network discovery."""
+def _looks_like_lumisync_settings(path: Path) -> bool:
+    """Return whether *path* is a plausible legacy LumiSync settings file."""
     try:
-        with open(filename, "r") as f:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(data, dict) and isinstance(data.get("devices", []), list)
+
+
+def _legacy_settings_candidates() -> List[Path]:
+    """Find old launch-directory settings files used by packaged builds."""
+    candidates = [Path.cwd() / "settings.json"]
+    executable = Path(sys.executable).resolve()
+    candidates.append(executable.parent / "settings.json")
+
+    # Developer preview builds live below the repository. This also makes the
+    # migration deterministic when validating a packaged build locally.
+    for parent in executable.parents:
+        if (parent / "pyproject.toml").is_file():
+            candidates.append(parent / "settings.json")
+            break
+
+    unique: List[Path] = []
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved not in unique:
+            unique.append(resolved)
+    return unique
+
+
+def _is_packaged_app() -> bool:
+    """Detect supported PyInstaller layouts without relying on one flag."""
+    if getattr(sys, "frozen", False) or getattr(sys, "_MEIPASS", None):
+        return True
+    executable = Path(sys.executable).resolve()
+    return (
+        executable.stem.casefold() == "lumisync"
+        and (executable.parent / "_internal").is_dir()
+    )
+
+
+def settings_path(filename: str | os.PathLike[str] = "settings.json") -> Path:
+    """Return a stable settings path, migrating old packaged data once.
+
+    Source checkouts keep the historical relative path so scripts and tests are
+    unchanged. Frozen builds use the per-user application-data directory,
+    because their process working directory is not stable across launchers.
+    """
+    requested = Path(filename)
+    if requested != Path("settings.json") or not _is_packaged_app():
+        return requested
+
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+    config_dir = Path(base) / "LumiSync" if base else Path.home() / ".lumisync"
+    destination = config_dir / "settings.json"
+    if destination.exists():
+        return destination
+
+    for legacy in _legacy_settings_candidates():
+        if legacy == destination or not _looks_like_lumisync_settings(legacy):
+            continue
+        try:
+            config_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy, destination)
+            logger.info("Migrated settings from %s to %s", legacy, destination)
+            break
+        except OSError as exc:
+            logger.warning("Could not migrate settings from %s: %s", legacy, exc)
+    return destination
+
+
+def _load_saved_settings(filename: str | os.PathLike[str] = "settings.json") -> Dict[str, Any]:
+    """Load persisted devices without triggering a network discovery."""
+    path = settings_path(filename)
+    try:
+        with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return _empty_settings()
@@ -51,6 +129,11 @@ def _load_saved_settings(filename: str = "settings.json") -> Dict[str, Any]:
     copied["selectedDevice"] = selected
     copied["time"] = float(data.get("time", 0) or 0)
     return copied
+
+
+def load_settings(filename: str | os.PathLike[str] = "settings.json") -> Dict[str, Any]:
+    """Read persisted settings from disk without triggering network discovery."""
+    return _load_saved_settings(filename)
 
 
 def _device_keys(device: Dict[str, Any]) -> List[str]:
@@ -118,8 +201,14 @@ def merge_discovered_devices(
     return merged
 
 
-def discover_lan_devices(preserve_existing: bool = True) -> Dict[str, Any]:
-    """Discover LAN devices once, merge with saved devices, and persist safely."""
+def discover_lan_devices(
+    preserve_existing: bool = True, deep: bool = False
+) -> Dict[str, Any]:
+    """Discover LAN devices once, merge with saved devices, and persist safely.
+
+    When ``deep`` is set, a unicast subnet sweep runs alongside the multicast
+    scan so devices are still found on networks that filter multicast.
+    """
     saved_settings = _load_saved_settings() if preserve_existing else _empty_settings()
     existing_devices = saved_settings.get("devices", [])
     if not isinstance(existing_devices, list):
@@ -141,6 +230,23 @@ def discover_lan_devices(preserve_existing: bool = True) -> Dict[str, Any]:
                 server.close()
             except Exception:
                 pass
+
+    if deep:
+        sweep_server = None
+        try:
+            logger.info("Running deep subnet sweep for devices")
+            sweep_server, swept = connection.sweep_scan()
+            discovered_devices = merge_discovered_devices(
+                discovered_devices, [dict(device) for device in swept]
+            )
+        except Exception as exc:
+            logger.warning("Deep sweep failed: %s", exc)
+        finally:
+            if sweep_server is not None:
+                try:
+                    sweep_server.close()
+                except Exception:
+                    pass
 
     merged_devices = merge_discovered_devices(
         [dict(device) for device in existing_devices if isinstance(device, dict)],
@@ -170,7 +276,7 @@ def request() -> socket.socket:
     if _global_server is not None:
         try:
             _global_server.close()
-        except:
+        except Exception:
             pass
 
     logger.info("Requesting device data from network")
@@ -207,14 +313,17 @@ def parseMessages(messages: List[str]) -> Dict[str, Any]:
 
 def writeJSON(settings: Dict[str, Any]) -> None:
     """Write settings to a JSON file."""
-    logger.info("Writing settings to JSON file")
-    write_json(settings)
+    path = settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Writing settings to %s", path)
+    write_json(settings, str(path))
 
 def get_data() -> Dict[str, Any]:
     """Get device data from settings file or by requesting new data."""
+    path = settings_path()
     try:
-        logger.info("Attempting to load device data from settings.json")
-        with open("settings.json", "r") as f:
+        logger.info("Attempting to load device data from %s", path)
+        with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
 
         if time.time() - data.get("time", 0) > 86400:
@@ -225,7 +334,11 @@ def get_data() -> Dict[str, Any]:
             except Exception as e:
                 logger.error(f"Discovery refresh failed: {str(e)}", exc_info=True)
                 return data
-        logger.info(f"Loaded data with {len(data.get('devices', []))} device(s) from settings.json")
+        logger.info(
+            "Loaded data with %s device(s) from %s",
+            len(data.get("devices", [])),
+            path,
+        )
         return data
 
     except (FileNotFoundError, json.JSONDecodeError) as e:

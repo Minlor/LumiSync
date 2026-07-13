@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from colorama import Fore
 
+from . import sku_catalog
 from .config.options import CONNECTION
 
 
@@ -111,7 +112,13 @@ def get_device_port(device: Dict[str, Any]) -> int:
 
 
 def get_segment_count(device: Dict[str, Any], default: int = 10) -> int:
-    """Return the user-configured zone count, or the generic default."""
+    """Return the effective zone count for a device.
+
+    Precedence: explicit user override, then the SKU capability catalog
+    (bundled table or an imported Govee Desktop cache), then the generic
+    default. The catalog lets known models auto-configure their zone count
+    without the Govee app.
+    """
     fallback = default if isinstance(default, int) and default > 0 else 10
     for key in ("segment_count_override", "segmentCountOverride"):
         value = device.get(key)
@@ -121,6 +128,12 @@ def get_segment_count(device: Dict[str, Any], default: int = 10) -> int:
             continue
         if 0 < count <= 255:
             return count
+
+    catalog_count = sku_catalog.segment_count_for(
+        device.get("model") or device.get("sku")
+    )
+    if catalog_count and 0 < catalog_count <= 255:
+        return catalog_count
 
     return fallback
 
@@ -195,6 +208,58 @@ def connect() -> Tuple[socket.socket, List[Dict[str, Any]]]:
     return server, parse(listen(server))
 
 
+def local_ipv4() -> Optional[str]:
+    """Best-effort local IPv4 address, without sending any traffic."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("8.8.8.8", 80))
+        return probe.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        probe.close()
+
+
+def subnet_hosts(local_ip: Optional[str]) -> List[str]:
+    """Return every host address in ``local_ip``'s /24, excluding self/.0/.255."""
+    if not local_ip or local_ip.count(".") != 3:
+        return []
+    prefix, _, last = local_ip.rpartition(".")
+    try:
+        own = int(last)
+    except ValueError:
+        return []
+    return [f"{prefix}.{host}" for host in range(1, 255) if host != own]
+
+
+def sweep_scan(timeout: float = 2.5) -> Tuple[socket.socket, List[Dict[str, Any]]]:
+    """Discover devices by unicasting the scan probe to every host in the /24.
+
+    A fallback for networks that filter UDP multicast (guest/segmented Wi-Fi,
+    some managed switches), where :func:`connect` finds nothing. Probes each
+    host on the scan and control ports, then parses whoever answers as Govee.
+    """
+    print(f"{Fore.LIGHTGREEN_EX}Sweeping local subnet for devices...")
+    server = create_lan_socket(timeout=timeout)
+    scan_message = b'{"msg":{"cmd":"scan","data":{"account_topic":"reserve"}}}'
+
+    targets = subnet_hosts(local_ipv4())
+    for addr in targets:
+        for port in (CONNECTION.default.port, CONNECTION.default.control_port):
+            try:
+                server.sendto(scan_message, (addr, port))
+            except OSError:
+                pass
+
+    # Broadcast too, in case unicast is filtered but broadcast is not.
+    try:
+        server.sendto(scan_message, ("255.255.255.255", CONNECTION.default.port))
+    except OSError:
+        pass
+
+    return server, parse(listen(server))
+
+
 # TODO: Combine the below functions into one (into a complete "send" function?)
 def send(server: socket.socket, device: Dict[str, Any], data: Dict[str, Any]) -> None:
     """Sends some data from the server to a device."""
@@ -237,6 +302,37 @@ def set_color(
                 "data": {
                     "color": {"r": r, "g": g, "b": b},
                     "colorTemInKelvin": 0
+                },
+            }
+        },
+    )
+
+
+def set_color_temp(
+    server: socket.socket,
+    device: Dict[str, Any],
+    kelvin: int,
+    rgb: Optional[Tuple[int, int, int]] = None,
+) -> None:
+    """Set a tunable-white color temperature via the colorwc command.
+
+    Govee Desktop sends the Kelvin value alongside the RGB that represents it
+    (its ``colorTemInKelvincolor``). We mirror that: ``colorTemInKelvin`` drives
+    the white channel and ``color`` carries the equivalent RGB for firmware that
+    reads it.
+    """
+    from .utils.colors import kelvin_to_rgb
+
+    r, g, b = rgb if rgb is not None else kelvin_to_rgb(kelvin)
+    send(
+        server,
+        device,
+        {
+            "msg": {
+                "cmd": "colorwc",
+                "data": {
+                    "color": {"r": int(r), "g": int(g), "b": int(b)},
+                    "colorTemInKelvin": int(kelvin),
                 },
             }
         },

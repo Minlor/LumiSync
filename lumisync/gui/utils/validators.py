@@ -4,7 +4,7 @@ This module provides QValidator subclasses for validating user input.
 """
 
 import re
-from PyQt6.QtGui import QValidator
+from PySide6.QtGui import QValidator
 
 
 class IPAddressValidator(QValidator):

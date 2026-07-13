@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -22,7 +22,7 @@ from ..utils.animations import PulseDot
 class ActiveSyncRow(QFrame):
     """One running sync — shows mode, devices, pulse dot, stop button."""
 
-    stop_requested = pyqtSignal(str)  # mode
+    stop_requested = Signal(str)  # mode
 
     def __init__(self, mode: str, device_names: List[str], parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -49,7 +49,7 @@ class ActiveSyncRow(QFrame):
         text_box.addWidget(title)
 
         sub = QLabel(self._format_devices(device_names))
-        sub.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
+        sub.setProperty("role", "subtle")
         text_box.addWidget(sub)
 
         layout.addLayout(text_box, 1)

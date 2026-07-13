@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtGui import QColor, QPalette
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtGui import QColor, QPalette
+from PySide6.QtWidgets import QApplication
 
 from .tokens import TOKENS, qcolor
 
@@ -24,7 +24,12 @@ def _build_stylesheet() -> str:
     # with stylesheet syntax (e.g. percentages or braces).
     for key, value in TOKENS.items():
         text = text.replace("{" + key + "}", value)
-    return text
+    # Absolute icon dir for url() references (QSS resolves relative paths
+    # against the cwd, which is unreliable).
+    from ..resources import ResourceManager
+
+    icon_dir = (ResourceManager.get_resource_dir() / "icons").as_posix()
+    return text.replace("{icon_dir}", icon_dir)
 
 
 def _build_palette() -> QPalette:

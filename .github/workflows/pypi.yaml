@@ -25,6 +25,47 @@ jobs:
       - name: Build release distributions
         run: python -m build
 
+      - name: Validate release version
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_NAME: ${{ github.event.release.name }}
+        run: |
+          python - <<'PY'
+          import email.parser
+          import os
+          import re
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          def normalize(value):
+              match = re.search(r"\d+(?:\.\d+)+(?:[-+._a-zA-Z0-9]*)?", value or "")
+              return match.group(0).lstrip("vV") if match else ""
+
+          expected = normalize(os.environ.get("RELEASE_TAG")) or normalize(os.environ.get("RELEASE_NAME"))
+          wheels = sorted(Path("dist").glob("*.whl"))
+          if not wheels:
+              print("No wheel found in dist/.", file=sys.stderr)
+              sys.exit(1)
+
+          with zipfile.ZipFile(wheels[0]) as wheel:
+              metadata_name = next(name for name in wheel.namelist() if name.endswith(".dist-info/METADATA"))
+              metadata = email.parser.Parser().parsestr(wheel.read(metadata_name).decode("utf-8"))
+
+          built = metadata["Version"]
+          if built != expected:
+              print(
+                  f"Release version mismatch: GitHub release expects {expected!r}, "
+                  f"but the built package is {built!r}. Update lumisync.__version__ "
+                  "or publish a release that matches the package version.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+          print(f"Release version OK: {built}")
+          PY
+
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
@@ -54,3 +95,4 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
+          skip-existing: true

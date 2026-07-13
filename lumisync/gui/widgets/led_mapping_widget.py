@@ -5,15 +5,15 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
-from PyQt6.QtCore import QPoint, QRect, QSettings, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen, QBrush
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QPoint, QRect, QSettings, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen, QBrush
+from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
-    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 from ... import connection, led_mapping, utils
 from ...led_mapping import NormalizedRect
 from ..theme import qcolor
+from .product_controls import ProductSlider
 
 if TYPE_CHECKING:
     from ..controllers.sync_controller import SyncController
@@ -95,7 +96,7 @@ def fit_led_mapping_to_count(
 class ScreenRegionPreview(QFrame):
     """Visual preview of the monitor with draggable content zones."""
 
-    zone_drag_swap = pyqtSignal(int, int)
+    zone_drag_swap = Signal(int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -319,7 +320,7 @@ class ScreenRegionPreview(QFrame):
 class LedMappingWidget(QWidget):
     """Widget for mapping LED positions to screen content zones."""
 
-    mapping_changed = pyqtSignal(list)
+    mapping_changed = Signal(list)
 
     def __init__(
         self,
@@ -345,21 +346,19 @@ class LedMappingWidget(QWidget):
             "Drag zones to swap LED positions. Colors show on your LED strip."
         )
         instructions.setWordWrap(True)
-        instructions.setStyleSheet(f"color: {qcolor('text_dim').name()}; font-size: 9pt;")
+        instructions.setProperty("role", "subtle")
         layout.addWidget(instructions)
 
         self.screen_preview = ScreenRegionPreview()
         layout.addWidget(self.screen_preview)
 
         self.selection_label = QLabel("Drag a zone to swap LED positions")
-        self.selection_label.setStyleSheet(
-            f"color: {qcolor('text_disabled').name()}; font-style: italic;"
-        )
+        self.selection_label.setProperty("role", "hint")
         layout.addWidget(self.selection_label)
 
         depth_layout = QHBoxLayout()
         depth_layout.addWidget(QLabel("Capture depth"))
-        self.capture_depth_slider = QSlider(Qt.Orientation.Horizontal)
+        self.capture_depth_slider = ProductSlider(Qt.Orientation.Horizontal)
         self.capture_depth_slider.setRange(
             int(led_mapping.MIN_CAPTURE_DEPTH * 100),
             int(led_mapping.MAX_CAPTURE_DEPTH * 100),
@@ -609,6 +608,15 @@ class LedMappingWidget(QWidget):
                 self.selection_label.setText(f"Connection error: {str(e)[:30]}")
 
     def _reset_to_default(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Reset LED Mapping",
+            "Replace the current zone layout with the default mapping?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
         self.screen_preview.set_mapping(
             led_mapping.generate_screen_mapping(
                 self._segment_count,

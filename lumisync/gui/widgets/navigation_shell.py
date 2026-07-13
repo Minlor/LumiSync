@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import (
+from PySide6.QtCore import (
     QEasingCurve,
     QPoint,
     QPropertyAnimation,
@@ -18,21 +18,18 @@ from PyQt6.QtCore import (
     QSize,
     Qt,
 )
-from PyQt6.QtGui import QColor, QPainter, QPixmap
-from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtWidgets import (
-    QAbstractButton,
+from PySide6.QtGui import QColor, QPainter, QPixmap
+from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
-    QSizePolicy,
     QStackedWidget,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -42,9 +39,11 @@ from ..theme import qcolor
 from ..utils.animations import fade_swap_stack
 
 
-RAIL_WIDTH = 60
-RAIL_ITEM_SIZE = 40
-RAIL_ICON_SIZE = 20
+RAIL_WIDTH = 184
+ICON_ONLY_RAIL_WIDTH = 88
+RAIL_ITEM_HEIGHT = 64
+RAIL_ITEM_SIZE = 54
+RAIL_ICON_SIZE = 24
 
 
 @dataclass(frozen=True)
@@ -62,8 +61,9 @@ class NavRailItemDelegate(QStyledItemDelegate):
 
     SVG_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, icon_only: bool = False):
         super().__init__(parent)
+        self._icon_only = icon_only
         self._pixmap_cache: Dict[Tuple[str, int, int, int], QPixmap] = {}
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
@@ -76,25 +76,26 @@ class NavRailItemDelegate(QStyledItemDelegate):
 
         text = qcolor("text")
 
-        if selected:
-            icon_color = QColor(text)
-            icon_color.setAlpha(255)
-        elif hovered:
-            icon_color = QColor(text)
-            icon_color.setAlpha(220)
-            # Hover background pill
-            pill_w = RAIL_ITEM_SIZE + 12
+        if selected or hovered:
+            pill_w = RAIL_ITEM_SIZE if self._icon_only else rect.width() - 16
             pill_h = RAIL_ITEM_SIZE
             pill_rect = QRect(
                 rect.center().x() - pill_w // 2,
                 rect.center().y() - pill_h // 2,
-                pill_w, pill_h,
+                pill_w,
+                pill_h,
             )
-            bg = QColor(text)
-            bg.setAlpha(22)
+            bg = qcolor("nav_selected" if selected else "nav_hover")
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(bg)
-            painter.drawRoundedRect(pill_rect, 8, 8)
+            painter.drawRoundedRect(pill_rect, 12, 12)
+
+        if selected:
+            icon_color = qcolor("accent_bright")
+            icon_color.setAlpha(255)
+        elif hovered:
+            icon_color = QColor(text)
+            icon_color.setAlpha(220)
         else:
             icon_color = QColor(text)
             icon_color.setAlpha(150)
@@ -103,14 +104,34 @@ class NavRailItemDelegate(QStyledItemDelegate):
         if isinstance(svg_name, str) and svg_name:
             size = QSize(RAIL_ICON_SIZE, RAIL_ICON_SIZE)
             pm = self._tinted_svg_pixmap(svg_name, size, icon_color)
-            x = rect.center().x() - pm.width() // 2
+            x = (
+                rect.center().x() - pm.width() // 2
+                if self._icon_only
+                else rect.left() + 22
+            )
             y = rect.center().y() - pm.height() // 2
             painter.drawPixmap(QPoint(x, y), pm)
+
+        if not self._icon_only:
+            label = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+            label_color = qcolor("text") if selected else qcolor("text_dim")
+            if hovered:
+                label_color = qcolor("text")
+            painter.setPen(label_color)
+            font = painter.font()
+            font.setBold(selected)
+            painter.setFont(font)
+            painter.drawText(
+                rect.adjusted(54, 0, -14, 0),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                label,
+            )
 
         painter.restore()
 
     def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:
-        return QSize(RAIL_WIDTH, RAIL_WIDTH)
+        width = ICON_ONLY_RAIL_WIDTH if self._icon_only else RAIL_WIDTH
+        return QSize(width, RAIL_ITEM_HEIGHT)
 
     def _tinted_svg_pixmap(self, svg_name: str, size: QSize, color: QColor) -> QPixmap:
         key = (svg_name, size.width(), size.height(), color.rgba())
@@ -172,6 +193,7 @@ class NavigationShell(QWidget):
 
         self._items: List[NavItem] = []
         self._icon_only = icon_only
+        self._rail_width = ICON_ONLY_RAIL_WIDTH if icon_only else RAIL_WIDTH
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -180,18 +202,21 @@ class NavigationShell(QWidget):
         # Sidebar
         self.sidebar = QFrame()
         self.sidebar.setObjectName("Sidebar")
-        self.sidebar.setFixedWidth(RAIL_WIDTH)
+        self.sidebar.setFixedWidth(self._rail_width)
 
         sb_layout = QVBoxLayout(self.sidebar)
-        sb_layout.setContentsMargins(0, 8, 0, 8)
+        sb_layout.setContentsMargins(0, 12, 0, 12)
         sb_layout.setSpacing(0)
 
         self.title_label = QLabel(title)
         self.title_label.setObjectName("SidebarTitle")
-        self.title_label.setVisible(False)
+        self.title_label.setVisible(not icon_only)
+        self.title_label.setContentsMargins(20, 4, 12, 16)
+        sb_layout.addWidget(self.title_label)
 
         self.nav_list = QListWidget()
         self.nav_list.setObjectName("SidebarNav")
+        self.nav_list.setAccessibleName("Main navigation")
         self.nav_list.setIconSize(QSize(RAIL_ICON_SIZE, RAIL_ICON_SIZE))
         self.nav_list.setMovement(QListWidget.Movement.Static)
         self.nav_list.setUniformItemSizes(True)
@@ -200,13 +225,16 @@ class NavigationShell(QWidget):
         self.nav_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.nav_list.setMouseTracking(True)
         self.nav_list.currentRowChanged.connect(self._on_row_changed)
-        self.nav_list.setItemDelegate(NavRailItemDelegate(self.nav_list))
+        self.nav_list.setItemDelegate(
+            NavRailItemDelegate(self.nav_list, icon_only=icon_only)
+        )
         sb_layout.addWidget(self.nav_list)
 
         sb_layout.addStretch(1)
 
         self.bottom_nav_list = QListWidget()
         self.bottom_nav_list.setObjectName("SidebarNavBottom")
+        self.bottom_nav_list.setAccessibleName("Application navigation")
         self.bottom_nav_list.setIconSize(QSize(RAIL_ICON_SIZE, RAIL_ICON_SIZE))
         self.bottom_nav_list.setMovement(QListWidget.Movement.Static)
         self.bottom_nav_list.setUniformItemSizes(True)
@@ -214,9 +242,11 @@ class NavigationShell(QWidget):
         self.bottom_nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.bottom_nav_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.bottom_nav_list.setMouseTracking(True)
-        self.bottom_nav_list.setFixedHeight(RAIL_WIDTH)
+        self.bottom_nav_list.setFixedHeight(RAIL_ITEM_HEIGHT)
         self.bottom_nav_list.currentRowChanged.connect(self._on_bottom_row_changed)
-        self.bottom_nav_list.setItemDelegate(NavRailItemDelegate(self.bottom_nav_list))
+        self.bottom_nav_list.setItemDelegate(
+            NavRailItemDelegate(self.bottom_nav_list, icon_only=icon_only)
+        )
         sb_layout.addWidget(self.bottom_nav_list)
 
         # Animated selection indicator (parented to sidebar so its coords are sidebar-relative)
@@ -238,16 +268,33 @@ class NavigationShell(QWidget):
         item = NavItem(key=key, title=title, icon=icon, widget=widget)
         self._items.append(item)
 
-        list_item = QListWidgetItem("")
-        list_item.setToolTip(title)
+        list_item = QListWidgetItem("" if self._icon_only else title)
+        if self._icon_only:
+            list_item.setToolTip(title)
+        # The rail is intentionally icon-only, so provide the label through
+        # Qt Accessibility without asking the delegate to paint visible text.
+        list_item.setData(Qt.ItemDataRole.AccessibleTextRole, title)
+        list_item.setData(
+            Qt.ItemDataRole.AccessibleDescriptionRole,
+            f"Open the {title} page",
+        )
         list_item.setData(Qt.ItemDataRole.UserRole, key)
         list_item.setData(NavRailItemDelegate.SVG_ROLE, "")
-        list_item.setSizeHint(QSize(RAIL_WIDTH, RAIL_WIDTH))
+        list_item.setSizeHint(QSize(self._rail_width, RAIL_ITEM_HEIGHT))
 
         if bottom:
             self.bottom_nav_list.addItem(list_item)
+            self.bottom_nav_list.setFixedHeight(
+                self.bottom_nav_list.count() * RAIL_ITEM_HEIGHT
+            )
         else:
             self.nav_list.addItem(list_item)
+            # QListWidget's cached size hint can lag behind dynamically added
+            # rows. Size the icon rail from its actual contents so a new page
+            # can never exist in the stack while being clipped out of view.
+            self.nav_list.setFixedHeight(
+                self.nav_list.count() * RAIL_ITEM_HEIGHT
+            )
         self.content_stack.addWidget(widget)
 
         if self.nav_list.currentRow() < 0 and not bottom:
@@ -309,9 +356,9 @@ class NavigationShell(QWidget):
         # Map to sidebar coords: lst is inside sb_layout
         top_left = lst.mapTo(self.sidebar, item_rect.topLeft())
         # Indicator: 16 px tall, vertically centered in the rail item
-        ind_h = 18
+        ind_h = 28
         target = QRect(
-            2,
+            4,
             top_left.y() + (item_rect.height() - ind_h) // 2,
             3,
             ind_h,

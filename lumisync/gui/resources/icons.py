@@ -23,8 +23,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import Dict, Optional, Tuple, Union
 
-from PyQt6.QtCore import QSize
-from PyQt6.QtGui import QIcon, QPixmap
+from PySide6.QtCore import QSize
+from PySide6.QtGui import QIcon, QPixmap
 
 from . import ResourceManager
 
@@ -32,30 +32,46 @@ from . import ResourceManager
 class IconKey(str, Enum):
     # General
     APP = "app"
+    TRAY = "tray"
     SETTINGS = "settings"
 
     # Devices
     REFRESH = "refresh"
     NETWORK = "network"
     POWER = "power"
+    BLUETOOTH = "bluetooth"
+    ADD = "add"
+    TRASH = "trash"
 
     # Modes
     SCREEN = "screen"
     MUSIC = "music"
     PLAY = "play"
     STOP = "stop"
+    DRAW = "draw"
+
+    # Controls
+    SUN = "sun"
+    THERMOMETER = "thermometer"
 
 
 _ICON_FILES: Dict[IconKey, str] = {
-    IconKey.APP: "lightbulb-on.svg",
+    IconKey.APP: "app.svg",
+    IconKey.TRAY: "tray.svg",
     IconKey.SETTINGS: "settings.svg",
     IconKey.REFRESH: "refresh.svg",
     IconKey.NETWORK: "network.svg",
     IconKey.POWER: "power.svg",
+    IconKey.BLUETOOTH: "bluetooth.svg",
+    IconKey.ADD: "plus.svg",
+    IconKey.TRASH: "trash.svg",
     IconKey.SCREEN: "screen.svg",
     IconKey.MUSIC: "music.svg",
     IconKey.PLAY: "play.svg",
     IconKey.STOP: "stop.svg",
+    IconKey.DRAW: "pencil.svg",
+    IconKey.SUN: "sun.svg",
+    IconKey.THERMOMETER: "thermometer.svg",
 }
 
 
@@ -137,6 +153,47 @@ def pixmap(key: IconKey, size: _SizeLike = None) -> QPixmap:
     return pm
 
 
+# Tinted pixmaps for dark UI: our SVGs use stroke="currentColor" (rendered
+# black by QtSvg), so recolor via SourceIn composition, like the nav rail.
+_tinted_cache: Dict[Tuple[IconKey, int, int, int], QPixmap] = {}
+
+
+def tinted_pixmap(key: IconKey, color, size: _SizeLike = 16) -> QPixmap:
+    """Return the icon rendered at `size` and tinted with `color`."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor, QPainter
+    from PySide6.QtSvg import QSvgRenderer
+
+    qsize = _normalize_size(size) or QSize(16, 16)
+    qcolor_ = QColor(color)
+    cache_key = (key, qsize.width(), qsize.height(), qcolor_.rgba())
+    cached = _tinted_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    pm = QPixmap(qsize)
+    pm.fill(Qt.GlobalColor.transparent)
+
+    filename = _ICON_FILES.get(key)
+    path = ResourceManager.get_icon_path(filename) if filename else None
+    if path is not None:
+        renderer = QSvgRenderer(str(path))
+        painter = QPainter(pm)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        renderer.render(painter)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        painter.fillRect(pm.rect(), qcolor_)
+        painter.end()
+
+    _tinted_cache[cache_key] = pm
+    return pm
+
+
+def tinted_icon(key: IconKey, color, size: _SizeLike = 16) -> QIcon:
+    """Return a QIcon tinted with `color` (for buttons on dark surfaces)."""
+    return QIcon(tinted_pixmap(key, color, size))
+
+
 def register_icon(key: IconKey, filename: str) -> None:
     """Override or add a mapping from IconKey -> filename."""
 
@@ -150,5 +207,11 @@ def register_icon(key: IconKey, filename: str) -> None:
             _pixmap_cache.pop(k, None)
 
 
-__all__ = ["IconKey", "icon", "pixmap", "register_icon"]
-
+__all__ = [
+    "IconKey",
+    "icon",
+    "pixmap",
+    "register_icon",
+    "tinted_icon",
+    "tinted_pixmap",
+]
