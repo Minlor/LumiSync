@@ -10,11 +10,22 @@ import numpy as np
 if np.lib.NumpyVersion(np.__version__) >= '2.0.0':
     np.fromstring = np.frombuffer
 
-import soundcard as sc
-
 from ..config.options import AUDIO, BRIGHTNESS, SYNC
 from ..drivers.registry import create_adapter
 from . import artwork, audio, processing
+
+
+def _soundcard_backend():
+    """Load the audio backend only when music capture is requested.
+
+    SoundCard connects to PulseAudio while importing on Linux. Deferring that
+    import keeps LumiSync importable on headless systems and lets the existing
+    capture error handling report unavailable audio when the feature is used.
+    """
+
+    import soundcard
+
+    return soundcard
 
 
 def default_loopback_microphone():
@@ -26,6 +37,7 @@ def default_loopback_microphone():
     doesn't we fall back to picking a monitor/loopback source directly so
     music sync works out of the box on Linux too.
     """
+    sc = _soundcard_backend()
     speaker_name = None
     try:
         speaker_name = str(sc.default_speaker().name)

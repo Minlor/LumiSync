@@ -16,10 +16,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           # The build script installs into its own venv, but pip's download
@@ -28,11 +28,21 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      - name: Resolve manual release target
+        id: manual_release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RELEASE_TAG="$(python -c 'from lumisync import __version__; print(__version__)')"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
       - name: Install system libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfuse2
+            libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfuse2 libpulse0
 
       - name: Build AppImage
         run: |
@@ -40,13 +50,13 @@ jobs:
           RUN_TESTS=1 tools/build_linux.sh
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: LumiSync-Linux-x86_64-AppImage
           path: dist/LumiSync-x86_64.AppImage
 
       - name: Attach artifact to GitHub Release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ github.event_name == 'release' && github.event.release.tag_name || steps.manual_release.outputs.tag }}
           files: dist/LumiSync-x86_64.AppImage
