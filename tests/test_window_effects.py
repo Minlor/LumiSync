@@ -1,3 +1,4 @@
+import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
@@ -9,6 +10,7 @@ from lumisync.gui.utils import window_effects
 
 
 class WindowsBackdropTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "requires Windows DWM APIs")
     def test_native_titlebar_colors_use_windows_color_attributes(self):
         dwmapi = MagicMock()
         dwmapi.DwmSetWindowAttribute.return_value = 0
@@ -33,6 +35,7 @@ class WindowsBackdropTests(unittest.TestCase):
         self.assertEqual(attributes, [35, 36, 34])
         self.assertEqual(window_effects._colorref("#112233"), 0x332211)
 
+    @unittest.skipUnless(sys.platform == "win32", "requires Windows DWM APIs")
     def test_dark_titlebar_also_applies_integrated_chrome(self):
         dwmapi = MagicMock()
         dwmapi.DwmSetWindowAttribute.return_value = 0
@@ -56,6 +59,7 @@ class WindowsBackdropTests(unittest.TestCase):
         set_colors.assert_called_once_with(123)
         set_corners.assert_called_once_with(123)
 
+    @unittest.skipUnless(sys.platform == "win32", "requires Windows version APIs")
     def test_system_backdrop_requires_windows_11_22621(self):
         with (
             patch.object(window_effects, "_IS_WINDOWS", True),
