@@ -11,28 +11,58 @@ from PySide6.QtGui import QColor
 
 
 TOKENS: dict[str, str] = {
-    # Surfaces
-    "bg":             "#0E1116",
-    "surface":        "#161A21",
-    "surface_alt":    "#1F242D",
-    "hover":          "#252B36",
-    "pressed":        "#2D3340",
+    # Surfaces (neutral charcoal with a restrained indigo cast). The window
+    # material supplies color; controls remain legible over any wallpaper.
+    "bg":             "#11121A",
+    "surface":        "#1B1C27",
+    "surface_alt":    "#252735",
+    "hover":          "#303242",
+    "pressed":        "#393C4E",
+    # Windows 11 system-backdrop layers. These are only selected after DWM
+    # accepts the request; all other platforms keep the solid colors.
+    "mica_bg":         "rgba(17, 17, 26, 0.74)",
+    "mica_sidebar":    "rgba(9, 10, 17, 0.62)",
+    "mica_surface":    "rgba(30, 30, 43, 0.78)",
+    "mica_control":    "rgba(40, 41, 55, 0.86)",
+    "mica_border":     "rgba(222, 226, 255, 0.11)",
+    "mica_device_surface": "rgba(15, 17, 25, 0.90)",
+    "mica_inspector_surface": "rgba(21, 22, 33, 0.94)",
+    # Desktop Acrylic exposes more of the blurred desktop than Mica. Separate
+    # foundation, panel, and control opacities preserve visual hierarchy.
+    "acrylic_bg":      "rgba(15, 15, 24, 0.70)",
+    "acrylic_sidebar": "rgba(8, 9, 15, 0.58)",
+    "acrylic_surface": "rgba(29, 30, 42, 0.76)",
+    "acrylic_control": "rgba(40, 42, 56, 0.84)",
+    "acrylic_border":  "rgba(222, 226, 255, 0.11)",
+    "device_surface": "#151721",
+    "device_hover": "#1C1F2C",
+    "acrylic_device_surface": "rgba(14, 16, 24, 0.89)",
+    "acrylic_inspector_surface": "rgba(20, 21, 31, 0.94)",
+
+    # Navigation uses neutral selection glass; the accent belongs to the icon
+    # and slim location marker, keeping the rail quiet like Fluent apps.
+    "nav_selected":    "rgba(244, 247, 255, 0.10)",
+    "nav_hover":       "rgba(244, 247, 255, 0.06)",
 
     # Borders
-    "border":         "#2A2F3A",
-    "border_dim":     "#1F242D",
-    "border_strong":  "#3A4150",
+    "border":         "#343644",
+    "border_dim":     "#252633",
+    "border_strong":  "#55586D",
 
     # Text
-    "text":           "#E6E8EE",
-    "text_dim":       "#8A93A6",
-    "text_disabled":  "#4A5263",
+    "text":           "#F3F7FF",
+    "text_dim":       "#B0B2C0",
+    "text_disabled":  "#717383",
 
-    # Accent (RGB-evocative violet)
-    "accent":         "#7C5CFF",
-    "accent_bright":  "#9077FF",
-    "accent_dim":     "rgba(124, 92, 255, 0.32)",
-    "accent_glow":    "rgba(124, 92, 255, 0.18)",
+    # Accent (accessible Fluent-inspired blue)
+    "accent":          "#4A8BF5",
+    "accent_bright":   "#68A3FF",
+    "accent_dim":      "rgba(74, 139, 245, 0.20)",
+    "accent_glow":     "rgba(74, 139, 245, 0.12)",
+    "accent_surface":  "rgba(89, 151, 255, 0.38)",
+    "accent_hover":    "rgba(105, 164, 255, 0.50)",
+    "accent_pressed":  "rgba(70, 128, 224, 0.30)",
+    "accent_border":   "rgba(125, 177, 255, 0.52)",
 
     # Semantic
     "success":        "#34D399",
@@ -43,12 +73,12 @@ TOKENS: dict[str, str] = {
     "danger_dim":     "rgba(248, 113, 113, 0.18)",
 
     # Geometry
-    "radius_sm":      "6px",
-    "radius_md":      "8px",
-    "radius_lg":      "12px",
+    "radius_sm":      "8px",
+    "radius_md":      "10px",
+    "radius_lg":      "14px",
 
     # Typography
-    "font_title":     "18pt",
+    "font_title":     "20pt",
     "font_body":      "10pt",
     "font_small":     "9pt",
     "font_caption":   "8pt",

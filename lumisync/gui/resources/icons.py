@@ -32,6 +32,7 @@ from . import ResourceManager
 class IconKey(str, Enum):
     # General
     APP = "app"
+    TRAY = "tray"
     SETTINGS = "settings"
 
     # Devices
@@ -55,7 +56,8 @@ class IconKey(str, Enum):
 
 
 _ICON_FILES: Dict[IconKey, str] = {
-    IconKey.APP: "app.png",
+    IconKey.APP: "app.svg",
+    IconKey.TRAY: "tray.svg",
     IconKey.SETTINGS: "settings.svg",
     IconKey.REFRESH: "refresh.svg",
     IconKey.NETWORK: "network.svg",
