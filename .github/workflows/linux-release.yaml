@@ -28,6 +28,16 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      - name: Resolve manual release target
+        id: manual_release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RELEASE_TAG="$(python -c 'from lumisync import __version__; print(__version__)')"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
       - name: Install system libraries
         run: |
           sudo apt-get update
@@ -46,7 +56,7 @@ jobs:
           path: dist/LumiSync-x86_64.AppImage
 
       - name: Attach artifact to GitHub Release
-        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ github.event_name == 'release' && github.event.release.tag_name || steps.manual_release.outputs.tag }}
           files: dist/LumiSync-x86_64.AppImage
