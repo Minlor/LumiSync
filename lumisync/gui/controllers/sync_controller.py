@@ -356,7 +356,7 @@ class MusicSyncWorker(QObject):
                                 renderer = renderers.get(key)
                                 if renderer is None:
                                     renderer = audio.MusicPatternRenderer(
-                                        segment_count
+                                        segment_count, SYNC.music_fps
                                     )
                                     renderers[key] = renderer
                                 frame = renderer.render(

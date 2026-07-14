@@ -169,16 +169,35 @@ class MusicPatternTests(unittest.TestCase):
 
         self.assertIn(selected, ("pulse", "center_burst"))
         self.assertEqual(renderer._auto_reaction, selected)
-        self.assertGreater(renderer._auto_hold_frames, 0)
+        self.assertGreater(renderer._auto_hold_seconds, 0.0)
 
     def test_auto_director_reselects_from_current_spectrum(self):
         renderer = audio.MusicPatternRenderer(8)
         renderer.render((0.20, 0.02, 0.01), reaction="auto")
-        renderer._auto_hold_frames = 0
 
+        # Feed a steady treble passage so the smoothed decision features track
+        # it and the phantom transient from the first frame decays away, then
+        # let the phrase expire before the next decision.
+        for _ in range(40):
+            renderer.render((0.01, 0.01, 0.20), reaction="auto")
+        renderer._auto_hold_seconds = 0.0
         renderer.render((0.01, 0.01, 0.20), reaction="auto")
 
         self.assertIn(renderer._auto_reaction, ("twinkle", "wave", "chase"))
+
+    def test_auto_director_crossfades_out_of_the_previous_frame(self):
+        renderer = audio.MusicPatternRenderer(8)
+        renderer.render((0.20, 0.02, 0.01), reaction="auto")
+        # Force an immediate reselection into a different category.
+        renderer._auto_hold_seconds = 0.0
+        renderer._auto_treble_share = 0.9
+        renderer._auto_bass_share = 0.0
+        renderer._auto_transient_peak = 0.0
+        renderer.render((0.01, 0.01, 0.20), reaction="auto")
+
+        # A crossfade is now in progress, blending out of the prior frame.
+        self.assertGreater(renderer._auto_fade, 0.0)
+        self.assertLessEqual(renderer._auto_fade, 1.0)
 
     def test_auto_director_exposes_the_concrete_active_reaction(self):
         renderer = audio.MusicPatternRenderer(8)

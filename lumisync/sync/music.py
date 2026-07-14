@@ -80,7 +80,7 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
         adapter = create_adapter(device, server)
         adapter.begin_stream()
         segment_count = adapter.capabilities.segment_count
-        renderer = audio.MusicPatternRenderer(segment_count)
+        renderer = audio.MusicPatternRenderer(segment_count, SYNC.music_fps)
         artwork_provider = artwork.ArtworkPaletteProvider()
         smoother = processing.ColorSmoother(
             SYNC.music_smoothing, segment_count
@@ -103,7 +103,9 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
 
                     if active_reaction != SYNC.music_reaction:
                         active_reaction = SYNC.music_reaction
-                        renderer = audio.MusicPatternRenderer(segment_count)
+                        renderer = audio.MusicPatternRenderer(
+                            segment_count, SYNC.music_fps
+                        )
                         smoother = processing.ColorSmoother(
                             SYNC.music_smoothing, segment_count
                         )

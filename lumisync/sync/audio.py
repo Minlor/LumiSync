@@ -334,8 +334,10 @@ class MusicPatternRenderer:
     previous style leaking into the new one.
     """
 
-    def __init__(self, segment_count: int):
+    def __init__(self, segment_count: int, fps: int = 60):
         self.segment_count = max(1, int(segment_count))
+        self._fps = max(1, int(fps))
+        self._frame_dt = 1.0 / self._fps
         self._frame: list[RGB] = [(0, 0, 0)] * self.segment_count
         self._reaction = ""
         self._phase = 0.0
@@ -348,8 +350,24 @@ class MusicPatternRenderer:
         self._palette_phase = 0.0
         self._auto_renderer: MusicPatternRenderer | None = None
         self._auto_reaction = REACTION_FLOW
-        self._auto_hold_frames = 0
-        self._auto_cycle = 0
+        # Hold is tracked in seconds so a phrase lasts the same wall-clock time
+        # regardless of the configured frame rate.
+        self._auto_hold_seconds = 0.0
+        # One rotation index per decision category so each category cycles
+        # through its own members instead of sharing a global counter.
+        self._auto_cycle: dict[str, int] = {}
+        # Smoothed spectral features feed the category decision so one noisy
+        # window can't pin the next phrase; transients use a decaying peak.
+        self._auto_features_ready = False
+        self._auto_level = 0.0
+        self._auto_bass_share = 0.0
+        self._auto_treble_share = 0.0
+        self._auto_complexity = 0.0
+        self._auto_transient_peak = 0.0
+        # Crossfade state used to blend the previous frame into a freshly
+        # chosen reaction so switches don't blink to black.
+        self._auto_fade = 0.0
+        self._auto_fade_from: list[RGB] = []
 
     @property
     def active_reaction(self) -> str:
@@ -380,17 +398,10 @@ class MusicPatternRenderer:
         level = self._level(total, gain)
         level_rise = max(0.0, level - self._previous_level)
         transient = min(1.0, level_rise * 4.0)
-        bass_share = bass / total if total > 1e-9 else 0.0
-        beat_strength = min(
-            1.0,
-            transient + level * (0.35 + 0.65 * bass_share),
-        )
-        if total > 1e-9 and palette in ROTATING_PALETTES:
-            # Rotation remains tied to live sound: silence pauses the palette.
-            self._palette_phase = (
-                self._palette_phase + 0.0015 + 0.0040 * level
-            ) % 1.0
 
+        # Auto Director delegates to a nested renderer; the palette rotation and
+        # beat-strength math below only apply to concrete reactions, so return
+        # before computing them.
         if reaction == REACTION_AUTO:
             self._frame = self._auto_frame(
                 (bass, mid, treble),
@@ -402,6 +413,17 @@ class MusicPatternRenderer:
             )
             self._previous_level = level
             return list(self._frame)
+
+        bass_share = bass / total if total > 1e-9 else 0.0
+        beat_strength = min(
+            1.0,
+            transient + level * (0.35 + 0.65 * bass_share),
+        )
+        if total > 1e-9 and palette in ROTATING_PALETTES:
+            # Rotation remains tied to live sound: silence pauses the palette.
+            self._palette_phase = (
+                self._palette_phase + 0.0015 + 0.0040 * level
+            ) % 1.0
 
         source = bands_to_color(
             bass,
@@ -479,40 +501,97 @@ class MusicPatternRenderer:
         palette_colors: Sequence[RGB] | None,
     ) -> list[RGB]:
         total = sum(bands)
-        if total > 1e-9 and self._auto_hold_frames <= 0:
-            values = np.asarray(bands, dtype=np.float32)
-            bass_share, _mid_share, treble_share = (
-                float(value) for value in values / total
-            )
-            complexity = _spectral_complexity(values, total)
-            if transient > 0.55:
-                candidates = ("pulse", "center_burst")
-            elif bass_share > 0.55:
-                candidates = ("bass_bounce", "energy_fill", "center_burst")
-            elif treble_share > 0.45:
-                candidates = ("twinkle", "wave", "chase")
-            elif complexity > 0.78:
-                candidates = ("band_split", "wave", "energy_fill")
-            elif level > 0.65:
-                candidates = ("chase", "pulse", "energy_fill")
-            else:
-                candidates = ("flow", "wave", "energy_fill")
-            self._auto_reaction = candidates[self._auto_cycle % len(candidates)]
-            self._auto_cycle += 1
-            # Hold for a short musical phrase instead of changing every frame.
-            self._auto_hold_frames = int(round(70 + 90 * (1.0 - level)))
+        if total > 1e-9:
+            self._update_auto_features(bands, total, level, transient)
+
+        if total > 1e-9 and self._auto_hold_seconds <= 0.0:
+            previous = self._auto_reaction
+            self._auto_reaction = self._pick_auto_reaction()
+            # Hold each choice for a musical phrase. Louder passages hold at
+            # least as long as calm ones so busy sections don't churn styles.
+            self._auto_hold_seconds = 3.0 + 2.0 * self._auto_level
+            if self._auto_reaction != previous and any(
+                color != (0, 0, 0) for color in self._frame
+            ):
+                # Blend out of the frame we were showing so the new reaction,
+                # which rebuilds its motion from an empty strip, doesn't blink.
+                # Skip when the strip is already dark: there's nothing to fade.
+                self._auto_fade_from = list(self._frame)
+                self._auto_fade = 1.0
 
         if total > 1e-9:
-            self._auto_hold_frames = max(0, self._auto_hold_frames - 1)
+            self._auto_hold_seconds = max(
+                0.0, self._auto_hold_seconds - self._frame_dt
+            )
         if self._auto_renderer is None:
-            self._auto_renderer = MusicPatternRenderer(self.segment_count)
-        return self._auto_renderer.render(
+            self._auto_renderer = MusicPatternRenderer(self.segment_count, self._fps)
+        frame = self._auto_renderer.render(
             bands,
             reaction=self._auto_reaction,
             gain=gain,
             palette=palette,
             palette_colors=palette_colors,
         )
+
+        if self._auto_fade > 0.0 and len(self._auto_fade_from) == len(frame):
+            frame = [
+                _mix_rgb(fresh, previous_color, self._auto_fade)
+                for fresh, previous_color in zip(frame, self._auto_fade_from)
+            ]
+            # ~0.12s crossfade regardless of frame rate.
+            self._auto_fade = max(0.0, self._auto_fade - self._frame_dt / 0.12)
+        return frame
+
+    def _update_auto_features(
+        self,
+        bands: Tuple[float, float, float],
+        total: float,
+        level: float,
+        transient: float,
+    ) -> None:
+        """Smooth the features the category decision reads.
+
+        Band shares and loudness use an EMA so a single noisy window can't
+        decide the next phrase; the transient keeps a decaying peak so a real
+        hit is still felt at the next decision point.
+        """
+        values = np.asarray(bands, dtype=np.float32)
+        bass_share, _mid_share, treble_share = (float(v) for v in values / total)
+        complexity = _spectral_complexity(values, total)
+        if not self._auto_features_ready:
+            self._auto_level = level
+            self._auto_bass_share = bass_share
+            self._auto_treble_share = treble_share
+            self._auto_complexity = complexity
+            self._auto_features_ready = True
+        else:
+            alpha = 0.25
+            self._auto_level += (level - self._auto_level) * alpha
+            self._auto_bass_share += (bass_share - self._auto_bass_share) * alpha
+            self._auto_treble_share += (
+                treble_share - self._auto_treble_share
+            ) * alpha
+            self._auto_complexity += (complexity - self._auto_complexity) * alpha
+        self._auto_transient_peak = max(transient, self._auto_transient_peak * 0.85)
+
+    def _pick_auto_reaction(self) -> str:
+        """Choose the next concrete reaction from the smoothed features."""
+        if self._auto_transient_peak > 0.55:
+            key, candidates = "transient", ("pulse", "center_burst")
+        elif self._auto_bass_share > 0.55:
+            key = "bass"
+            candidates = ("bass_bounce", "energy_fill", "center_burst")
+        elif self._auto_treble_share > 0.45:
+            key, candidates = "treble", ("twinkle", "wave", "chase")
+        elif self._auto_complexity > 0.78:
+            key, candidates = "complex", ("band_split", "wave", "energy_fill")
+        elif self._auto_level > 0.65:
+            key, candidates = "loud", ("chase", "pulse", "energy_fill")
+        else:
+            key, candidates = "calm", ("flow", "wave", "energy_fill")
+        index = self._auto_cycle.get(key, 0)
+        self._auto_cycle[key] = index + 1
+        return candidates[index % len(candidates)]
 
     def _band_split_frame(
         self,
@@ -571,13 +650,22 @@ class MusicPatternRenderer:
         self._phase = 0.0
         self._chase_position = 0.0
         self._chase_direction = 1.0
-        self._previous_level = 0.0
+        # Deliberately keep _previous_level: zeroing it makes the first frame
+        # after a switch read as a full-scale transient (a phantom flash).
         self._fill_level = 0.0
         self._fill_color = (0, 0, 0)
         self._auto_renderer = None
         self._auto_reaction = REACTION_FLOW
-        self._auto_hold_frames = 0
-        self._auto_cycle = 0
+        self._auto_hold_seconds = 0.0
+        self._auto_cycle = {}
+        self._auto_features_ready = False
+        self._auto_level = 0.0
+        self._auto_bass_share = 0.0
+        self._auto_treble_share = 0.0
+        self._auto_complexity = 0.0
+        self._auto_transient_peak = 0.0
+        self._auto_fade = 0.0
+        self._auto_fade_from = []
 
     @staticmethod
     def _level(energy: float, gain: float) -> float:
@@ -617,14 +705,9 @@ class MusicPatternRenderer:
         transient: float,
     ) -> list[RGB]:
         total = bass + mid + treble
-        complexity = 0.0
-        if total > 1e-9:
-            shares = np.array([bass, mid, treble], dtype=np.float32) / total
-            active_shares = shares[shares > 1e-9]
-            if active_shares.size > 1:
-                complexity = float(
-                    -np.sum(active_shares * np.log(active_shares)) / np.log(3.0)
-                )
+        complexity = _spectral_complexity(
+            np.array([bass, mid, treble], dtype=np.float32), total
+        )
 
         # Loud audio fills the meter, while richer audio that is active across
         # several bands earns the final part of the strip. Transients add a
