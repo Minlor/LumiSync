@@ -12,12 +12,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from PySide6.QtCore import QObject, Signal, QThread, QSettings
 
 if platform.system() == "Windows":
-    from pythoncom import CoInitializeEx, CoUninitialize
+    from pythoncom import CoInitialize, CoUninitialize
 
 from ... import connection, led_mapping, utils
 from ...config.options import AUDIO, BRIGHTNESS, SYNC
 from ...drivers import pool
-from ...sync import artwork, audio, monitor, music, processing
+from ...sync import artwork, audio, monitor, music, processing, system_volume
 
 
 DEFAULT_LED_MAPPING = led_mapping.DEFAULT_LEGACY_MAPPING
@@ -30,6 +30,7 @@ SYNC_SETTINGS_KEYS = {
     "gamma_correct": "sync/gamma_correct",
     "monitor_fps": "sync/monitor_fps",
     "music_gain": "sync/music_gain",
+    "music_auto_gain": "sync/music_auto_gain",
     "music_smoothing": "sync/music_smoothing",
     "music_palette": "sync/music_palette",
     "music_reaction": "sync/music_reaction",
@@ -72,6 +73,7 @@ def load_sync_settings(settings: QSettings) -> None:
     SYNC.gamma_correct = _coerce_bool(settings.value(keys["gamma_correct"], SYNC.gamma_correct), SYNC.gamma_correct)
     SYNC.monitor_fps = int(_coerce_float(settings.value(keys["monitor_fps"], SYNC.monitor_fps), SYNC.monitor_fps, 10, 144))
     SYNC.music_gain = _coerce_float(settings.value(keys["music_gain"], SYNC.music_gain), SYNC.music_gain, 0.5, 4.0)
+    SYNC.music_auto_gain = _coerce_bool(settings.value(keys["music_auto_gain"], SYNC.music_auto_gain), SYNC.music_auto_gain)
     SYNC.music_smoothing = _coerce_float(settings.value(keys["music_smoothing"], SYNC.music_smoothing), SYNC.music_smoothing, 0.05, 1.0)
     palette = str(settings.value(keys["music_palette"], SYNC.music_palette))
     if palette in audio.PALETTES:
@@ -294,9 +296,14 @@ class MusicSyncWorker(QObject):
         frame, independently from the selected color palette.
         """
         try:
-            # Initialize COM for this thread (Windows only)
+            # Initialize COM for this thread (Windows only). Use apartment
+            # threading (STA), matching the CLI music worker: soundcard's
+            # loopback recorder re-initializes COM as MTA and treats a
+            # same-mode S_FALSE as the fatal "Error 0x100000001", whereas the
+            # apartment mismatch it hits here is the RPC_E_CHANGED_MODE it
+            # tolerates.
             if platform.system() == "Windows":
-                CoInitializeEx(0)
+                CoInitialize()
 
             # One driver per device; enable its segment/streaming mode once.
             adapters = {}
@@ -308,6 +315,12 @@ class MusicSyncWorker(QObject):
             renderers = {}
             smoothers = {}
             active_reaction = None
+            # Persists across reaction changes so its loudness envelope keeps
+            # adapting instead of resetting whenever the style switches.
+            normalizer = audio.AutoGain(SYNC.music_fps)
+            # Reads the master-volume fader so it can be cancelled directly;
+            # AutoGain then only has to clean up per-app volume differences.
+            volume_probe = system_volume.MasterVolumeProbe()
             artwork_provider = artwork.ArtworkPaletteProvider()
             last_auto_reaction = ""
             last_auto_color = (0, 0, 0)
@@ -332,6 +345,13 @@ class MusicSyncWorker(QObject):
                             bands = audio.spectral_bands(
                                 data, AUDIO.sample_rate
                             )
+                            if SYNC.music_auto_gain:
+                                # Cancel the master fader outright, then let
+                                # AutoGain clean up any residual (per-app volume).
+                                bands = system_volume.compensate(
+                                    bands, volume_probe.linear_gain()
+                                )
+                                bands = normalizer.process(bands)
                             palette_colors = (
                                 artwork_provider.get_colors()
                                 if SYNC.music_palette
@@ -530,6 +550,16 @@ class SyncController(QObject):
     def get_music_brightness(self) -> float:
         """Get brightness for music sync mode."""
         return self.music_brightness
+
+    def set_music_auto_gain(self, enabled: bool) -> None:
+        """Apply and persist whether loudness is normalized against master volume."""
+        SYNC.music_auto_gain = bool(enabled)
+        self._settings.setValue(
+            SYNC_SETTINGS_KEYS["music_auto_gain"], SYNC.music_auto_gain
+        )
+
+    def get_music_auto_gain(self) -> bool:
+        return bool(SYNC.music_auto_gain)
 
     def set_music_palette(self, palette: str) -> None:
         """Apply and persist the live music color palette."""

@@ -326,6 +326,75 @@ def amplitude_color(
     )
 
 
+class AutoGain:
+    """Normalize loudness so the OS master/speaker volume stops driving brightness.
+
+    Loopback capture happens *after* the system volume fader, so turning the
+    speakers down quietens the captured signal and dims the lights even though
+    the music itself is unchanged. This tracks a slow loudness envelope of the
+    incoming band energy and divides it back out: the near-constant master-volume
+    offset is removed while the fast beat-to-beat dynamics are kept.
+
+    The envelope uses a fast attack and a slow release. A sudden onset is followed
+    quickly enough that it isn't left boosted to full, while quiet passages and
+    volume changes recover over a few seconds. An individual beat is shorter than
+    the attack time, so it still rises above the envelope and reads as a transient
+    instead of being flattened by the normalization.
+    """
+
+    # Loudness the envelope is normalized to. A signal sitting right at the
+    # envelope maps to a mid-bright level under the default music gain, leaving
+    # headroom so beats that rise above it reach full brightness.
+    TARGET = 0.10
+    # Ceiling on how far a quiet signal is boosted. Also bounds how bright
+    # residual noise can get while a near-silent stream is open. High enough to
+    # keep low listening volumes near full brightness.
+    MAX_BOOST = 40.0
+
+    def __init__(
+        self,
+        fps: int = 60,
+        attack: float = 0.15,
+        release: float = 1.0,
+    ) -> None:
+        dt = 1.0 / max(1, int(fps))
+        self._attack_alpha = 1.0 - float(np.exp(-dt / max(1e-3, attack)))
+        self._release_alpha = 1.0 - float(np.exp(-dt / max(1e-3, release)))
+        self._floor = self.TARGET / self.MAX_BOOST
+        self._envelope = 0.0
+
+    def reset(self) -> None:
+        self._envelope = 0.0
+
+    def process(
+        self, bands: Tuple[float, float, float]
+    ) -> Tuple[float, float, float]:
+        """Return ``bands`` scaled so recent loudness maps to a steady level.
+
+        Silence passes straight through as zeros (and holds the envelope) so the
+        strip stays dark instead of amplifying the noise floor to full.
+        """
+        bass, mid, treble = (max(0.0, float(band)) for band in bands)
+        total = bass + mid + treble
+        if total <= 1e-9:
+            return (0.0, 0.0, 0.0)
+
+        if self._envelope < self._floor:
+            # Cold start (or resuming from a long fade): snap to the incoming
+            # level so the first frames aren't boosted while it catches up.
+            self._envelope = total
+        else:
+            alpha = (
+                self._attack_alpha
+                if total > self._envelope
+                else self._release_alpha
+            )
+            self._envelope += (total - self._envelope) * alpha
+
+        scale = self.TARGET / max(self._envelope, self._floor)
+        return (bass * scale, mid * scale, treble * scale)
+
+
 class MusicPatternRenderer:
     """Turn one spectrum reading into a spatial frame of LED-zone colors.
 

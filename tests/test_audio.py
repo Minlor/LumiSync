@@ -50,6 +50,58 @@ class SpectralBandTests(unittest.TestCase):
         self.assertLess(loud, 1.0)
 
 
+class AutoGainTests(unittest.TestCase):
+    @staticmethod
+    def _settle(gain, bands, frames=600):
+        out = (0.0, 0.0, 0.0)
+        for _ in range(frames):
+            out = gain.process(bands)
+        return out
+
+    def test_master_volume_no_longer_sets_brightness(self):
+        # The same track balance at very different capture amplitudes (i.e.
+        # different master-volume settings) should normalize to the same level.
+        loud = self._settle(audio.AutoGain(), (0.30, 0.15, 0.05))
+        quiet = self._settle(audio.AutoGain(), (0.030, 0.015, 0.005))
+
+        self.assertAlmostEqual(sum(loud), sum(quiet), delta=0.02)
+        # And both land near the normalizer's target, not near the raw input.
+        self.assertAlmostEqual(sum(loud), audio.AutoGain.TARGET, delta=0.03)
+
+    def test_band_balance_is_preserved(self):
+        gain = audio.AutoGain()
+        bass, mid, treble = self._settle(gain, (0.30, 0.15, 0.05))
+        total = bass + mid + treble
+        self.assertAlmostEqual(bass / total, 0.6, delta=0.02)
+        self.assertAlmostEqual(treble / total, 0.1, delta=0.02)
+
+    def test_beats_still_rise_above_a_steady_bed(self):
+        # A quiet bed with periodic loud beats: the beat frame must stay
+        # meaningfully louder than the bed even after normalization, so the
+        # slow envelope doesn't flatten musical dynamics.
+        gain = audio.AutoGain()
+        bed = (0.04, 0.02, 0.01)
+        beat = (0.30, 0.15, 0.05)
+        for i in range(600):
+            gain.process(beat if i % 30 == 0 else bed)
+        bed_level = sum(gain.process(bed))
+        beat_level = sum(gain.process(beat))
+        self.assertGreater(beat_level, bed_level * 2.0)
+
+    def test_silence_passes_through_dark(self):
+        gain = audio.AutoGain()
+        self._settle(gain, (0.30, 0.15, 0.05))
+        self.assertEqual(gain.process((0.0, 0.0, 0.0)), (0.0, 0.0, 0.0))
+
+    def test_noise_floor_is_not_amplified_to_full(self):
+        # A near-silent stream must not be boosted into a bright glow.
+        gain = audio.AutoGain()
+        out = self._settle(gain, (6e-5, 3e-5, 1e-5))
+        self.assertLessEqual(sum(out), audio.AutoGain.TARGET)
+        level = min(1.0, np.sqrt(sum(out)) * 1.7)
+        self.assertLess(level, 0.25)
+
+
 class BandColorTests(unittest.TestCase):
     def test_silence_is_black(self):
         self.assertEqual(audio.bands_to_color(0.0, 0.0, 0.0), (0, 0, 0))
