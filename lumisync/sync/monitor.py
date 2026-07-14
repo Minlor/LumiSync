@@ -34,6 +34,9 @@ class WaylandUnsupportedError(RuntimeError):
 
 
 def _create_dxcam_camera(dxcam_module, **kwargs):
+    # BGRA is DXCam's native capture format and does not require OpenCV color
+    # conversion. LumiSync converts it to RGB with NumPy in capture_array().
+    kwargs = {"output_color": "BGRA", **kwargs}
     try:
         return dxcam_module.create(processor_backend="numpy", **kwargs)
     except TypeError:
@@ -126,8 +129,10 @@ class ScreenGrab:
             return None
 
         array = np.asarray(screen)
-        if GENERAL.platform != "Windows" and GENERAL.compositor == "x11":
-            # mss returns BGRA; reorder to RGB and drop alpha.
+        if array.ndim == 3 and array.shape[2] == 4 and (
+            GENERAL.platform == "Windows" or GENERAL.compositor == "x11"
+        ):
+            # DXCam and mss both return native BGRA; reorder to RGB and drop alpha.
             array = array[..., [2, 1, 0]]
         elif array.ndim == 3 and array.shape[2] == 4:
             array = array[..., :3]
@@ -171,6 +176,7 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
     mapping: Optional[List[led_mapping.NormalizedRect]] = None
     mapping_aspect: Optional[float] = None
     last_sent: Optional[List[Tuple[int, int, int]]] = None
+    last_sent_at: Optional[float] = None
 
     while True:
         frame_start = time.monotonic()
@@ -201,9 +207,17 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
         colors = processing.apply_brightness(colors, BRIGHTNESS.monitor)
         smoothed = smoother.update(colors)
 
-        if processing.colors_changed(last_sent, smoothed, SYNC.delta_threshold):
+        now = time.monotonic()
+        if processing.frame_needs_send(
+            last_sent,
+            smoothed,
+            SYNC.delta_threshold,
+            last_sent_at=last_sent_at,
+            now=now,
+        ):
             adapter.set_segments(smoothed)
             last_sent = smoothed
+            last_sent_at = now
 
         elapsed = time.monotonic() - frame_start
         if elapsed < frame_interval:

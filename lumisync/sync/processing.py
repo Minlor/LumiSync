@@ -15,7 +15,7 @@ Design goals:
 
 from __future__ import annotations
 
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -156,6 +156,28 @@ def colors_changed(
         ):
             return True
     return False
+
+
+def frame_needs_send(
+    previous: Optional[Sequence[RGB]],
+    current: Sequence[RGB],
+    threshold: int,
+    *,
+    last_sent_at: Optional[float],
+    now: float,
+    keepalive_interval: float = 0.5,
+) -> bool:
+    """Return whether a changed frame or stream keepalive must be sent.
+
+    Govee's Razer/DreamView mode times out if a static screen suppresses every
+    UDP frame. Resending the current colors twice per second keeps ownership of
+    the strip while still avoiding a full frame-rate flood.
+    """
+    if colors_changed(previous, current, threshold):
+        return True
+    if last_sent_at is None:
+        return True
+    return keepalive_interval > 0 and now - last_sent_at >= keepalive_interval
 
 
 class ColorSmoother:
