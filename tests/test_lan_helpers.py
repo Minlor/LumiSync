@@ -28,7 +28,7 @@ class LanHelperTests(unittest.TestCase):
         payload = utils.convert_colors([(300, -5, 1)])
         packet = list(base64.b64decode(payload))
 
-        self.assertEqual(packet[:-1], [0xBB, 0x00, 0x0E, 0xB0, 0x01, 1, 255, 0, 1])
+        self.assertEqual(packet[:-1], [0xBB, 0x00, 0x05, 0xB0, 0x01, 1, 255, 0, 1])
 
         checksum = 0
         for byte in packet[:-1]:
