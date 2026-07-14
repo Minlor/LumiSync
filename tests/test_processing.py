@@ -75,6 +75,30 @@ class ColorAdjustmentTests(unittest.TestCase):
         # Different lengths always count as changed.
         self.assertTrue(processing.colors_changed([(0, 0, 0)], [(0, 0, 0), (0, 0, 0)], 3))
 
+    def test_static_frame_is_resent_before_device_stream_timeout(self):
+        colors = [(120, 30, 10)]
+
+        self.assertFalse(
+            processing.frame_needs_send(
+                colors,
+                colors,
+                3,
+                last_sent_at=10.0,
+                now=10.2,
+                keepalive_interval=0.5,
+            )
+        )
+        self.assertTrue(
+            processing.frame_needs_send(
+                colors,
+                colors,
+                3,
+                last_sent_at=10.0,
+                now=10.5,
+                keepalive_interval=0.5,
+            )
+        )
+
 
 class ColorSmootherTests(unittest.TestCase):
     def test_first_frame_snaps_to_target(self):
