@@ -49,6 +49,26 @@ class PackagedSettingsPathTests(unittest.TestCase):
                     local_app_data / "LumiSync" / "settings.json",
                 )
 
+    def test_wheel_install_uses_per_user_app_data(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            local_app_data = root / "LocalAppData"
+            installed_module = root / "site-packages" / "lumisync" / "devices.py"
+            installed_module.parent.mkdir(parents=True)
+            installed_module.touch()
+
+            with (
+                patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}),
+                patch.object(devices, "__file__", str(installed_module)),
+                patch.object(sys, "frozen", False, create=True),
+                patch.object(sys, "_MEIPASS", None, create=True),
+                patch.object(sys, "executable", str(root / "python.exe")),
+            ):
+                self.assertEqual(
+                    devices.settings_path(),
+                    local_app_data / "LumiSync" / "settings.json",
+                )
+
     def test_frozen_build_migrates_repository_preview_settings(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

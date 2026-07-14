@@ -1,6 +1,9 @@
 import tomllib
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+import numpy as np
 
 from lumisync.sync import monitor
 
@@ -48,6 +51,7 @@ class WindowsPackagingTests(unittest.TestCase):
 
         self.assertEqual(camera["output_idx"], 1)
         self.assertEqual(camera["processor_backend"], "numpy")
+        self.assertEqual(camera["output_color"], "BGRA")
 
     def test_dxcam_camera_supports_older_create_signature(self):
         class FakeDxcam:
@@ -64,8 +68,19 @@ class WindowsPackagingTests(unittest.TestCase):
 
         camera = monitor._create_dxcam_camera(fake_dxcam, output_idx=1)
 
-        self.assertEqual(camera, {"output_idx": 1})
+        self.assertEqual(camera, {"output_idx": 1, "output_color": "BGRA"})
         self.assertEqual(len(fake_dxcam.calls), 2)
+
+    def test_windows_bgra_capture_is_converted_to_rgb_without_cv2(self):
+        screen_grab = monitor.ScreenGrab.__new__(monitor.ScreenGrab)
+        screen_grab.capture_method = lambda: np.array(
+            [[[5, 10, 20, 255]]], dtype=np.uint8
+        )
+
+        with patch.object(monitor.GENERAL, "platform", "Windows"):
+            frame = screen_grab.capture_array()
+
+        self.assertEqual(frame.tolist(), [[[20, 10, 5]]])
 
     def test_missing_cv2_raises_clear_capture_error(self):
         screen_grab = monitor.ScreenGrab.__new__(monitor.ScreenGrab)

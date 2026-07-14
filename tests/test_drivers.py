@@ -73,6 +73,20 @@ class GoveeLanAdapterTests(unittest.TestCase):
         blob = base64.b64decode(payload["msg"]["data"]["pt"])
         self.assertEqual(blob[5], 10)  # header byte 5 = segment count
 
+    def test_razer_payload_declares_its_variable_data_length(self):
+        for count in (3, 4, 10, 14):
+            with self.subTest(count=count):
+                adapter = self._adapter(
+                    {"ip": "192.168.0.10", "segment_count_override": count}
+                )
+                adapter.set_segments([(index, index + 1, index + 2) for index in range(count)])
+                payload = json.loads(adapter.server.sent[0][0])
+                blob = base64.b64decode(payload["msg"]["data"]["pt"])
+
+                declared_length = int.from_bytes(blob[1:3], "big")
+                self.assertEqual(declared_length, 2 + count * 3)
+                self.assertEqual(declared_length, len(blob) - 5)
+
     def test_power_and_color_emit_commands(self):
         adapter = self._adapter()
         adapter.set_power(True)

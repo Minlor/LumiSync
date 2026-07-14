@@ -73,15 +73,22 @@ def _is_packaged_app() -> bool:
     )
 
 
+def _is_source_checkout() -> bool:
+    """Return whether this module is running directly from a project checkout."""
+    project_root = Path(__file__).resolve().parent.parent
+    return (project_root / "pyproject.toml").is_file()
+
+
 def settings_path(filename: str | os.PathLike[str] = "settings.json") -> Path:
-    """Return a stable settings path, migrating old packaged data once.
+    """Return a stable settings path, migrating old launch-directory data once.
 
     Source checkouts keep the historical relative path so scripts and tests are
-    unchanged. Frozen builds use the per-user application-data directory,
-    because their process working directory is not stable across launchers.
+    unchanged. Frozen builds and installed wheels use the per-user application-
+    data directory because their working directory is not stable or writable.
     """
     requested = Path(filename)
-    if requested != Path("settings.json") or not _is_packaged_app():
+    uses_user_data = _is_packaged_app() or not _is_source_checkout()
+    if requested != Path("settings.json") or not uses_user_data:
         return requested
 
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")

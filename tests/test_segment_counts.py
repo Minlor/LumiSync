@@ -1,7 +1,10 @@
 import json
 import os
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+
+import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -11,6 +14,7 @@ from lumisync import connection, led_mapping
 from lumisync.drivers import pool
 from lumisync.gui.controllers.device_controller import DeviceController
 from lumisync.gui.controllers.sync_controller import (
+    MonitorSyncWorker,
     SyncController,
     fit_led_mapping_to_count,
     get_led_mapping_from_settings,
@@ -245,6 +249,76 @@ class SegmentCountTests(unittest.TestCase):
         )
 
         self.assertEqual(color, (30, 25, 0))
+
+    def test_gui_monitor_worker_resends_static_frame_as_keepalive(self):
+        class FakeStopEvent:
+            stopped = False
+
+            def is_set(self):
+                return self.stopped
+
+            def wait(self, _timeout):
+                pass
+
+        class FakeAdapter:
+            capabilities = SimpleNamespace(segment_count=1)
+
+            def __init__(self, stop_event):
+                self.stop_event = stop_event
+                self.frames = []
+
+            def begin_stream(self):
+                pass
+
+            def set_segments(self, colors):
+                self.frames.append(colors)
+                if len(self.frames) == 2:
+                    self.stop_event.stopped = True
+
+        class FakeController:
+            def get_monitor_display(self):
+                return 0
+
+            def get_monitor_brightness(self):
+                return 1.0
+
+        class FakeScreenGrab:
+            def capture_array(self):
+                return np.full((2, 2, 3), (120, 30, 10), dtype=np.uint8)
+
+        stop_event = FakeStopEvent()
+        adapter = FakeAdapter(stop_event)
+        worker = MonitorSyncWorker(
+            object(), [{"mac": "device"}], stop_event, FakeController()
+        )
+        tick = {"value": 0.0}
+
+        def monotonic():
+            tick["value"] += 0.6
+            return tick["value"]
+
+        mapping = [{"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}]
+        with (
+            patch(
+                "lumisync.gui.controllers.sync_controller.pool.acquire",
+                return_value=adapter,
+            ),
+            patch(
+                "lumisync.gui.controllers.sync_controller.monitor.ScreenGrab",
+                return_value=FakeScreenGrab(),
+            ),
+            patch(
+                "lumisync.gui.controllers.sync_controller.get_led_mapping_from_settings",
+                return_value=mapping,
+            ),
+            patch(
+                "lumisync.gui.controllers.sync_controller.time.monotonic",
+                side_effect=monotonic,
+            ),
+        ):
+            worker.run()
+
+        self.assertEqual(len(adapter.frames), 2)
 
     def test_sync_controller_closes_idle_server(self):
         class FakeServer:

@@ -152,11 +152,13 @@ class MonitorSyncWorker(QObject):
             # Per-device smoothing state and last transmitted frame.
             smoothers: Dict[str, processing.ColorSmoother] = {}
             last_sent: Dict[str, Optional[List[Tuple[int, int, int]]]] = {}
+            last_sent_at: Dict[str, Optional[float]] = {}
             for device in self.devices:
                 key = self._device_key(device)
                 count = adapters[key].capabilities.segment_count
                 smoothers[key] = processing.ColorSmoother(SYNC.smoothing, count)
                 last_sent[key] = None
+                last_sent_at[key] = None
 
             screen_grab = None
             current_display_index = -1
@@ -233,11 +235,17 @@ class MonitorSyncWorker(QObject):
                             smoother.alpha = SYNC.smoothing  # live-apply UI changes
                         smoothed = smoother.update(colors)
 
-                        if processing.colors_changed(
-                            last_sent.get(key), smoothed, SYNC.delta_threshold
+                        now = time.monotonic()
+                        if processing.frame_needs_send(
+                            last_sent.get(key),
+                            smoothed,
+                            SYNC.delta_threshold,
+                            last_sent_at=last_sent_at.get(key),
+                            now=now,
                         ):
                             adapter.set_segments(smoothed)
                             last_sent[key] = smoothed
+                            last_sent_at[key] = now
 
                 except monitor.WaylandUnsupportedError as e:
                     # Permanent on this session; retrying would spam. Report once

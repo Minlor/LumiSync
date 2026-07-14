@@ -64,6 +64,9 @@ BUILTIN: Dict[str, SkuCapabilities] = {
     "H619E": _cap("H619E", "RGBIC Pro Strip", 10),
     "H619Z": _cap("H619Z", "RGBIC Pro Strip", 10),
     "H6199": _cap("H6199", "RGBIC TV Strip", 10),
+    # Confirmed by an H6672 owner in issue #31. The strip is cuttable, so a
+    # user override still takes precedence after length calibration.
+    "H6672": _cap("H6672", "RGBWIC TV Backlight 2", 14),
 }
 
 # Live catalog = bundled table plus anything imported at runtime. Mutated by

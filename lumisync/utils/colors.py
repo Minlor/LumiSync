@@ -172,7 +172,19 @@ def convert_colors(colors: List[Tuple[int, int, int]]) -> str:
         raise ValueError("Razer payload supports at most 255 RGB segments.")
 
     normalized_colors = [normalize_rgb(color) for color in colors]
-    razer_header = [0xBB, 0x00, 0x0E, 0xB0, 0x01, len(normalized_colors)]
+    # Bytes 1..2 declare the B0 frame's data length: stretch flag + segment
+    # count + one RGB triple per segment.  The old 0x000E constant was only
+    # valid for four colors and caused newer devices to reject every other
+    # zone count as a malformed frame.
+    data_length = 2 + len(normalized_colors) * 3
+    razer_header = [
+        0xBB,
+        (data_length >> 8) & 0xFF,
+        data_length & 0xFF,
+        0xB0,
+        0x01,
+        len(normalized_colors),
+    ]
     for color in normalized_colors:
         razer_header.extend(color)
 
