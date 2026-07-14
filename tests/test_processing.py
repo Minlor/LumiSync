@@ -1,8 +1,10 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
-from lumisync.sync import processing
+from lumisync.sync import monitor, processing
 
 
 class ZoneAveragingTests(unittest.TestCase):
@@ -98,6 +100,73 @@ class ColorAdjustmentTests(unittest.TestCase):
                 keepalive_interval=0.5,
             )
         )
+
+    def test_new_or_changed_frame_does_not_wait_for_keepalive(self):
+        colors = [(120, 30, 10)]
+
+        self.assertTrue(
+            processing.frame_needs_send(
+                None,
+                colors,
+                3,
+                last_sent_at=None,
+                now=10.0,
+            )
+        )
+        self.assertTrue(
+            processing.frame_needs_send(
+                colors,
+                colors,
+                3,
+                last_sent_at=None,
+                now=10.0,
+            )
+        )
+        self.assertTrue(
+            processing.frame_needs_send(
+                colors,
+                [(200, 30, 10)],
+                3,
+                last_sent_at=9.9,
+                now=10.0,
+            )
+        )
+
+
+class MonitorLoopTests(unittest.TestCase):
+    def test_cli_monitor_resends_static_frame_as_keepalive(self):
+        class StopLoop(Exception):
+            pass
+
+        class FakeAdapter:
+            capabilities = SimpleNamespace(segment_count=1)
+
+            def __init__(self):
+                self.frames = []
+
+            def begin_stream(self):
+                pass
+
+            def set_segments(self, colors):
+                self.frames.append(colors)
+                if len(self.frames) == 2:
+                    raise StopLoop
+
+        class FakeScreenGrab:
+            def capture_array(self):
+                return np.full((2, 2, 3), (120, 30, 10), dtype=np.uint8)
+
+        adapter = FakeAdapter()
+        clock = iter((0.0, 0.1, 0.2, 0.6, 0.7))
+        with (
+            patch.object(monitor, "create_adapter", return_value=adapter),
+            patch.object(monitor, "ScreenGrab", return_value=FakeScreenGrab()),
+            patch.object(monitor.time, "monotonic", side_effect=lambda: next(clock)),
+        ):
+            with self.assertRaises(StopLoop):
+                monitor.start(object(), {"model": "H6672"})
+
+        self.assertEqual(len(adapter.frames), 2)
 
 
 class ColorSmootherTests(unittest.TestCase):
