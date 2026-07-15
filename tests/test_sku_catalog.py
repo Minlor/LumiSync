@@ -14,7 +14,7 @@ class BuiltinCatalogTests(unittest.TestCase):
     def test_known_sku_reports_segment_count(self):
         self.assertEqual(sku_catalog.segment_count_for("H619C"), 10)
 
-    def test_h6672_reports_community_confirmed_segment_count(self):
+    def test_h6672_reports_mobile_app_color_piece_count(self):
         self.assertEqual(sku_catalog.segment_count_for("H6672"), 14)
 
     def test_lookup_is_case_insensitive(self):

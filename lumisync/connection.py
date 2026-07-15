@@ -282,10 +282,20 @@ def switch(server: socket.socket, device: Dict[str, Any], on: bool = False) -> N
 def switch_razer(
     server: socket.socket, device: Dict[str, Any], on: bool = False
 ) -> None:
+    frame = bytearray([0xBB, 0x00, 0x01, 0xB1, int(on)])
+    checksum = 0
+    for byte in frame:
+        checksum ^= byte
+    frame.append(checksum)
     send(
         server,
         device,
-        {"msg": {"cmd": "razer", "data": {"pt": "uwABsQEK" if on else "uwABsgEJ"}}},
+        {
+            "msg": {
+                "cmd": "razer",
+                "data": {"pt": base64.b64encode(frame).decode("ascii")},
+            }
+        },
     )
 
 

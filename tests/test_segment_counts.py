@@ -22,6 +22,8 @@ from lumisync.gui.controllers.sync_controller import (
     sample_region_color,
 )
 from lumisync.config.options import SYNC
+from lumisync.gui.views.modes_view import ModesView
+from lumisync.sync import monitor
 from lumisync.gui.widgets.led_mapping_widget import (
     LedMappingWidget,
     fit_led_colors_to_device,
@@ -181,6 +183,78 @@ class SegmentCountTests(unittest.TestCase):
         self.assertNotEqual(before, after)
         self.assertEqual(after, list(reversed(before)))
 
+    def test_start_monitor_sync_stops_mapping_test_before_live_stream(self):
+        events = []
+
+        class FakeController:
+            def is_syncing(self):
+                return False
+
+            def get_current_sync_mode(self):
+                return None
+
+        view = SimpleNamespace(
+            controller=FakeController(),
+            _stop_mapping_test_for_sync=lambda: events.append("stop mapping test"),
+            _start_monitor_sync=lambda: events.append("start monitor sync"),
+        )
+
+        ModesView._handle_monitor_action(view)
+
+        self.assertEqual(events, ["stop mapping test", "start monitor sync"])
+
+    def test_mapping_test_release_discards_automatic_resume(self):
+        events = []
+        view = SimpleNamespace(
+            _mapping_expanded=True,
+            _sync_was_running=True,
+            _sync_mode_before="monitor",
+            _paused_devices=[{"model": "H6672"}],
+        )
+
+        def collapse_mapping():
+            events.append("collapse")
+            view._mapping_expanded = False
+
+        view._toggle_led_mapping = collapse_mapping
+
+        ModesView._stop_mapping_test_for_sync(view)
+
+        self.assertEqual(events, ["collapse"])
+        self.assertFalse(view._sync_was_running)
+        self.assertIsNone(view._sync_mode_before)
+        self.assertEqual(view._paused_devices, [])
+
+    def test_stopping_mapping_test_sends_black_without_reenabling_then_turns_mode_off(self):
+        class FakeSettings:
+            def value(self, _key, default=None):
+                return default
+
+            def setValue(self, _key, _value):
+                pass
+
+        events = []
+
+        class FakeTimer:
+            def stop(self):
+                events.append("stop timer")
+
+        widget = LedMappingWidget(FakeSettings())
+        widget._test_mode_active = True
+        widget._razer_mode_enabled = True
+        widget._test_timer = FakeTimer()
+        widget._send_colors_to_strip = lambda colors, skip_razer_enable=False: events.append(
+            ("black", list(colors), skip_razer_enable)
+        )
+        widget._disable_razer_mode = lambda: events.append("razer off")
+
+        widget._stop_test_mode()
+
+        self.assertEqual(events[0], "stop timer")
+        self.assertEqual(events[1][0], "black")
+        self.assertTrue(events[1][2])
+        self.assertEqual(events[2], "razer off")
+
     def test_rect_test_color_is_tied_to_screen_position(self):
         left = rect_test_color({"x": 0.0, "y": 0.25, "w": 0.25, "h": 0.5})
         right = rect_test_color({"x": 0.75, "y": 0.25, "w": 0.25, "h": 0.5})
@@ -320,6 +394,58 @@ class SegmentCountTests(unittest.TestCase):
 
         self.assertEqual(len(adapter.frames), 2)
 
+    def test_terminal_capture_error_ends_stream_and_finishes_worker(self):
+        events = []
+
+        class FakeStopEvent:
+            def is_set(self):
+                return False
+
+            def wait(self, _timeout):
+                pass
+
+        class FakeAdapter:
+            capabilities = SimpleNamespace(segment_count=1)
+
+            def begin_stream(self):
+                events.append("begin stream")
+
+            def end_stream(self):
+                events.append("end stream")
+
+        class FakeController:
+            def get_monitor_display(self):
+                return 0
+
+            def get_monitor_brightness(self):
+                return 1.0
+
+        class BrokenScreenGrab:
+            def capture_array(self):
+                raise monitor.ScreenCaptureDependencyError("capture backend missing")
+
+        worker = MonitorSyncWorker(
+            object(), [{"mac": "device"}], FakeStopEvent(), FakeController()
+        )
+        worker.finished.connect(lambda: events.append("worker finished"))
+
+        with (
+            patch(
+                "lumisync.gui.controllers.sync_controller.pool.acquire",
+                return_value=FakeAdapter(),
+            ),
+            patch(
+                "lumisync.gui.controllers.sync_controller.monitor.ScreenGrab",
+                return_value=BrokenScreenGrab(),
+            ),
+        ):
+            worker.run()
+
+        self.assertEqual(
+            events,
+            ["begin stream", "end stream", "worker finished"],
+        )
+
     def test_sync_controller_closes_idle_server(self):
         class FakeServer:
             closed = False
@@ -335,6 +461,56 @@ class SegmentCountTests(unittest.TestCase):
 
         self.assertTrue(server.closed)
         self.assertIsNone(controller.server)
+
+    def test_finished_worker_clears_active_sync_state(self):
+        class FakeServer:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        controller = SyncController()
+        thread = object()
+        server = FakeServer()
+        controller.sync_thread = thread
+        controller.sync_worker = object()
+        controller.current_sync_mode = "monitor"
+        controller.active_devices = [{"model": "H6672"}]
+        controller.server = server
+        stopped = []
+        controller.sync_stopped.connect(lambda: stopped.append(True))
+
+        with patch.object(controller, "sender", return_value=thread):
+            controller._on_sync_thread_finished()
+
+        self.assertIsNone(controller.sync_thread)
+        self.assertIsNone(controller.sync_worker)
+        self.assertIsNone(controller.current_sync_mode)
+        self.assertEqual(controller.active_devices, [])
+        self.assertIsNone(controller.server)
+        self.assertTrue(server.closed)
+        self.assertEqual(stopped, [True])
+
+    def test_stop_sync_cleans_state_when_thread_already_finished(self):
+        class FinishedThread:
+            def isRunning(self):
+                return False
+
+        controller = SyncController()
+        controller.sync_thread = FinishedThread()
+        controller.sync_worker = object()
+        controller.current_sync_mode = "monitor"
+        controller.active_devices = [{"model": "H6672"}]
+        stopped = []
+        controller.sync_stopped.connect(lambda: stopped.append(True))
+
+        controller.stop_sync()
+
+        self.assertIsNone(controller.sync_thread)
+        self.assertIsNone(controller.sync_worker)
+        self.assertIsNone(controller.current_sync_mode)
+        self.assertEqual(controller.active_devices, [])
+        self.assertEqual(stopped, [True])
 
     def test_load_sync_settings_coerces_and_clamps(self):
         saved = {

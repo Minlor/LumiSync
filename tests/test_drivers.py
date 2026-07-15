@@ -99,6 +99,15 @@ class GoveeLanAdapterTests(unittest.TestCase):
         self.assertEqual(len(adapter.server.sent), 1)
         self.assertIn(b'"razer"', adapter.server.sent[0][0])
 
+    def test_end_stream_disables_razer_mode_with_b1_off(self):
+        adapter = self._adapter()
+
+        adapter.end_stream()
+
+        payload = json.loads(adapter.server.sent[0][0])
+        blob = base64.b64decode(payload["msg"]["data"]["pt"])
+        self.assertEqual(blob, bytes([0xBB, 0x00, 0x01, 0xB1, 0x00, 0x0B]))
+
     def test_set_color_temperature_sends_kelvin(self):
         adapter = self._adapter()
         adapter.set_color_temperature(3000)

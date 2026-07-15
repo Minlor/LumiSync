@@ -881,6 +881,7 @@ class ModesView(QWidget):
             )
 
     def _handle_monitor_action(self) -> None:
+        self._stop_mapping_test_for_sync()
         if (
             self.controller.is_syncing()
             and self.controller.get_current_sync_mode() == "monitor"
@@ -890,6 +891,7 @@ class ModesView(QWidget):
             self._start_monitor_sync()
 
     def _handle_music_action(self) -> None:
+        self._stop_mapping_test_for_sync()
         if (
             self.controller.is_syncing()
             and self.controller.get_current_sync_mode() == "music"
@@ -897,6 +899,19 @@ class ModesView(QWidget):
             self.controller.stop_sync()
         else:
             self._start_music_sync()
+
+    def _stop_mapping_test_for_sync(self) -> None:
+        """Release LED Mapping ownership before starting a live sync stream."""
+        if not self._mapping_expanded:
+            return
+
+        # Closing the mapper normally resumes whatever it paused. A sync action
+        # is about to make an explicit choice, so discard that automatic resume
+        # and let the action start exactly one stream after the test timer stops.
+        self._sync_was_running = False
+        self._sync_mode_before = None
+        self._paused_devices = []
+        self._toggle_led_mapping()
 
     def _on_sync_state_changed(self, *_args) -> None:
         self._update_action_states()

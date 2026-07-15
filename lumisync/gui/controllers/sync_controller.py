@@ -127,6 +127,7 @@ class MonitorSyncWorker(QObject):
     # Signals
     status_updated = Signal(str)
     error_occurred = Signal(str)
+    finished = Signal()
 
     def __init__(self, server, devices, stop_event, controller):
         super().__init__()
@@ -143,9 +144,9 @@ class MonitorSyncWorker(QObject):
         so we no longer flood the strip with ten interpolated packets per frame.
         Frame pacing and a delta check keep CPU and UDP traffic bounded.
         """
+        adapters = {}
         try:
             # One driver per device; enable its segment/streaming mode once.
-            adapters = {}
             for device in self.devices:
                 adapter = pool.acquire(device, self.server)
                 adapter.begin_stream()
@@ -268,6 +269,13 @@ class MonitorSyncWorker(QObject):
 
         except Exception as e:
             self.error_occurred.emit(f"Monitor sync error: {str(e)}")
+        finally:
+            for adapter in adapters.values():
+                try:
+                    adapter.end_stream()
+                except Exception:
+                    pass
+            self.finished.emit()
 
     def _device_key(self, device: Dict[str, Any]) -> str:
         return str(device.get("mac") or device.get("ip") or device.get("model") or id(device))
@@ -280,6 +288,7 @@ class MusicSyncWorker(QObject):
     status_updated = Signal(str)
     error_occurred = Signal(str)
     auto_state_changed = Signal(str, object)  # reaction key, representative RGB
+    finished = Signal()
 
     def __init__(self, server, devices, stop_event, controller):
         super().__init__()
@@ -295,6 +304,7 @@ class MusicSyncWorker(QObject):
         selected reaction renderer then turns those bands into a spatial LED
         frame, independently from the selected color palette.
         """
+        adapters = {}
         try:
             # Initialize COM for this thread (Windows only). Use apartment
             # threading (STA), matching the CLI music worker: soundcard's
@@ -306,7 +316,6 @@ class MusicSyncWorker(QObject):
                 CoInitialize()
 
             # One driver per device; enable its segment/streaming mode once.
-            adapters = {}
             for device in self.devices:
                 adapter = pool.acquire(device, self.server)
                 adapter.begin_stream()
@@ -451,12 +460,18 @@ class MusicSyncWorker(QObject):
         except Exception as e:
             self.error_occurred.emit(f"Music sync error: {str(e)}")
         finally:
+            for adapter in adapters.values():
+                try:
+                    adapter.end_stream()
+                except Exception:
+                    pass
             # Ensure COM is uninitialized even if an exception occurs
             try:
                 if platform.system() == "Windows":
                     CoUninitialize()
             except Exception:
                 pass
+            self.finished.emit()
 
     def _device_key(self, device: Dict[str, Any]) -> str:
         return str(device.get("mac") or device.get("ip") or device.get("model") or id(device))
@@ -658,10 +673,13 @@ class SyncController(QObject):
         self.sync_thread.started.connect(self.sync_worker.run)
         self.sync_worker.status_updated.connect(self.status_updated.emit)
         self.sync_worker.error_occurred.connect(self.sync_error.emit)
+        if hasattr(self.sync_worker, "finished"):
+            self.sync_worker.finished.connect(self.sync_thread.quit)
         if isinstance(self.sync_worker, MusicSyncWorker):
             self.sync_worker.auto_state_changed.connect(
                 self.music_auto_state_changed.emit
             )
+        self.sync_thread.finished.connect(self._on_sync_thread_finished)
         self.sync_thread.finished.connect(self.sync_thread.deleteLater)
 
         self.sync_thread.start()
@@ -678,6 +696,7 @@ class SyncController(QObject):
             self.close_server()
             return
 
+        had_active_mode = self.current_sync_mode is not None
         try:
             is_running = self.sync_thread.isRunning()
         except RuntimeError:
@@ -687,6 +706,10 @@ class SyncController(QObject):
             self.current_sync_mode = None
             self.active_devices = []
             self.close_server()
+            if had_active_mode:
+                self.sync_stopped.emit()
+                if announce:
+                    self.status_updated.emit("Sync stopped")
             return
 
         if is_running:
@@ -706,8 +729,9 @@ class SyncController(QObject):
             except RuntimeError:
                 pass
 
-            self.current_sync_mode = None
-            self.active_devices = []
+        self.current_sync_mode = None
+        self.active_devices = []
+        if had_active_mode:
             self.sync_stopped.emit()
             if announce:
                 self.status_updated.emit("Sync stopped")
@@ -716,6 +740,21 @@ class SyncController(QObject):
         self.sync_thread = None
         self.sync_worker = None
         self.close_server()
+
+    def _on_sync_thread_finished(self) -> None:
+        """Clear controller state when a worker exits without an explicit stop."""
+        thread = self.sender()
+        if thread is not self.sync_thread:
+            return
+
+        had_active_mode = self.current_sync_mode is not None
+        self.sync_thread = None
+        self.sync_worker = None
+        self.current_sync_mode = None
+        self.active_devices = []
+        self.close_server()
+        if had_active_mode:
+            self.sync_stopped.emit()
 
     def get_current_sync_mode(self) -> Optional[str]:
         """Get the current synchronization mode.

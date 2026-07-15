@@ -524,7 +524,6 @@ class LedMappingWidget(QWidget):
 
     def _stop_test_mode(self) -> None:
         self._test_mode_active = False
-        self._razer_mode_enabled = False
         self.test_button.setText("Test Colors")
         self.test_button.setChecked(False)
         self.selection_label.setText("Drag a zone to swap LED positions")
@@ -536,7 +535,14 @@ class LedMappingWidget(QWidget):
         self.screen_preview.clear_colors()
 
         try:
-            self._send_colors_to_strip([(0, 0, 0)] * len(self.get_mapping()))
+            # The test already owns Razer mode. Re-enabling it while cleaning up
+            # creates a competing stream when Monitor Sync starts immediately
+            # afterwards, so send the final black frame under existing ownership.
+            self._send_colors_to_strip(
+                [(0, 0, 0)] * len(self.get_mapping()),
+                skip_razer_enable=True,
+            )
+            self._disable_razer_mode()
         finally:
             if self.sync_controller and not self.sync_controller.is_syncing():
                 self.sync_controller.close_server()
@@ -560,6 +566,27 @@ class LedMappingWidget(QWidget):
                 self._razer_mode_enabled = True
         except Exception:
             pass
+
+    def _disable_razer_mode(self) -> None:
+        if not self._razer_mode_enabled:
+            return
+        try:
+            if not self.sync_controller or self.sync_controller.is_syncing():
+                return
+
+            devices = self.sync_controller.get_selected_devices()
+            if not devices:
+                return
+
+            self.sync_controller._ensure_server()
+            server = self.sync_controller.server
+            if server:
+                for device in devices:
+                    connection.switch_razer(server, device, False)
+        except Exception:
+            pass
+        finally:
+            self._razer_mode_enabled = False
 
     def _zone_colors(self) -> Dict[int, Tuple[int, int, int]]:
         return {
