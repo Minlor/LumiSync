@@ -2,6 +2,7 @@ import base64
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from lumisync import connection, utils
 
@@ -38,6 +39,25 @@ class LanHelperTests(unittest.TestCase):
     def test_convert_colors_rejects_payloads_over_one_byte_length(self):
         with self.assertRaisesRegex(ValueError, "at most 255"):
             utils.convert_colors([(0, 0, 0)] * 256)
+
+    def test_razer_mode_switch_uses_b1_frames_for_on_and_off(self):
+        expected_frames = {
+            True: bytes([0xBB, 0x00, 0x01, 0xB1, 0x01, 0x0A]),
+            False: bytes([0xBB, 0x00, 0x01, 0xB1, 0x00, 0x0B]),
+        }
+
+        for enabled, expected in expected_frames.items():
+            with self.subTest(enabled=enabled), patch.object(connection, "send") as send:
+                connection.switch_razer(object(), {"ip": "192.0.2.10"}, enabled)
+
+                message = send.call_args.args[2]
+                encoded = message["msg"]["data"]["pt"]
+                self.assertEqual(base64.b64decode(encoded), expected)
+
+                checksum = 0
+                for byte in expected[:-1]:
+                    checksum ^= byte
+                self.assertEqual(expected[-1], checksum)
 
     def test_resample_colors_spreads_samples_over_one_loop(self):
         colors = [(index, index, index) for index in range(10)]

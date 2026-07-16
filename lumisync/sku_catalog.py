@@ -64,8 +64,10 @@ BUILTIN: Dict[str, SkuCapabilities] = {
     "H619E": _cap("H619E", "RGBIC Pro Strip", 10),
     "H619Z": _cap("H619Z", "RGBIC Pro Strip", 10),
     "H6199": _cap("H6199", "RGBIC TV Strip", 10),
-    # Confirmed by an H6672 owner in issue #31. The strip is cuttable, so a
-    # user override still takes precedence after length calibration.
+    # Govee Home 7.5.20 resolves H6672's manual color pieces to min(ic=56, 14).
+    # Govee Desktop 2.40.50 still reports segmentNums=0/supportRazer=false, so
+    # 14 is a physical/manual mapping count, not proof of official B0 support.
+    # Keep the user override authoritative while this LAN path is experimental.
     "H6672": _cap("H6672", "RGBWIC TV Backlight 2", 14),
 }
 

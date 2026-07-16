@@ -117,6 +117,60 @@ Two key insights:
    its ICs. LumiSync's current per-segment model is correct; higher-resolution
    sync would mean sending up to `ColorIc` colors.
 
+## H6672 Boundary (verified 2026-07-15)
+
+Govee Desktop 2.40.50's production capability response deliberately excludes
+H6672 ("RGBWIC TV Backlight") from its PC DreamView/Razer UI:
+
+```jsonc
+{
+  "sku": "H6672",
+  "segmentNums": 0,
+  "supportRazer": false,
+  "supportFeast": false,
+  "colorModeSegment": 0,
+  "colorModeIotType": 1,
+  "supportWifiVersions": [{ "wifiVersionHard": "1.07.00" }],
+  "supportBleVersions": [{ "bleVersionHard": "3.08.01" }]
+}
+```
+
+Those fields are Desktop eligibility gates, not proof that the firmware rejects
+all LAN segment frames. Issue #31's physical-device tests show partial B1/B0
+acceptance, so LumiSync currently treats that route as experimental. The
+14-section count is independently confirmed by Govee Home 7.5.20's
+`ColorPieceConfig`: H6672 goods type 332 resolves to `min(device.ic, 14)`, and
+the bundled H6672 metadata has `ic=56`. This is the manual-color-piece count,
+not an official Desktop B0 count; the per-device override must still win.
+
+The decompiled Desktop encoder confirms the generic B0 stream is RGB-only:
+
+```text
+BB lenHi lenLo B0 gradientFlag count (R G B)*count XOR
+```
+
+`length = 2 + 3*count`. There is no white byte. The separate B4 encoder is
+hard-coded to H6608/H6609 variants, and its fourth record byte is an IC/run
+repeat count rather than a white channel.
+
+Govee Home 7.5.20 independently reveals H6672's official manual-segment route.
+It uses BLE service `00010203-0405-0607-0809-0a0b0c0d1910`, write
+characteristic `00010203-0405-0607-0809-0a0b0c0d2b11`, or sends the same raw
+controller frames through authenticated IoT `ptReal`. Desktop's type-1 color
+record has this 20-byte RGB + segment-mask shape:
+
+```text
+33 05 15 01 R G B 00 00 00 00 00 mask0 mask1 mask2 mask3 00 00 00 XOR
+```
+
+Desktop sends H6672 `ptReal` through TLS MQTT, and the inspected mobile path is
+BLE or cloud; neither app provided evidence that this command is accepted as a
+LAN UDP/4003 message. It is also one masked-color operation rather than a proven
+high-frame-rate 14-color stream. Therefore LumiSync should not silently replace
+its local B0 experiment with cloud credentials, or append a speculative W byte.
+A sanitized physical H6672 BLE capture is the next decisive artifact if B0
+cannot be made stable.
+
 ## Multi-Device Sync Model
 
 `DreamviewList` (monitor), `RazerList` (music/razer switch), and `MusicList`
@@ -175,10 +229,10 @@ DeviceRZSwitchControl / DeviceSegmentsColor(sku, colorInfo, isGradientOff)
 SendThirdNewRazerColor   // a newer razer segment-color format
 ```
 
-`SendThirdNewRazerColor` implies a newer LAN segment-color encoding beyond the
-classic `0xBB..` razer header. Worth investigating only if a device rejects the
-current `razer` payload. The pipe stays gated behind "Enable API" + per-device
-LAN API, so it remains out of LumiSync's core path.
+`SendThirdNewRazerColor` resolves to the B4 IC/run encoder used by H6608/H6609
+variants. Its fourth record byte is controller metadata, not RGBW. The pipe
+stays gated behind "Enable API" + per-device LAN API, so it remains out of
+LumiSync's core path.
 
 ## Prioritized Improvement Backlog
 
@@ -197,7 +251,8 @@ Highest compatibility/UX value first:
 4. **Tunable-white / color-temperature control** using `colorTemInKelvin` +
    per-SKU `colorTemperatureStart/End` and a Kelvin→RGB curve.
 5. Capability-gated UI: hide Razer/Music/Color controls a device doesn't support
-   (`supportRazer`, `supportMusicalFeast`, `supportColor`).
+   (`supportRazer`, `supportMusicalFeast`, `supportColor`), while preserving an
+   explicit per-device experimental override for devices such as H6672.
 
 Explicitly still out of scope: cloud login, MQTT, `multiSync`/`ptReal` IoT
 channels, scenes/DIY. LAN-first remains the product boundary.

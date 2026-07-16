@@ -12,7 +12,7 @@ if np.lib.NumpyVersion(np.__version__) >= '2.0.0':
 
 from ..config.options import AUDIO, BRIGHTNESS, SYNC
 from ..drivers.registry import create_adapter
-from . import artwork, audio, processing
+from . import artwork, audio, processing, system_volume
 
 
 def _soundcard_backend():
@@ -80,7 +80,13 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
         adapter = create_adapter(device, server)
         adapter.begin_stream()
         segment_count = adapter.capabilities.segment_count
-        renderer = audio.MusicPatternRenderer(segment_count)
+        renderer = audio.MusicPatternRenderer(segment_count, SYNC.music_fps)
+        # Persists across reaction changes so its loudness envelope keeps
+        # adapting instead of resetting whenever the style switches.
+        normalizer = audio.AutoGain(SYNC.music_fps)
+        # Reads the master-volume fader so it can be cancelled directly;
+        # AutoGain then only has to clean up per-app volume differences.
+        volume_probe = system_volume.MasterVolumeProbe()
         artwork_provider = artwork.ArtworkPaletteProvider()
         smoother = processing.ColorSmoother(
             SYNC.music_smoothing, segment_count
@@ -103,12 +109,19 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
 
                     if active_reaction != SYNC.music_reaction:
                         active_reaction = SYNC.music_reaction
-                        renderer = audio.MusicPatternRenderer(segment_count)
+                        renderer = audio.MusicPatternRenderer(
+                            segment_count, SYNC.music_fps
+                        )
                         smoother = processing.ColorSmoother(
                             SYNC.music_smoothing, segment_count
                         )
 
                     bands = audio.spectral_bands(data, AUDIO.sample_rate)
+                    if SYNC.music_auto_gain:
+                        bands = system_volume.compensate(
+                            bands, volume_probe.linear_gain()
+                        )
+                        bands = normalizer.process(bands)
                     palette_colors = (
                         artwork_provider.get_colors()
                         if SYNC.music_palette == audio.PALETTE_ALBUM_ART

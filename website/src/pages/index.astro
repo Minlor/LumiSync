@@ -1,0 +1,39 @@
+---
+import ProductPage from "../../app/page";
+import "../../app/globals.css";
+
+const title = "LumiSync — Screen. Sound. Light. In sync.";
+const description = "Sync Govee, iDotMatrix, and Tuya lights with your screen and music. Fast, local-first, and open source.";
+const canonical = new URL(Astro.url.pathname, Astro.site);
+const socialImage = new URL("/og.png", Astro.site);
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="description" content={description} />
+    <meta name="keywords" content="smart lights, Govee, ambient lighting, music sync, screen sync, LumiSync" />
+    <meta name="author" content="Minlor" />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/lumisync-app.png" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="LumiSync" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content="Turn your screen and sound into light with fast, local-first sync." />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={socialImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content="Turn your screen and sound into light with fast, local-first sync." />
+    <meta name="twitter:image" content={socialImage} />
+    <title>{title}</title>
+  </head>
+  <body>
+    <ProductPage />
+  </body>
+</html>

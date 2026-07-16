@@ -50,6 +50,58 @@ class SpectralBandTests(unittest.TestCase):
         self.assertLess(loud, 1.0)
 
 
+class AutoGainTests(unittest.TestCase):
+    @staticmethod
+    def _settle(gain, bands, frames=600):
+        out = (0.0, 0.0, 0.0)
+        for _ in range(frames):
+            out = gain.process(bands)
+        return out
+
+    def test_master_volume_no_longer_sets_brightness(self):
+        # The same track balance at very different capture amplitudes (i.e.
+        # different master-volume settings) should normalize to the same level.
+        loud = self._settle(audio.AutoGain(), (0.30, 0.15, 0.05))
+        quiet = self._settle(audio.AutoGain(), (0.030, 0.015, 0.005))
+
+        self.assertAlmostEqual(sum(loud), sum(quiet), delta=0.02)
+        # And both land near the normalizer's target, not near the raw input.
+        self.assertAlmostEqual(sum(loud), audio.AutoGain.TARGET, delta=0.03)
+
+    def test_band_balance_is_preserved(self):
+        gain = audio.AutoGain()
+        bass, mid, treble = self._settle(gain, (0.30, 0.15, 0.05))
+        total = bass + mid + treble
+        self.assertAlmostEqual(bass / total, 0.6, delta=0.02)
+        self.assertAlmostEqual(treble / total, 0.1, delta=0.02)
+
+    def test_beats_still_rise_above_a_steady_bed(self):
+        # A quiet bed with periodic loud beats: the beat frame must stay
+        # meaningfully louder than the bed even after normalization, so the
+        # slow envelope doesn't flatten musical dynamics.
+        gain = audio.AutoGain()
+        bed = (0.04, 0.02, 0.01)
+        beat = (0.30, 0.15, 0.05)
+        for i in range(600):
+            gain.process(beat if i % 30 == 0 else bed)
+        bed_level = sum(gain.process(bed))
+        beat_level = sum(gain.process(beat))
+        self.assertGreater(beat_level, bed_level * 2.0)
+
+    def test_silence_passes_through_dark(self):
+        gain = audio.AutoGain()
+        self._settle(gain, (0.30, 0.15, 0.05))
+        self.assertEqual(gain.process((0.0, 0.0, 0.0)), (0.0, 0.0, 0.0))
+
+    def test_noise_floor_is_not_amplified_to_full(self):
+        # A near-silent stream must not be boosted into a bright glow.
+        gain = audio.AutoGain()
+        out = self._settle(gain, (6e-5, 3e-5, 1e-5))
+        self.assertLessEqual(sum(out), audio.AutoGain.TARGET)
+        level = min(1.0, np.sqrt(sum(out)) * 1.7)
+        self.assertLess(level, 0.25)
+
+
 class BandColorTests(unittest.TestCase):
     def test_silence_is_black(self):
         self.assertEqual(audio.bands_to_color(0.0, 0.0, 0.0), (0, 0, 0))
@@ -169,16 +221,35 @@ class MusicPatternTests(unittest.TestCase):
 
         self.assertIn(selected, ("pulse", "center_burst"))
         self.assertEqual(renderer._auto_reaction, selected)
-        self.assertGreater(renderer._auto_hold_frames, 0)
+        self.assertGreater(renderer._auto_hold_seconds, 0.0)
 
     def test_auto_director_reselects_from_current_spectrum(self):
         renderer = audio.MusicPatternRenderer(8)
         renderer.render((0.20, 0.02, 0.01), reaction="auto")
-        renderer._auto_hold_frames = 0
 
+        # Feed a steady treble passage so the smoothed decision features track
+        # it and the phantom transient from the first frame decays away, then
+        # let the phrase expire before the next decision.
+        for _ in range(40):
+            renderer.render((0.01, 0.01, 0.20), reaction="auto")
+        renderer._auto_hold_seconds = 0.0
         renderer.render((0.01, 0.01, 0.20), reaction="auto")
 
         self.assertIn(renderer._auto_reaction, ("twinkle", "wave", "chase"))
+
+    def test_auto_director_crossfades_out_of_the_previous_frame(self):
+        renderer = audio.MusicPatternRenderer(8)
+        renderer.render((0.20, 0.02, 0.01), reaction="auto")
+        # Force an immediate reselection into a different category.
+        renderer._auto_hold_seconds = 0.0
+        renderer._auto_treble_share = 0.9
+        renderer._auto_bass_share = 0.0
+        renderer._auto_transient_peak = 0.0
+        renderer.render((0.01, 0.01, 0.20), reaction="auto")
+
+        # A crossfade is now in progress, blending out of the prior frame.
+        self.assertGreater(renderer._auto_fade, 0.0)
+        self.assertLessEqual(renderer._auto_fade, 1.0)
 
     def test_auto_director_exposes_the_concrete_active_reaction(self):
         renderer = audio.MusicPatternRenderer(8)

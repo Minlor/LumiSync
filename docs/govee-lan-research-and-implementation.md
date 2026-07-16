@@ -594,10 +594,12 @@ Static analysis confirms Govee Desktop uses `razer` for segment/multi-zone data.
 Known payloads from static analysis:
 
 - Razer on: `uwABsQEK`
-- Razer off: `uwABsgEJ`
+- Razer off: `uwABsQAL`
 - Captured status/off `pt`: `uwABsgAI`
 
-Do not overfit these until more captures are available.
+The switch frames are `BB 00 01 B1 state XOR`. The older value
+`uwABsgEJ` decodes to `BB 00 01 B2 01 09`; `B2` is a reported status/mode
+shape, not the command that turns Razer mode off.
 
 ### 7. Add Focused Tests
 
@@ -680,8 +682,9 @@ Shared pipeline lives in `lumisync/sync/processing.py` and
 - **Gamma-correct sampling** (average in linear light) plus an optional
   **saturation boost** so mixed regions do not turn muddy and ambient color pops
   closer to DreamView.
-- **Frame pacing + delta-skip.** A target FPS caps CPU, and identical frames are
-  not retransmitted, so a static screen stops generating UDP traffic.
+- **Frame pacing + delta-skip.** A target FPS caps CPU. Identical frames are
+  suppressed between 0.5-second ownership keepalives, so a static screen keeps
+  the device in streaming mode without generating full frame-rate UDP traffic.
 
 ### Music Sync
 

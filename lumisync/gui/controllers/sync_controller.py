@@ -12,12 +12,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from PySide6.QtCore import QObject, Signal, QThread, QSettings
 
 if platform.system() == "Windows":
-    from pythoncom import CoInitializeEx, CoUninitialize
+    from pythoncom import CoInitialize, CoUninitialize
 
 from ... import connection, led_mapping, utils
 from ...config.options import AUDIO, BRIGHTNESS, SYNC
 from ...drivers import pool
-from ...sync import artwork, audio, monitor, music, processing
+from ...sync import artwork, audio, monitor, music, processing, system_volume
 
 
 DEFAULT_LED_MAPPING = led_mapping.DEFAULT_LEGACY_MAPPING
@@ -30,6 +30,7 @@ SYNC_SETTINGS_KEYS = {
     "gamma_correct": "sync/gamma_correct",
     "monitor_fps": "sync/monitor_fps",
     "music_gain": "sync/music_gain",
+    "music_auto_gain": "sync/music_auto_gain",
     "music_smoothing": "sync/music_smoothing",
     "music_palette": "sync/music_palette",
     "music_reaction": "sync/music_reaction",
@@ -72,6 +73,7 @@ def load_sync_settings(settings: QSettings) -> None:
     SYNC.gamma_correct = _coerce_bool(settings.value(keys["gamma_correct"], SYNC.gamma_correct), SYNC.gamma_correct)
     SYNC.monitor_fps = int(_coerce_float(settings.value(keys["monitor_fps"], SYNC.monitor_fps), SYNC.monitor_fps, 10, 144))
     SYNC.music_gain = _coerce_float(settings.value(keys["music_gain"], SYNC.music_gain), SYNC.music_gain, 0.5, 4.0)
+    SYNC.music_auto_gain = _coerce_bool(settings.value(keys["music_auto_gain"], SYNC.music_auto_gain), SYNC.music_auto_gain)
     SYNC.music_smoothing = _coerce_float(settings.value(keys["music_smoothing"], SYNC.music_smoothing), SYNC.music_smoothing, 0.05, 1.0)
     palette = str(settings.value(keys["music_palette"], SYNC.music_palette))
     if palette in audio.PALETTES:
@@ -125,6 +127,7 @@ class MonitorSyncWorker(QObject):
     # Signals
     status_updated = Signal(str)
     error_occurred = Signal(str)
+    finished = Signal()
 
     def __init__(self, server, devices, stop_event, controller):
         super().__init__()
@@ -141,9 +144,9 @@ class MonitorSyncWorker(QObject):
         so we no longer flood the strip with ten interpolated packets per frame.
         Frame pacing and a delta check keep CPU and UDP traffic bounded.
         """
+        adapters = {}
         try:
             # One driver per device; enable its segment/streaming mode once.
-            adapters = {}
             for device in self.devices:
                 adapter = pool.acquire(device, self.server)
                 adapter.begin_stream()
@@ -266,6 +269,13 @@ class MonitorSyncWorker(QObject):
 
         except Exception as e:
             self.error_occurred.emit(f"Monitor sync error: {str(e)}")
+        finally:
+            for adapter in adapters.values():
+                try:
+                    adapter.end_stream()
+                except Exception:
+                    pass
+            self.finished.emit()
 
     def _device_key(self, device: Dict[str, Any]) -> str:
         return str(device.get("mac") or device.get("ip") or device.get("model") or id(device))
@@ -278,6 +288,7 @@ class MusicSyncWorker(QObject):
     status_updated = Signal(str)
     error_occurred = Signal(str)
     auto_state_changed = Signal(str, object)  # reaction key, representative RGB
+    finished = Signal()
 
     def __init__(self, server, devices, stop_event, controller):
         super().__init__()
@@ -293,13 +304,18 @@ class MusicSyncWorker(QObject):
         selected reaction renderer then turns those bands into a spatial LED
         frame, independently from the selected color palette.
         """
+        adapters = {}
         try:
-            # Initialize COM for this thread (Windows only)
+            # Initialize COM for this thread (Windows only). Use apartment
+            # threading (STA), matching the CLI music worker: soundcard's
+            # loopback recorder re-initializes COM as MTA and treats a
+            # same-mode S_FALSE as the fatal "Error 0x100000001", whereas the
+            # apartment mismatch it hits here is the RPC_E_CHANGED_MODE it
+            # tolerates.
             if platform.system() == "Windows":
-                CoInitializeEx(0)
+                CoInitialize()
 
             # One driver per device; enable its segment/streaming mode once.
-            adapters = {}
             for device in self.devices:
                 adapter = pool.acquire(device, self.server)
                 adapter.begin_stream()
@@ -308,6 +324,12 @@ class MusicSyncWorker(QObject):
             renderers = {}
             smoothers = {}
             active_reaction = None
+            # Persists across reaction changes so its loudness envelope keeps
+            # adapting instead of resetting whenever the style switches.
+            normalizer = audio.AutoGain(SYNC.music_fps)
+            # Reads the master-volume fader so it can be cancelled directly;
+            # AutoGain then only has to clean up per-app volume differences.
+            volume_probe = system_volume.MasterVolumeProbe()
             artwork_provider = artwork.ArtworkPaletteProvider()
             last_auto_reaction = ""
             last_auto_color = (0, 0, 0)
@@ -332,6 +354,13 @@ class MusicSyncWorker(QObject):
                             bands = audio.spectral_bands(
                                 data, AUDIO.sample_rate
                             )
+                            if SYNC.music_auto_gain:
+                                # Cancel the master fader outright, then let
+                                # AutoGain clean up any residual (per-app volume).
+                                bands = system_volume.compensate(
+                                    bands, volume_probe.linear_gain()
+                                )
+                                bands = normalizer.process(bands)
                             palette_colors = (
                                 artwork_provider.get_colors()
                                 if SYNC.music_palette
@@ -356,7 +385,7 @@ class MusicSyncWorker(QObject):
                                 renderer = renderers.get(key)
                                 if renderer is None:
                                     renderer = audio.MusicPatternRenderer(
-                                        segment_count
+                                        segment_count, SYNC.music_fps
                                     )
                                     renderers[key] = renderer
                                 frame = renderer.render(
@@ -431,12 +460,18 @@ class MusicSyncWorker(QObject):
         except Exception as e:
             self.error_occurred.emit(f"Music sync error: {str(e)}")
         finally:
+            for adapter in adapters.values():
+                try:
+                    adapter.end_stream()
+                except Exception:
+                    pass
             # Ensure COM is uninitialized even if an exception occurs
             try:
                 if platform.system() == "Windows":
                     CoUninitialize()
             except Exception:
                 pass
+            self.finished.emit()
 
     def _device_key(self, device: Dict[str, Any]) -> str:
         return str(device.get("mac") or device.get("ip") or device.get("model") or id(device))
@@ -530,6 +565,16 @@ class SyncController(QObject):
     def get_music_brightness(self) -> float:
         """Get brightness for music sync mode."""
         return self.music_brightness
+
+    def set_music_auto_gain(self, enabled: bool) -> None:
+        """Apply and persist whether loudness is normalized against master volume."""
+        SYNC.music_auto_gain = bool(enabled)
+        self._settings.setValue(
+            SYNC_SETTINGS_KEYS["music_auto_gain"], SYNC.music_auto_gain
+        )
+
+    def get_music_auto_gain(self) -> bool:
+        return bool(SYNC.music_auto_gain)
 
     def set_music_palette(self, palette: str) -> None:
         """Apply and persist the live music color palette."""
@@ -628,10 +673,13 @@ class SyncController(QObject):
         self.sync_thread.started.connect(self.sync_worker.run)
         self.sync_worker.status_updated.connect(self.status_updated.emit)
         self.sync_worker.error_occurred.connect(self.sync_error.emit)
+        if hasattr(self.sync_worker, "finished"):
+            self.sync_worker.finished.connect(self.sync_thread.quit)
         if isinstance(self.sync_worker, MusicSyncWorker):
             self.sync_worker.auto_state_changed.connect(
                 self.music_auto_state_changed.emit
             )
+        self.sync_thread.finished.connect(self._on_sync_thread_finished)
         self.sync_thread.finished.connect(self.sync_thread.deleteLater)
 
         self.sync_thread.start()
@@ -648,6 +696,7 @@ class SyncController(QObject):
             self.close_server()
             return
 
+        had_active_mode = self.current_sync_mode is not None
         try:
             is_running = self.sync_thread.isRunning()
         except RuntimeError:
@@ -657,6 +706,10 @@ class SyncController(QObject):
             self.current_sync_mode = None
             self.active_devices = []
             self.close_server()
+            if had_active_mode:
+                self.sync_stopped.emit()
+                if announce:
+                    self.status_updated.emit("Sync stopped")
             return
 
         if is_running:
@@ -676,8 +729,9 @@ class SyncController(QObject):
             except RuntimeError:
                 pass
 
-            self.current_sync_mode = None
-            self.active_devices = []
+        self.current_sync_mode = None
+        self.active_devices = []
+        if had_active_mode:
             self.sync_stopped.emit()
             if announce:
                 self.status_updated.emit("Sync stopped")
@@ -686,6 +740,21 @@ class SyncController(QObject):
         self.sync_thread = None
         self.sync_worker = None
         self.close_server()
+
+    def _on_sync_thread_finished(self) -> None:
+        """Clear controller state when a worker exits without an explicit stop."""
+        thread = self.sender()
+        if thread is not self.sync_thread:
+            return
+
+        had_active_mode = self.current_sync_mode is not None
+        self.sync_thread = None
+        self.sync_worker = None
+        self.current_sync_mode = None
+        self.active_devices = []
+        self.close_server()
+        if had_active_mode:
+            self.sync_stopped.emit()
 
     def get_current_sync_mode(self) -> Optional[str]:
         """Get the current synchronization mode.

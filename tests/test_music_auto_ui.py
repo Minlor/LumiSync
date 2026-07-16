@@ -23,6 +23,13 @@ class FakeSyncController(QObject):
         self.running = False
         self.mode = None
         self.selected_devices = []
+        self.auto_gain = True
+
+    def get_music_auto_gain(self) -> bool:
+        return self.auto_gain
+
+    def set_music_auto_gain(self, enabled: bool) -> None:
+        self.auto_gain = bool(enabled)
 
     def get_music_reaction(self) -> str:
         return self.reaction

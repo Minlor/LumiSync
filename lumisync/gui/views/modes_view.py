@@ -8,6 +8,7 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -389,6 +390,20 @@ class ModesView(QWidget):
         self.music_brightness_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         b_row.addWidget(self.music_brightness_label)
         layout.addLayout(b_row)
+
+        self.music_auto_gain_check = QCheckBox("Ignore master volume")
+        self.music_auto_gain_check.setChecked(
+            self.controller.get_music_auto_gain()
+        )
+        self.music_auto_gain_check.setToolTip(
+            "Normalize loudness so lowering your speaker/system volume no longer "
+            "dims the sync. The music's own dynamics still drive the lights."
+        )
+        self.music_auto_gain_check.setAccessibleDescription(
+            self.music_auto_gain_check.toolTip()
+        )
+        self.music_auto_gain_check.toggled.connect(self._on_music_auto_gain_toggled)
+        layout.addWidget(self.music_auto_gain_check)
 
         self.music_start_button = QPushButton("Start Music Sync")
         self.music_start_button.setObjectName("Primary")
@@ -842,6 +857,9 @@ class ModesView(QWidget):
         self.controller.set_music_brightness(value / 100.0)
         self.music_brightness_label.setText(f"{value}%")
 
+    def _on_music_auto_gain_toggled(self, enabled: bool) -> None:
+        self.controller.set_music_auto_gain(enabled)
+
     def _on_brightness_changed(self, mode: str, value: float) -> None:
         if mode == "monitor" and hasattr(self, "monitor_brightness_slider"):
             self.monitor_brightness_slider.setValue(int(value * 100))
@@ -863,6 +881,7 @@ class ModesView(QWidget):
             )
 
     def _handle_monitor_action(self) -> None:
+        self._stop_mapping_test_for_sync()
         if (
             self.controller.is_syncing()
             and self.controller.get_current_sync_mode() == "monitor"
@@ -872,6 +891,7 @@ class ModesView(QWidget):
             self._start_monitor_sync()
 
     def _handle_music_action(self) -> None:
+        self._stop_mapping_test_for_sync()
         if (
             self.controller.is_syncing()
             and self.controller.get_current_sync_mode() == "music"
@@ -879,6 +899,19 @@ class ModesView(QWidget):
             self.controller.stop_sync()
         else:
             self._start_music_sync()
+
+    def _stop_mapping_test_for_sync(self) -> None:
+        """Release LED Mapping ownership before starting a live sync stream."""
+        if not self._mapping_expanded:
+            return
+
+        # Closing the mapper normally resumes whatever it paused. A sync action
+        # is about to make an explicit choice, so discard that automatic resume
+        # and let the action start exactly one stream after the test timer stops.
+        self._sync_was_running = False
+        self._sync_mode_before = None
+        self._paused_devices = []
+        self._toggle_led_mapping()
 
     def _on_sync_state_changed(self, *_args) -> None:
         self._update_action_states()

@@ -75,6 +75,9 @@ class GoveeLanAdapter(TransportAdapter):
         # Segment streams require Razer mode on Govee devices.
         connection.switch_razer(self.server, self.device, True)
 
+    def end_stream(self) -> None:
+        connection.switch_razer(self.server, self.device, False)
+
     def query_status(self) -> Optional[Dict[str, Any]]:
         return connection.query_status(self.server, self.device)
 
