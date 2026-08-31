@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+from packaging.requirements import Requirement
 
 from lumisync.sync import monitor
 
@@ -11,18 +12,35 @@ from lumisync.sync import monitor
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _requirement(dependencies, name):
+    """Return the requirement string for ``name``, or None if it is absent."""
+    for dependency in dependencies:
+        if Requirement(dependency).name.lower() == name.lower():
+            return dependency
+    return None
+
+
 class WindowsPackagingTests(unittest.TestCase):
     def test_windows_capture_dependencies_include_cv2_provider(self):
         pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
         dependencies = pyproject["project"]["dependencies"]
 
-        self.assertIn("dxcam>=0.3.0", dependencies)
-        self.assertTrue(
-            any(
-                dependency.startswith("opencv-python-headless>=")
-                and "sys_platform == 'win32'" in dependency
-                for dependency in dependencies
-            )
+        # dxcam and its cv2 colour-conversion helper only ship Windows wheels,
+        # so both must stay behind a win32 marker or installs break elsewhere.
+        for name in ("dxcam", "opencv-python-headless"):
+            with self.subTest(dependency=name):
+                requirement = _requirement(dependencies, name)
+                self.assertIsNotNone(requirement)
+                self.assertEqual(
+                    str(Requirement(requirement).marker),
+                    'sys_platform == "win32"',
+                )
+
+        # The non-Windows capture backend is the complement of that marker.
+        mss = _requirement(dependencies, "mss")
+        self.assertIsNotNone(mss)
+        self.assertEqual(
+            str(Requirement(mss).marker), 'sys_platform != "win32"'
         )
 
     def test_pyinstaller_specs_bundle_cv2_lazy_import(self):
