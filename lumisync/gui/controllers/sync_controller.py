@@ -34,6 +34,7 @@ SYNC_SETTINGS_KEYS = {
     "music_smoothing": "sync/music_smoothing",
     "music_palette": "sync/music_palette",
     "music_reaction": "sync/music_reaction",
+    "music_output_device": "sync/music_output_device",
     "monitor_brightness": "sync/monitor/brightness",
     "music_brightness": "sync/music/brightness",
 }
@@ -83,6 +84,9 @@ def load_sync_settings(settings: QSettings) -> None:
     )
     if reaction in audio.REACTIONS:
         SYNC.music_reaction = reaction
+    SYNC.music_output_device = str(
+        settings.value(keys["music_output_device"], SYNC.music_output_device)
+    )
 
 
 def get_led_mapping_from_settings(
@@ -339,11 +343,18 @@ class MusicSyncWorker(QObject):
 
             while not self.stop_event.is_set():
                 try:
-                    # Open the loopback recorder once, then stream frames from it.
-                    with music.default_loopback_microphone().recorder(
+                    # Open the loopback recorder once, then stream frames from
+                    # it. Reopening on every output-device change keeps a live
+                    # selection in Settings from requiring a sync restart.
+                    active_output_device = SYNC.music_output_device
+                    with music.default_loopback_microphone(
+                        active_output_device
+                    ).recorder(
                         samplerate=AUDIO.sample_rate
                     ) as mic:
                         while not self.stop_event.is_set():
+                            if SYNC.music_output_device != active_output_device:
+                                break
                             frame_start = time.monotonic()
                             # Try/except due to a soundcard error when no audio plays.
                             try:
@@ -601,6 +612,30 @@ class SyncController(QObject):
 
     def get_music_reaction(self) -> str:
         return str(SYNC.music_reaction)
+
+    def set_music_output_device(self, device_id: str) -> None:
+        """Apply and persist which playback device music sync listens to.
+
+        Args:
+            device_id: A soundcard speaker id from
+                :func:`lumisync.sync.music.list_output_devices`, or ``""`` to
+                follow the OS default playback device.
+        """
+        device_id = str(device_id or "")
+        SYNC.music_output_device = device_id
+        self._settings.setValue(
+            SYNC_SETTINGS_KEYS["music_output_device"], device_id
+        )
+
+    def get_music_output_device(self) -> str:
+        return str(SYNC.music_output_device)
+
+    def list_music_output_devices(self) -> List[Dict[str, str]]:
+        """List playback devices available for music sync to capture."""
+        try:
+            return music.list_output_devices()
+        except Exception:
+            return []
 
     def set_device(self, device: Dict[str, Any]):
         """Compatibility wrapper: set one device for synchronization.

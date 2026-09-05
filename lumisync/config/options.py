@@ -60,4 +60,5 @@ SYNC = SimpleNamespace(
     music_smoothing=0.6,     # EMA factor for the scrolling music colors
     music_palette="rgb",     # selected audio-reactive color palette
     music_reaction="flow",   # selected audio-driven spatial reaction
+    music_output_device="", # soundcard speaker id to capture; "" = OS default
 )

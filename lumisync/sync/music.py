@@ -28,16 +28,43 @@ def _soundcard_backend():
     return soundcard
 
 
-def default_loopback_microphone():
-    """Return a soundcard microphone that captures the system audio output.
+def list_output_devices() -> List[Dict[str, str]]:
+    """List playback devices whose output can be captured for music sync.
 
-    On Windows this is the default speaker's WASAPI loopback. On Linux
-    (PulseAudio / PipeWire) the equivalent is the default sink's *monitor*
-    source; the ``include_loopback`` lookup usually resolves it, but if it
-    doesn't we fall back to picking a monitor/loopback source directly so
-    music sync works out of the box on Linux too.
+    Returns ``[{"id": ..., "name": ...}, ...]``. ``id`` is the soundcard
+    speaker id and can be passed back to :func:`default_loopback_microphone`
+    to capture that device's output instead of the current Windows default.
     """
     sc = _soundcard_backend()
+    try:
+        speakers = sc.all_speakers()
+    except Exception:
+        return []
+    return [{"id": str(speaker.id), "name": str(speaker.name)} for speaker in speakers]
+
+
+def default_loopback_microphone(device_id: str | None = None):
+    """Return a soundcard microphone that captures a system audio output.
+
+    On Windows this is a speaker's WASAPI loopback. On Linux (PulseAudio /
+    PipeWire) the equivalent is a sink's *monitor* source; the
+    ``include_loopback`` lookup usually resolves it, but if it doesn't we
+    fall back to picking a monitor/loopback source directly so music sync
+    works out of the box on Linux too.
+
+    Args:
+        device_id: A speaker id from :func:`list_output_devices`. When
+            omitted (or no longer present), falls back to the current
+            Windows/OS default playback device.
+    """
+    sc = _soundcard_backend()
+
+    if device_id:
+        try:
+            return sc.get_microphone(id=device_id, include_loopback=True)
+        except Exception:
+            pass
+
     speaker_name = None
     try:
         speaker_name = str(sc.default_speaker().name)
@@ -96,7 +123,7 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
         frame_interval = 1.0 / max(1, SYNC.music_fps)
 
         while True:
-            with default_loopback_microphone().recorder(
+            with default_loopback_microphone(SYNC.music_output_device).recorder(
                 samplerate=AUDIO.sample_rate
             ) as mic:
                 while True:

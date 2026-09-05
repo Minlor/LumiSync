@@ -80,7 +80,8 @@ class SettingsPage(QWidget):
         self.section_stack.addWidget(
             self._section_page(
                 "Music Sync",
-                "Fine-tune how quickly audio-reactive lighting responds.",
+                "Choose what audio to listen to and tune how it reacts.",
+                self._build_audio_output_group(),
                 self._build_music_tuning_group(),
             )
         )
@@ -287,6 +288,34 @@ class SettingsPage(QWidget):
         self.gamma_check.setChecked(bool(SYNC.gamma_correct))
         self.gamma_check.toggled.connect(self._on_gamma)
         form.addRow("Gamma", self.gamma_check)
+
+        return group
+
+    def _build_audio_output_group(self) -> QGroupBox:
+        group = QGroupBox("Audio Output")
+        form = QFormLayout(group)
+        form.setSpacing(8)
+
+        row = QHBoxLayout()
+        self.output_device_combo = ProductComboBox()
+        self._populate_output_devices()
+        self.output_device_combo.currentIndexChanged.connect(
+            self._on_output_device_changed
+        )
+        row.addWidget(self.output_device_combo, 1)
+
+        refresh_button = QPushButton("Refresh")
+        refresh_button.clicked.connect(self._populate_output_devices)
+        row.addWidget(refresh_button)
+        form.addRow("Listen to", row)
+
+        hint = QLabel(
+            "Pick which playback device music sync listens to, instead of "
+            "switching your Windows default output."
+        )
+        hint.setProperty("role", "hint")
+        hint.setWordWrap(True)
+        form.addRow("", hint)
 
         return group
 
@@ -554,5 +583,36 @@ class SettingsPage(QWidget):
         if self._main_window is not None and hasattr(self._main_window, "sync_controller"):
             try:
                 self._main_window.sync_controller.set_monitor_display(display_index)
+            except Exception:
+                pass
+
+    def _populate_output_devices(self) -> None:
+        controller = getattr(self._main_window, "sync_controller", None)
+        devices = controller.list_music_output_devices() if controller is not None else []
+        saved_device = str(
+            controller.get_music_output_device()
+            if controller is not None
+            else self.settings.value(SYNC_SETTINGS_KEYS["music_output_device"], "")
+        )
+
+        blocked = self.output_device_combo.blockSignals(True)
+        try:
+            self.output_device_combo.clear()
+            self.output_device_combo.addItem("System default", "")
+            for device in devices:
+                self.output_device_combo.addItem(device["name"], device["id"])
+
+            idx = self.output_device_combo.findData(saved_device)
+            self.output_device_combo.setCurrentIndex(max(0, idx))
+        finally:
+            self.output_device_combo.blockSignals(blocked)
+
+    def _on_output_device_changed(self) -> None:
+        device_id = str(self.output_device_combo.currentData() or "")
+        self.settings.setValue(SYNC_SETTINGS_KEYS["music_output_device"], device_id)
+        controller = getattr(self._main_window, "sync_controller", None)
+        if controller is not None:
+            try:
+                controller.set_music_output_device(device_id)
             except Exception:
                 pass
