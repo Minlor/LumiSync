@@ -11,6 +11,8 @@
 #
 # Build on the oldest Ubuntu you want to support — the resulting AppImage is
 # tied to the build machine's glibc.
+# Install Qt's xcb runtime dependencies on that machine before building; see
+# .github/workflows/linux-release.yaml for the Ubuntu package list.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -43,6 +45,21 @@ python -m PyInstaller \
     --distpath "$DIST" \
     --workpath "$BUILD/pyinstaller" \
     "$ROOT/packaging/pyinstaller/lumisync_onedir.spec"
+
+step "Checking bundled X11 dependencies"
+# These are easy to miss on a headless build host. PyInstaller warns about
+# unresolved libraries but still produces a bundle, and offscreen tests pass.
+INTERNAL="$DIST/LumiSync/_internal"
+for library in \
+    PySide6/Qt/plugins/platforms/libqxcb.so \
+    libxkbcommon-x11.so.0 \
+    libxcb-cursor.so.0; do
+    if [ ! -f "$INTERNAL/$library" ]; then
+        echo "Missing bundled X11 dependency: $library" >&2
+        echo "Install the Qt X11 runtime packages listed in .github/workflows/linux-release.yaml and rebuild." >&2
+        exit 1
+    fi
+done
 
 step "Assembling AppDir"
 rm -rf "$APPDIR"

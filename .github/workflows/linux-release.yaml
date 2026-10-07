@@ -2,17 +2,28 @@ name: Build Linux Release
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/linux-release.yaml
+      - packaging/linux/**
+      - packaging/pyinstaller/lumisync_onedir.spec
+      - tools/build_linux.sh
+      - tools/smoke_test_appimage.sh
+      - pyproject.toml
   release:
     types: [published]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   linux-appimage:
     # Build on the oldest supported Ubuntu so the AppImage's glibc is broadly
     # compatible.
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
 
     steps:
       - name: Check out repository
@@ -41,13 +52,34 @@ jobs:
       - name: Install system libraries
         run: |
           sudo apt-get update
+          # PyInstaller can only bundle Qt's X11 dependencies if they are
+          # installed on the build host. Offscreen unit tests do not load xcb.
           sudo apt-get install -y --no-install-recommends \
-            libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfuse2 libpulse0
+            libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfuse2 libpulse0 \
+            libxkbcommon-x11-0 libx11-xcb1 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-shm0 libxcb-sync1 \
+            libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1
 
       - name: Build AppImage
         run: |
           chmod +x tools/build_linux.sh
           RUN_TESTS=1 tools/build_linux.sh
+
+      - name: Test AppImage startup on a clean X11 runtime
+        timeout-minutes: 5
+        run: |
+          # Keep build-host Qt dependencies out of the runtime: otherwise
+          # installed system libraries can hide an incomplete AppImage.
+          docker run --rm -v "$PWD:/workspace:ro" ubuntu:22.04 bash -euc '
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              libegl1 libgl1 libdbus-1-3 libpulse0 \
+              xvfb xauth xdotool fonts-dejavu-core
+            echo "Starting Xvfb and the packaged GUI test"
+            timeout --kill-after=5s 120s xvfb-run -a bash /workspace/tools/smoke_test_appimage.sh \
+              /workspace/dist/LumiSync-x86_64.AppImage
+          '
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
@@ -56,6 +88,7 @@ jobs:
           path: dist/LumiSync-x86_64.AppImage
 
       - name: Attach artifact to GitHub Release
+        if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event_name == 'release' && github.event.release.tag_name || steps.manual_release.outputs.tag }}
