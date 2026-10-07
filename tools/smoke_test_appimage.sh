@@ -24,7 +24,8 @@ fail() {
 
 cd "$WORKDIR"
 # Extraction exercises the packaged AppRun without requiring FUSE privileges.
-"$APPIMAGE" --appimage-extract > /dev/null
+echo "Extracting AppImage"
+timeout --kill-after=5s 30s "$APPIMAGE" --appimage-extract > /dev/null
 export XDG_CONFIG_HOME="$WORKDIR/config"
 export XDG_DATA_HOME="$WORKDIR/data"
 export XDG_CACHE_HOME="$WORKDIR/cache"
@@ -33,23 +34,25 @@ export TMPDIR="$WORKDIR"
 mkdir -m 0700 "$XDG_RUNTIME_DIR"
 export QT_QPA_PLATFORM=xcb
 export QT_DEBUG_PLUGINS=1
+echo "Launching packaged GUI with the xcb platform plugin"
 timeout --kill-after=5s 60s "$WORKDIR/squashfs-root/AppRun" > "$WORKDIR/startup.log" 2>&1 &
 APP_PID=$!
 
 WINDOW=""
 for attempt in $(seq 1 30); do
     kill -0 "$APP_PID" 2>/dev/null || fail "AppImage exited before showing a window."
-    WINDOW="$(xdotool search --onlyvisible --name '^LumiSync$' 2>/dev/null || true)"
+    WINDOW="$(timeout 5s xdotool search --onlyvisible --name '^LumiSync$' 2>/dev/null || true)"
     [ -n "$WINDOW" ] && break
     sleep 1
 done
 [ -n "$WINDOW" ] || fail "AppImage did not show its main window within 30 seconds."
+echo "Main window is visible; checking for delayed startup failures"
 
 # The catalog waits at least ten seconds. Catch delayed startup crashes too.
 for attempt in $(seq 1 12); do
     sleep 1
     kill -0 "$APP_PID" 2>/dev/null || fail "AppImage exited after showing its window."
 done
-xdotool search --onlyvisible --name '^LumiSync$' > /dev/null 2>&1 \
+timeout 5s xdotool search --onlyvisible --name '^LumiSync$' > /dev/null 2>&1 \
     || fail "AppImage main window disappeared."
 echo "AppImage opened its X11 window and stayed running."
