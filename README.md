@@ -103,7 +103,11 @@ pip install -e .
   [GitHub release](https://github.com/Minlor/LumiSync/releases).
 - **Linux** — an `x86_64` **AppImage** is attached to each release; `chmod +x`
   it and run. Build it yourself with `tools/build_linux.sh` (needs Python 3.12+
-  and `appimagetool` deps). A Flatpak is scaffolded in `packaging/flatpak/` but
+  and the Qt X11 runtime libraries listed in
+  [the Linux build workflow](.github/workflows/linux-release.yaml)). The
+  AppImage requires glibc 2.35 or newer (Ubuntu 22.04+). Linux releases are
+  checked by opening the packaged GUI on X11 in a clean Ubuntu 22.04 runtime.
+  A Flatpak is scaffolded in `packaging/flatpak/` but
   not yet finished.
 
 > **Platform notes:** Windows is fully supported. On Linux, device control,
