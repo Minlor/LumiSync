@@ -386,7 +386,7 @@ class ResponsiveAppUiTests(unittest.TestCase):
             self.assertEqual([call.args[0].toString() for call in open_url.call_args_list], [
                 "https://github.com/Minlor/LumiSync/releases",
                 "https://github.com/Minlor/LumiSync",
-                "https://github.com/Minlor/LumiSync/blob/main/docs/vendor-accounts.md",
+                "https://github.com/Minlor/LumiSync#account-setup",
             ])
         logs = str(Path(self.temporary.name) / "logs")
         with patch("lumisync.utils.logging.get_logs_directory", return_value=logs), \

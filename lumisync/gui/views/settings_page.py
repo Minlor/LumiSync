@@ -551,7 +551,7 @@ class SettingsPage(QWidget):
     # ---------------------------------------------------------------- helpers
 
     def _open_account_setup(self) -> None:
-        QDesktopServices.openUrl(QUrl("https://github.com/Minlor/LumiSync/blob/main/docs/vendor-accounts.md"))
+        QDesktopServices.openUrl(QUrl("https://github.com/Minlor/LumiSync#account-setup"))
 
     def _open_repository(self) -> None:
         QDesktopServices.openUrl(QUrl("https://github.com/Minlor/LumiSync"))

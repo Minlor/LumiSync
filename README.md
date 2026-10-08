@@ -23,14 +23,6 @@ Visit the website: [lumisync.minlor.net](https://lumisync.minlor.net)
 > [!NOTE]
 > This project is in active development. Windows is fully supported; Linux X11 is partial, macOS/Wayland are WIP.
 
-## What's new in 0.8.1
-
-Tuya Smart and LSC email/password sign-in now works without an Android app
-package. Fresh sign-ins were checked with real Tuya, LSC and Govee accounts.
-Rapid device controls do less repeated UI style work, and local account logs
-help diagnose sign-in failures without recording credentials.
-See the [release notes](docs/releases/0.8.1.md).
-
 ## Features
 
 | Feature | Description |
@@ -55,8 +47,7 @@ support depends on its firmware, capabilities, and the account's authorization.
 | iDotMatrix panels | Bluetooth LE | Drawing, animations, clock, rotation, countdown, scoreboard; sync uses an ambient colour |
 | LSC / Tuya WiFi lights, switches and plugs | Tuya LAN, personal account or Smart Life QR | LSC/Tuya Smart email/password; authorized local-key import; controls follow the device schema; supported plug metering |
 
-See [account setup](docs/vendor-accounts.md) and the
-[integration reference](docs/integrations.md). LSC and Tuya Smart password login
+See [account setup](#account-setup). LSC and Tuya Smart password login
 use built-in client configuration; no Android package, installation or developer
 account is required. Each brand uses its own account
 namespace: choose the service and country used in your phone app. LumiSync
@@ -70,13 +61,13 @@ Voltage and current are live readings; historical energy is measured in kWh.
 
 ## Screenshots
 
-These are the actual 0.8.1 interface with isolated **example devices, accounts
-and readings**. No personal account details appear in these images.
+Screenshots show the development version with **example devices, accounts
+and readings**.
 
 ### Devices
 
 <div align="center">
-<img src="docs/images/lumisync-devices.png" alt="LumiSync inventory with example LED strip, matrix panel, wall switch and smart plugs" width="100%"/>
+<img src="assets/screenshots/lumisync-devices.png" alt="LumiSync inventory with example LED strip, matrix panel, wall switch and smart plugs" width="100%"/>
 
 <sub>Recognize each device type and use the controls it supports.</sub>
 </div>
@@ -87,12 +78,12 @@ Sign in with your own account and choose its country from a dropdown. Opening
 a supported plug refreshes its electrical readings every five seconds while
 visible; monthly energy totals and daily readings load on demand.
 
-<img src="docs/images/lumisync-plug-energy.png" alt="Example PC plug inspector showing 215.1 W, voltage, current and monthly energy beside the device inventory" width="100%"/>
+<img src="assets/screenshots/lumisync-plug-energy.png" alt="Example PC plug inspector showing 215.1 W, voltage, current and monthly energy beside the device inventory" width="100%"/>
 
 <details>
 <summary>Account sign-in and connected accounts</summary>
 
-<img src="docs/images/lumisync-accounts.png" alt="Tuya sign-in with country selection and masked example Govee, LSC and Tuya accounts" width="860"/>
+<img src="assets/screenshots/lumisync-accounts.png" alt="Tuya sign-in with country selection and masked example Govee, LSC and Tuya accounts" width="860"/>
 
 </details>
 
@@ -101,10 +92,10 @@ visible; monthly energy totals and daily readings load on demand.
 <table>
   <tr>
     <td width="50%">
-      <img src="docs/images/lumisync-monitor-sync.png" alt="LumiSync Monitor Sync screen"/>
+      <img src="assets/screenshots/lumisync-monitor-sync.png" alt="LumiSync Monitor Sync screen"/>
     </td>
     <td width="50%">
-      <img src="docs/images/lumisync-music-sync.png" alt="LumiSync Music Sync screen with Auto Director controls"/>
+      <img src="assets/screenshots/lumisync-music-sync.png" alt="LumiSync Music Sync screen with Auto Director controls"/>
     </td>
   </tr>
   <tr>
@@ -174,6 +165,26 @@ with `lumisync --cli`; direct headless modes are available through
 3. **Control your devices.** Power, brightness, color, white-temperature and meter controls appear where the device supports them.
 4. **Start syncing.** Choose local connections in the device inspector, then open Monitor Sync or Music Sync. Cloud connections offer manual controls.
 
+### Account setup
+
+Open **Devices → Accounts**, choose Govee, Tuya or LSC, then enter your email
+and password. For Tuya and LSC, select the country used for your account.
+LumiSync suggests your computer's region and handles account routing. Enter
+an email verification code if the service requests one.
+
+Tuya Smart and LSC accounts are separate. Smart Life uses **Tuya → QR sign-in**:
+copy the user code from the phone app's **Account and Security** settings,
+request a QR code, scan it and approve. The approval screen names Home Assistant
+because LumiSync uses that public device-sharing registration; no Home Assistant
+installation is needed. Govee also offers an **API key** method.
+
+**Remember this account** saves its session in the OS credential store.
+Passwords and verification codes are not saved, and account labels mask emails.
+Use **Find Devices** to refresh linked accounts and local devices together.
+
+The current development version includes Tuya/LSC sign-in configuration.
+Version 0.8.0 requires the matching Android app package once.
+
 ### Interface
 
 - **Devices** — Discover lights, switches and plugs; connect vendor accounts, choose local/cloud connections, create groups, and view supported electrical readings and energy history.
@@ -185,8 +196,6 @@ with `lumisync --cli`; direct headless modes are available through
 The UI adapts to short/narrow windows: account actions and sync Start/Stop stay
 visible, Draw tools reflow above the canvas, and Settings uses a section dropdown
 when space is tight. Daily readings and technical details expand on demand.
-See the [verification record](docs/verification.md) for UI scope, design direction
-and executed checks.
 
 ### Configuration
 
@@ -200,7 +209,7 @@ and executed checks.
 If a connection or command fails, open **Settings → About → Open logs folder**.
 Connection logs and native crash diagnostics are kept there. Try **Find Devices**
 to refresh linked accounts and local status. Vendor verification challenges may
-require a code or completing sign-in in the phone app; see [account setup](docs/vendor-accounts.md).
+require a code or completing sign-in in the phone app; see [account setup](#account-setup).
 
 ## Development
 
