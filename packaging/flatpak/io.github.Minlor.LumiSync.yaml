@@ -24,6 +24,10 @@ finish-args:
   - --socket=pulseaudio
   # Bluetooth LE (iDotMatrix) via BlueZ on the system bus
   - --system-talk-name=org.bluez
+  # OS credential storage (session-only mode is available without a keyring).
+  - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.kde.kwalletd5
+  - --talk-name=org.kde.kwalletd6
   # Wayland screen capture, if/when the portal backend lands
   - --talk-name=org.freedesktop.portal.ScreenCast
 

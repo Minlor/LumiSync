@@ -21,7 +21,8 @@ machine with `flatpak` and `flatpak-builder`.
    python flatpak-pip-generator \
      --runtime org.freedesktop.Sdk//24.08 \
      bleak tinytuya numpy pillow soundcard mss webcolors colorama \
-     packaging PySide6 \
+     packaging PySide6 requests keyring qrcode tuya-device-sharing-sdk \
+     paho-mqtt cryptography \
      --output packaging/flatpak/python3-deps
    ```
 
