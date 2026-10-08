@@ -33,6 +33,12 @@ dependencies = [
   # device family out of the box (no optional extras to remember).
   "bleak>=0.22.0",       # iDotMatrix pixel panels (Bluetooth LE)
   "tinytuya>=1.13.0",    # LSC / Tuya WiFi lights (local protocol)
+  "requests>=2.32.0",   # authenticated vendor APIs (TLS verified)
+  "keyring>=25.0",      # OS credential store; secrets never go in settings
+  "qrcode>=8.0",        # Tuya account authorization QR codes
+  "tuya-device-sharing-sdk>=0.2.15,<0.3",
+  "paho-mqtt>=2.1,<3",  # Govee account control over TLS
+  "cryptography>=43.0", # Govee account-issued client certificate
   "opencv-python-headless>=4.10.0; sys_platform == 'win32'",
   "pycaw>=20230407; sys_platform == 'win32'",  # read master volume to cancel it in music sync
   "pywin32>=310; sys_platform == 'win32'",
