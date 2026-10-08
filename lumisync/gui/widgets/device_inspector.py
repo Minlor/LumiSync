@@ -511,10 +511,12 @@ class DeviceInspector(QFrame):
 
         status_text, status_state, tooltip = self._status_copy(state)
         self.status_label.setText(status_text)
-        self.status_label.setProperty("statusState", status_state)
         self.status_label.setToolTip(tooltip)
-        self.status_label.style().unpolish(self.status_label)
-        self.status_label.style().polish(self.status_label)
+        if self.status_label.property("statusState") != status_state:
+            self.status_label.setProperty("statusState", status_state)
+            style = self.status_label.style()
+            style.unpolish(self.status_label)
+            style.polish(self.status_label)
         cap = self._cap
         self.output_label.setText(format_device_output(state, cap))
 
@@ -529,10 +531,12 @@ class DeviceInspector(QFrame):
 
         color = state.get("color")
         if cap.supports_color and isinstance(color, (tuple, list)) and len(color) >= 3:
-            self._current_color = QColor(
+            color_value = QColor(
                 int(color[0]), int(color[1]), int(color[2])
             )
-            self._refresh_color_button()
+            if color_value != self._current_color:
+                self._current_color = color_value
+                self._refresh_color_button()
 
         color_temp = state.get("color_temp")
         if (cap.supports_white and color_temp and not self.temperature_slider.isSliderDown()
@@ -583,6 +587,9 @@ class DeviceInspector(QFrame):
         return "LAN light · Confirmed device readback when supported"
 
     def _set_power_visual(self, state: str) -> None:
+        if getattr(self, "_power_visual_state", None) == state:
+            return
+        self._power_visual_state = state
         is_on = state == "on"
         self.power_button.setProperty("powerState", state)
         self.power_button.setIcon(
@@ -602,8 +609,9 @@ class DeviceInspector(QFrame):
         self.power_button.setAccessibleDescription(
             "On" if is_on else "Off" if state == "off" else "Unknown"
         )
-        self.power_button.style().unpolish(self.power_button)
-        self.power_button.style().polish(self.power_button)
+        style = self.power_button.style()
+        style.unpolish(self.power_button)
+        style.polish(self.power_button)
 
     def _on_brightness(self, value: int) -> None:
         self.brightness_value.setText(f"{value}%")

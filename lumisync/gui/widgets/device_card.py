@@ -474,10 +474,12 @@ class DeviceCard(QFrame):
             status_text, status_state, tooltip = "Offline", "offline", ""
 
         self.state_detail_label.setText(status_text)
-        self.state_detail_label.setProperty("statusState", status_state)
         self.state_detail_label.setToolTip(tooltip)
-        self.state_detail_label.style().unpolish(self.state_detail_label)
-        self.state_detail_label.style().polish(self.state_detail_label)
+        if self.state_detail_label.property("statusState") != status_state:
+            self.state_detail_label.setProperty("statusState", status_state)
+            style = self.state_detail_label.style()
+            style.unpolish(self.state_detail_label)
+            style.polish(self.state_detail_label)
 
         self.output_label.setText(format_device_output(state, self._cap))
         readings = []
@@ -530,6 +532,9 @@ class DeviceCard(QFrame):
             )
 
     def _set_power_visual(self, state: str) -> None:
+        if getattr(self, "_power_visual_state", None) == state:
+            return
+        self._power_visual_state = state
         is_on = state == "on"
         self.power_button.setProperty("powerState", state)
         self.power_button.setIcon(
@@ -549,8 +554,9 @@ class DeviceCard(QFrame):
         self.power_button.setAccessibleDescription(
             "On" if is_on else "Off" if state == "off" else "Unknown"
         )
-        self.power_button.style().unpolish(self.power_button)
-        self.power_button.style().polish(self.power_button)
+        style = self.power_button.style()
+        style.unpolish(self.power_button)
+        style.polish(self.power_button)
 
     def _repolish(self) -> None:
         self.style().unpolish(self)

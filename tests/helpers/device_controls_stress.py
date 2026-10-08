@@ -12,7 +12,7 @@ from unittest.mock import patch
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from PySide6.QtCore import QThread, QThreadPool, QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QThread, QThreadPool, QTimer, Qt
 from PySide6.QtWidgets import QApplication
 
 from lumisync.gui.controllers.device_controller import DeviceController
@@ -21,6 +21,9 @@ from lumisync.gui.views.devices_view import DevicesView
 from tests.test_device_inventory_ui import inventory_fixtures
 
 faulthandler.enable()
+# A Qt timer cannot diagnose a blocked GUI event loop. This native watchdog
+# prints every Python thread's stack even when Qt stops dispatching events.
+faulthandler.dump_traceback_later(25, exit=True)
 app = QApplication([])
 apply_theme(app)
 with patch.object(DeviceController, "_init_devices"):
@@ -69,6 +72,8 @@ with patch("lumisync.gui.controllers.device_controller.create_adapter", side_eff
     def tick():
         ticks[0] += 1
         n = ticks[0]
+        if n % 300 == 0:
+            print(f"Stress tick {n}: {len(writes)} writes, {len(queries)} queries", file=sys.stderr, flush=True)
         if n <= 1200:
             view._cards[0].brightness_slider.setValue(n % 101)
             if n % 3 == 0:
@@ -95,6 +100,10 @@ with patch("lumisync.gui.controllers.device_controller.create_adapter", side_eff
             assert len(queries) >= 30 and all(queries), len(queries)
             assert deliveries and all(deliveries)
             assert peaks[0] <= 2, peaks[0]
+            assert view._cards[0].power_button.property("powerState") == "off"
+            assert view.inspector.power_button.property("powerState") == "off"
+            assert view._cards[0].brightness_slider.value() == 73
+            assert view.inspector.brightness_slider.value() == 73
             assert controller.shutdown()
             view.close()
             print(json.dumps({"pass": True, "ticks": 1200, "writes": len(writes),
@@ -103,6 +112,11 @@ with patch("lumisync.gui.controllers.device_controller.create_adapter", side_eff
             app.quit()
 
     timer.timeout.connect(tick)
+    timer.setTimerType(Qt.TimerType.PreciseTimer)
     timer.start(4)
-    QTimer.singleShot(20000, lambda: os._exit(2))
     app.exec()
+    view.deleteLater()
+    controller.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
+    faulthandler.cancel_dump_traceback_later()
