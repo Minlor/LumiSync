@@ -8,6 +8,7 @@ from PySide6.QtCore import (
     QPropertyAnimation,
     QRectF,
     QSize,
+    QRect,
     Qt,
 )
 from PySide6.QtGui import QMouseEvent, QPainter, QPaintEvent, QPen
@@ -33,8 +34,10 @@ class ToggleSwitch(QAbstractButton):
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setMinimumHeight(40)
+        policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
+        self.setMinimumHeight(44)
         self.setAccessibleName(text)
 
         self._position = 0.0
@@ -46,7 +49,15 @@ class ToggleSwitch(QAbstractButton):
 
     def sizeHint(self) -> QSize:  # noqa: N802 - Qt API
         text_width = self.fontMetrics().horizontalAdvance(self.text())
-        return QSize(max(180, text_width + 76), 40)
+        return QSize(max(180, text_width + 76), 44)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt API
+        return QSize(180, 44)
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802 - Qt API
+        bounds = self.fontMetrics().boundingRect(QRect(0, 0, max(1, width - 76), 1000),
+                                                Qt.TextFlag.TextWordWrap, self.text())
+        return max(44, bounds.height() + 8)
 
     def get_position(self) -> float:
         return self._position
@@ -71,7 +82,7 @@ class ToggleSwitch(QAbstractButton):
 
     def _update_accessible_state(self, checked: bool) -> None:
         self.setAccessibleDescription("On" if checked else "Off")
-        self.setToolTip(f"{self.text()} — {'On' if checked else 'Off'}")
+        self.setToolTip(f"{self.text()} · {'On' if checked else 'Off'}")
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 - Qt API
         del event
@@ -97,7 +108,7 @@ class ToggleSwitch(QAbstractButton):
         text_rect = content.adjusted(0, 0, -(track_width + 12), 0)
         painter.drawText(
             text_rect,
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap,
             self.text(),
         )
 
@@ -190,7 +201,7 @@ class ProductComboBox(QComboBox):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(40)
+        self.setMinimumHeight(44)
         self.setMaxVisibleItems(12)
 
 

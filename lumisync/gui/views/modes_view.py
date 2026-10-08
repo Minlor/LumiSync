@@ -8,6 +8,7 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QBoxLayout,
     QCheckBox,
     QFrame,
     QGridLayout,
@@ -39,6 +40,7 @@ class ModesView(QWidget):
         mode: Optional[str] = None,
     ):
         super().__init__()
+        self.setObjectName("ModesView")
         self.controller = sync_controller
         self.device_controller = device_controller
         self.mode = mode if mode in {"monitor", "music"} else None
@@ -67,6 +69,7 @@ class ModesView(QWidget):
         content = QWidget()
         self.scroll.setWidget(content)
         root = QVBoxLayout(content)
+        self._content_layout = root
         root.setContentsMargins(28, 24, 28, 28)
         root.setSpacing(18)
 
@@ -91,6 +94,7 @@ class ModesView(QWidget):
         intro = QLabel(page_intro)
         intro.setProperty("role", "pageDescription")
         intro.setWordWrap(True)
+        self._intro = intro
         page_header.addWidget(intro)
         root.addLayout(page_header)
 
@@ -124,6 +128,56 @@ class ModesView(QWidget):
             root.addLayout(modes_row)
 
         root.addStretch(1)
+        if self.mode:
+            group = self.monitor_group if self.mode == "monitor" else self.music_group
+            group.setTitle("")
+            button = self.monitor_start_button if self.mode == "monitor" else self.music_start_button
+            group.layout().removeWidget(button)
+            footer = QWidget()
+            footer.setObjectName("SyncActionBar")
+            actions = QHBoxLayout(footer)
+            actions.setContentsMargins(28, 10, 28, 16)
+            self.action_hint = QLabel()
+            self.action_hint.setWordWrap(True)
+            self.action_hint.setProperty("role", "subtle")
+            actions.addWidget(self.action_hint, 1)
+            button.setMinimumHeight(46)
+            actions.addWidget(button)
+            outer.addWidget(footer)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        if not hasattr(self, "_content_layout"):
+            return
+        compact = self.height() < 680
+        inset = 16 if compact else 28
+        self._content_layout.setContentsMargins(inset, 16 if compact else 24, inset, 16 if compact else 28)
+        self._content_layout.setSpacing(12 if compact else 18)
+        self._intro.setVisible(not compact)
+        for name in ("monitor_group", "music_group"):
+            if hasattr(self, name):
+                getattr(self, name).setMinimumHeight(0)
+                getattr(self, name).layout().setSpacing(10 if compact else 13)
+        for name in ("monitor_chips", "music_chips"):
+            if hasattr(self, name):
+                getattr(self, name).set_compact(compact)
+        if hasattr(self, "_music_columns"):
+            compact_picker = compact and self.width() < 940
+            horizontal = self.width() >= 940 or (compact and self.width() >= 680)
+            self._music_columns.setDirection(QBoxLayout.Direction.LeftToRight if horizontal else QBoxLayout.Direction.TopToBottom)
+            self._reaction_picker.setVisible(not compact_picker)
+            self.music_reaction_combo.setVisible(compact_picker)
+            self.music_reaction_description.setVisible(not compact_picker)
+            self.music_palette_description.setVisible(not compact)
+            self._output_title.setVisible(not compact)
+            available = max(220, (self.width() - inset * 2 - 76) * (0.6 if horizontal else 1))
+            needed = max(button.sizeHint().width() for button in self.music_reaction_buttons.values())
+            columns = max(2, min(5, int((available + 8) / (needed + 8))))
+            for index, button in enumerate(self.music_reaction_buttons.values()):
+                self._reaction_grid.removeWidget(button)
+                self._reaction_grid.addWidget(button, index // columns, index % columns)
+            for column in range(5):
+                self._reaction_grid.setColumnStretch(column, 1 if column < columns else 0)
 
     def _build_monitor_group(self) -> QGroupBox:
         group = QGroupBox("Monitor Sync")
@@ -134,6 +188,7 @@ class ModesView(QWidget):
         desc = QLabel("Sample colors from your screen and push them to the lights.")
         desc.setProperty("role", "subtle")
         desc.setWordWrap(True)
+        desc.setVisible(self.mode is None)
         layout.addWidget(desc)
 
         self.monitor_chips = DeviceChipStrip("Targets")
@@ -149,16 +204,14 @@ class ModesView(QWidget):
         self.monitor_group_button.clicked.connect(
             lambda: self._save_targets_as_group(self.monitor_chips)
         )
-        layout.addWidget(
-            self.monitor_group_button,
-            alignment=Qt.AlignmentFlag.AlignLeft,
-        )
+        self.monitor_chips.add_action(self.monitor_group_button)
 
         # Brightness
         b_row = QHBoxLayout()
         b_row.addWidget(QLabel("Brightness"))
         self.monitor_brightness_slider = ProductSlider(Qt.Orientation.Horizontal)
         self.monitor_brightness_slider.setRange(10, 100)
+        self.monitor_brightness_slider.setAccessibleName("Monitor sync brightness")
         self.monitor_brightness_slider.setValue(int(self.controller.get_monitor_brightness() * 100))
         self.monitor_brightness_slider.valueChanged.connect(self._on_monitor_brightness)
         b_row.addWidget(self.monitor_brightness_slider, 1)
@@ -170,7 +223,7 @@ class ModesView(QWidget):
 
         # LED Mapping toggle + container
         toggle_row = QHBoxLayout()
-        self.mapping_toggle_button = QPushButton("LED Mapping  ▶")
+        self.mapping_toggle_button = QPushButton("Show LED mapping")
         self.mapping_toggle_button.setObjectName("SectionToggle")
         self.mapping_toggle_button.setFlat(True)
         self.mapping_toggle_button.clicked.connect(self._toggle_led_mapping)
@@ -218,6 +271,7 @@ class ModesView(QWidget):
         )
         desc.setProperty("role", "subtle")
         desc.setWordWrap(True)
+        desc.setVisible(self.mode is None)
         layout.addWidget(desc)
 
         self.music_chips = DeviceChipStrip("Targets")
@@ -233,18 +287,34 @@ class ModesView(QWidget):
         self.music_group_button.clicked.connect(
             lambda: self._save_targets_as_group(self.music_chips)
         )
-        layout.addWidget(
-            self.music_group_button,
-            alignment=Qt.AlignmentFlag.AlignLeft,
-        )
+        self.music_chips.add_action(self.music_group_button)
 
-        reaction_label = QLabel("REACTION STYLE")
-        reaction_label.setProperty("role", "eyebrow")
-        layout.addWidget(reaction_label)
+        self._music_columns = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self._music_columns.setSpacing(20)
+        reactions = QWidget()
+        reaction_layout = QVBoxLayout(reactions)
+        reaction_layout.setContentsMargins(0, 0, 0, 0)
+        reaction_layout.setSpacing(10)
+        output = QWidget()
+        output_layout = QVBoxLayout(output)
+        output_layout.setContentsMargins(0, 0, 0, 0)
+        output_layout.setSpacing(10)
+        self._music_columns.addWidget(reactions, 3)
+        self._music_columns.addWidget(output, 2)
+        layout.addLayout(self._music_columns)
+        reaction_label = QLabel("Reaction style")
+        reaction_label.setProperty("role", "sectionTitle")
+        reaction_layout.addWidget(reaction_label)
+        output_title = QLabel("Light output")
+        self._output_title = output_title
+        output_title.setProperty("role", "sectionTitle")
+        output_layout.addWidget(output_title)
 
         reaction_picker = QFrame()
+        self._reaction_picker = reaction_picker
         reaction_picker.setObjectName("MusicReactionPicker")
         reaction_grid = QGridLayout(reaction_picker)
+        self._reaction_grid = reaction_grid
         reaction_grid.setContentsMargins(0, 0, 0, 0)
         reaction_grid.setHorizontalSpacing(8)
         reaction_grid.setVerticalSpacing(8)
@@ -254,9 +324,8 @@ class ModesView(QWidget):
         self.music_reaction_buttons = {}
         self._music_auto_active_reaction: Optional[str] = None
         current_reaction = self.controller.get_music_reaction()
-        # Keep the growing reaction library at two rows so the primary action
-        # remains visible. Five columns still leave enough room for every
-        # concise label at the supported window width.
+        # Roomy windows show every style; short windows use the same choices
+        # in a native dropdown so palette and brightness remain within reach.
         reaction_columns = min(5, max(4, (len(audio.REACTIONS) + 1) // 2))
         for column in range(reaction_columns):
             reaction_grid.setColumnStretch(column, 1)
@@ -284,7 +353,18 @@ class ModesView(QWidget):
                 index // reaction_columns,
                 index % reaction_columns,
             )
-        layout.addWidget(reaction_picker)
+        reaction_layout.addWidget(reaction_picker)
+
+        self.music_reaction_combo = ProductComboBox()
+        self.music_reaction_combo.setAccessibleName("Music reaction style")
+        for key in audio.REACTIONS:
+            self.music_reaction_combo.addItem(audio.REACTION_LABELS[key], key)
+        self.music_reaction_combo.setCurrentIndex(max(0, self.music_reaction_combo.findData(current_reaction)))
+        self.music_reaction_combo.currentIndexChanged.connect(
+            lambda: self._on_music_reaction_changed(str(self.music_reaction_combo.currentData()))
+        )
+        self.music_reaction_combo.hide()
+        reaction_layout.addWidget(self.music_reaction_combo)
 
         self.music_reaction_description = QLabel(
             audio.REACTION_DESCRIPTIONS.get(
@@ -294,7 +374,9 @@ class ModesView(QWidget):
         )
         self.music_reaction_description.setProperty("role", "subtle")
         self.music_reaction_description.setWordWrap(True)
-        layout.addWidget(self.music_reaction_description)
+        self.music_reaction_combo.setToolTip(self.music_reaction_description.text())
+        self.music_reaction_combo.setAccessibleDescription(self.music_reaction_description.text())
+        reaction_layout.addWidget(self.music_reaction_description)
 
         self.music_auto_status = QFrame()
         self.music_auto_status.setObjectName("AutoDirectorStatus")
@@ -325,15 +407,19 @@ class ModesView(QWidget):
             "Start Music Sync to see the selected reaction and live color."
         )
         self.music_auto_status_detail.setProperty("role", "autoDirectorMeta")
+        self.music_auto_status_title.setWordWrap(True)
+        self.music_auto_status_detail.setWordWrap(True)
         auto_copy.addWidget(self.music_auto_status_detail)
         auto_status_layout.addLayout(auto_copy, 1)
 
-        layout.addWidget(self.music_auto_status)
+        reaction_layout.addWidget(self.music_auto_status)
+        reaction_layout.addStretch(1)
 
         palette_row = QHBoxLayout()
         palette_row.setSpacing(10)
         palette_row.addWidget(QLabel("Color palette"))
         self.music_palette_combo = ProductComboBox()
+        self.music_palette_combo.setAccessibleName("Music color palette")
         for key in audio.PALETTES:
             self.music_palette_combo.addItem(
                 audio.PALETTE_LABELS.get(key, key), key
@@ -347,7 +433,7 @@ class ModesView(QWidget):
             self._on_music_palette_changed
         )
         palette_row.addWidget(self.music_palette_combo, 1)
-        layout.addLayout(palette_row)
+        output_layout.addLayout(palette_row)
 
         self.music_palette_description = QLabel(
             audio.PALETTE_DESCRIPTIONS.get(
@@ -363,7 +449,7 @@ class ModesView(QWidget):
         self.music_palette_combo.setAccessibleDescription(
             self.music_palette_description.text()
         )
-        layout.addWidget(self.music_palette_description)
+        output_layout.addWidget(self.music_palette_description)
 
         zone_row = QHBoxLayout()
         zone_row.addWidget(QLabel("Zones"))
@@ -376,12 +462,13 @@ class ModesView(QWidget):
             lambda: self._adjust_zones_for_strip(self.music_chips)
         )
         zone_row.addWidget(self.music_zones_button)
-        layout.addLayout(zone_row)
+        output_layout.addLayout(zone_row)
 
         b_row = QHBoxLayout()
         b_row.addWidget(QLabel("Brightness"))
         self.music_brightness_slider = ProductSlider(Qt.Orientation.Horizontal)
         self.music_brightness_slider.setRange(10, 100)
+        self.music_brightness_slider.setAccessibleName("Music sync brightness")
         self.music_brightness_slider.setValue(int(self.controller.get_music_brightness() * 100))
         self.music_brightness_slider.valueChanged.connect(self._on_music_brightness)
         b_row.addWidget(self.music_brightness_slider, 1)
@@ -389,7 +476,7 @@ class ModesView(QWidget):
         self.music_brightness_label.setMinimumWidth(40)
         self.music_brightness_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         b_row.addWidget(self.music_brightness_label)
-        layout.addLayout(b_row)
+        output_layout.addLayout(b_row)
 
         self.music_auto_gain_check = QCheckBox("Ignore master volume")
         self.music_auto_gain_check.setChecked(
@@ -403,7 +490,8 @@ class ModesView(QWidget):
             self.music_auto_gain_check.toolTip()
         )
         self.music_auto_gain_check.toggled.connect(self._on_music_auto_gain_toggled)
-        layout.addWidget(self.music_auto_gain_check)
+        output_layout.addWidget(self.music_auto_gain_check)
+        output_layout.addStretch(1)
 
         self.music_start_button = QPushButton("Start Music Sync")
         self.music_start_button.setObjectName("Primary")
@@ -437,11 +525,15 @@ class ModesView(QWidget):
     def _refresh_chip_strips(self) -> None:
         if self.device_controller is None:
             return
-        devs = self.device_controller.devices
+        from ...drivers.registry import capabilities_for_device
+        devs = [d for d in self.device_controller.devices if capabilities_for_device(d).supports_streaming]
         settings = QSettings("Minlor", "LumiSync")
         default_ids: List[str] = []
-        if devs and 0 <= self.device_controller.selected_device_index < len(devs):
-            default_ids = [device_id(devs[self.device_controller.selected_device_index])]
+        selected = self.device_controller.get_selected_device()
+        if selected and selected in devs:
+            default_ids = [device_id(selected)]
+        elif devs:
+            default_ids = [device_id(devs[0])]
         saved_groups = self.device_controller.get_groups()
         strips = []
         if hasattr(self, "monitor_chips"):
@@ -482,6 +574,8 @@ class ModesView(QWidget):
                 else self.music_chips.selected_devices()
             )
             if selected:
+                if not self._can_start_sync(selected):
+                    return
                 if mode == "monitor":
                     self.controller.start_monitor_sync(selected)
                 else:
@@ -559,6 +653,11 @@ class ModesView(QWidget):
                 "Set the zone count for selected music sync devices"
                 if music_ready else music_hint
             )
+        if hasattr(self, "action_hint"):
+            selected = (self.monitor_chips if self.mode == "monitor" else self.music_chips).selected_devices()
+            count = len(selected)
+            self.action_hint.setText(f"{count} local light{'s' if count != 1 else ''} selected." if count
+                                     else "Add a compatible local light in Devices, then select it here.")
 
     @staticmethod
     def _set_sync_button(
@@ -699,7 +798,7 @@ class ModesView(QWidget):
 
         if self._mapping_expanded:
             self._refresh_led_mapping_zone_count()
-            self.mapping_toggle_button.setText("LED Mapping  ▼")
+            self.mapping_toggle_button.setText("Hide LED mapping")
             self.led_mapping_container.setVisible(True)
             target_height = max(400, self.led_mapping_widget.sizeHint().height() + 12)
             self._mapping_anim = animate_height(
@@ -714,7 +813,7 @@ class ModesView(QWidget):
 
             self.led_mapping_widget.start_test_mode_if_not_active()
         else:
-            self.mapping_toggle_button.setText("LED Mapping  ▶")
+            self.mapping_toggle_button.setText("Show LED mapping")
             self._mapping_anim = animate_height(
                 self.led_mapping_container, 0, duration=180,
                 on_finished=lambda: self.led_mapping_container.setVisible(False),
@@ -735,12 +834,18 @@ class ModesView(QWidget):
 
     def _on_music_reaction_changed(self, reaction: str) -> None:
         self.controller.set_music_reaction(reaction)
+        self.music_reaction_buttons[reaction].setChecked(True)
+        blocked = self.music_reaction_combo.blockSignals(True)
+        self.music_reaction_combo.setCurrentIndex(self.music_reaction_combo.findData(reaction))
+        self.music_reaction_combo.blockSignals(blocked)
         self.music_reaction_description.setText(
             audio.REACTION_DESCRIPTIONS.get(
                 reaction,
                 audio.REACTION_DESCRIPTIONS[audio.REACTION_FLOW],
             )
         )
+        self.music_reaction_combo.setToolTip(self.music_reaction_description.text())
+        self.music_reaction_combo.setAccessibleDescription(self.music_reaction_description.text())
         self._refresh_music_auto_status()
 
     def _on_music_auto_state_changed(self, reaction: str, color) -> None:
@@ -868,17 +973,26 @@ class ModesView(QWidget):
 
     # ------------------------------------------------------------------ start helpers
 
+    def _can_start_sync(self, selected) -> bool:
+        if self.device_controller is not None and any(
+            self.device_controller.is_device_busy(device, allowed_outputs=("Monitor sync", "Music sync"))
+            for device in selected
+        ):
+            self.controller.status_updated.emit("Finish the current drawing or device command before starting sync.")
+            return False
+        return True
+
     def _start_monitor_sync(self) -> None:
         if hasattr(self, "monitor_chips"):
-            self.controller.start_monitor_sync(
-                self.monitor_chips.selected_devices()
-            )
+            selected = self.monitor_chips.selected_devices()
+            if self._can_start_sync(selected):
+                self.controller.start_monitor_sync(selected)
 
     def _start_music_sync(self) -> None:
         if hasattr(self, "music_chips"):
-            self.controller.start_music_sync(
-                self.music_chips.selected_devices()
-            )
+            selected = self.music_chips.selected_devices()
+            if self._can_start_sync(selected):
+                self.controller.start_music_sync(selected)
 
     def _handle_monitor_action(self) -> None:
         self._stop_mapping_test_for_sync()

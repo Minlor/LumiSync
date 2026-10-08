@@ -13,7 +13,6 @@ from PySide6.QtCore import (
     QParallelAnimationGroup,
     QPropertyAnimation,
     Qt,
-    Property,
 )
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QStackedWidget, QWidget
@@ -112,23 +111,15 @@ def fade_swap_stack(stack: QStackedWidget, target_index: int, *, duration: int =
     out_anim.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
 
 
-class PulseDot(QWidget):
-    """A small status dot that pulses when active."""
+class StatusDot(QWidget):
+    """A steady light marking current connection or output activity."""
 
     def __init__(self, color: QColor, parent: Optional[QWidget] = None, *, size: int = 10):
         super().__init__(parent)
         self._color = QColor(color)
         self._size = size
-        self._pulse = 1.0
         self._active = False
         self.setFixedSize(size + 4, size + 4)
-
-        self._anim = QPropertyAnimation(self, b"pulse", self)
-        self._anim.setDuration(900)
-        self._anim.setStartValue(1.0)
-        self._anim.setEndValue(0.35)
-        self._anim.setLoopCount(-1)
-        self._anim.setEasingCurve(QEasingCurve.Type.InOutSine)
 
     def set_color(self, color: QColor) -> None:
         self._color = QColor(color)
@@ -138,21 +129,7 @@ class PulseDot(QWidget):
         if active == self._active:
             return
         self._active = active
-        if active:
-            self._anim.start()
-        else:
-            self._anim.stop()
-            self._pulse = 1.0
-            self.update()
-
-    def _get_pulse(self) -> float:
-        return self._pulse
-
-    def _set_pulse(self, value: float) -> None:
-        self._pulse = float(value)
         self.update()
-
-    pulse = Property(float, _get_pulse, _set_pulse)
 
     def paintEvent(self, _event) -> None:
         from PySide6.QtGui import QPainter, QBrush
@@ -160,14 +137,6 @@ class PulseDot(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
-
-        # Outer glow ring (only when active)
-        if self._active:
-            ring = QColor(self._color)
-            ring.setAlphaF(0.25 * self._pulse)
-            painter.setBrush(QBrush(ring))
-            r = self.rect()
-            painter.drawEllipse(r)
 
         # Main dot
         c = QColor(self._color)
@@ -179,4 +148,4 @@ class PulseDot(QWidget):
         painter.drawEllipse(cx - self._size // 2, cy - self._size // 2, self._size, self._size)
 
 
-__all__ = ["animate_height", "animate_width", "fade_swap_stack", "PulseDot"]
+__all__ = ["animate_height", "animate_width", "fade_swap_stack", "StatusDot"]

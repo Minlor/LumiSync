@@ -40,6 +40,11 @@ class IconKey(str, Enum):
     NETWORK = "network"
     POWER = "power"
     BLUETOOTH = "bluetooth"
+    SMART_PLUG = "smart_plug"
+    LIGHT_SWITCH = "light_switch"
+    LED_STRIP = "led_strip"
+    MATRIX_PANEL = "matrix_panel"
+    LIGHT_BULB = "light_bulb"
     ADD = "add"
     TRASH = "trash"
 
@@ -63,6 +68,11 @@ _ICON_FILES: Dict[IconKey, str] = {
     IconKey.NETWORK: "network.svg",
     IconKey.POWER: "power.svg",
     IconKey.BLUETOOTH: "bluetooth.svg",
+    IconKey.SMART_PLUG: "smart-plug.svg",
+    IconKey.LIGHT_SWITCH: "light-switch.svg",
+    IconKey.LED_STRIP: "led-strip.svg",
+    IconKey.MATRIX_PANEL: "matrix-panel.svg",
+    IconKey.LIGHT_BULB: "lightbulb-on.svg",
     IconKey.ADD: "plus.svg",
     IconKey.TRASH: "trash.svg",
     IconKey.SCREEN: "screen.svg",

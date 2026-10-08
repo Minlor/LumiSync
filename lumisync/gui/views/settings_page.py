@@ -7,6 +7,7 @@ from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QFormLayout,
+    QBoxLayout,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -30,8 +31,10 @@ class SettingsPage(QWidget):
         super().__init__(main_window)
         self.settings = settings
         self._main_window = main_window
+        self.setObjectName("SettingsPage")
 
         root = QVBoxLayout(self)
+        self._root_layout = root
         root.setContentsMargins(28, 24, 28, 28)
         root.setSpacing(18)
 
@@ -44,10 +47,12 @@ class SettingsPage(QWidget):
         intro = QLabel("Personalize the app and tune how screen and music syncing behaves.")
         intro.setProperty("role", "pageDescription")
         intro.setWordWrap(True)
+        self._intro = intro
         page_header.addWidget(intro)
         root.addLayout(page_header)
 
-        body = QHBoxLayout()
+        body = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self._body_layout = body
         body.setSpacing(18)
 
         self.section_nav = QListWidget()
@@ -58,6 +63,13 @@ class SettingsPage(QWidget):
         self.section_nav.addItems(
             ["Application", "Monitor Sync", "Music Sync", "Groups", "About"]
         )
+        self.section_picker = ProductComboBox()
+        self.section_picker.setAccessibleName("Settings section")
+        for index in range(self.section_nav.count()):
+            self.section_picker.addItem(self.section_nav.item(index).text())
+        self.section_picker.currentIndexChanged.connect(self.section_nav.setCurrentRow)
+        self.section_picker.hide()
+        body.addWidget(self.section_picker)
         body.addWidget(self.section_nav)
 
         self.section_stack = QStackedWidget()
@@ -104,7 +116,31 @@ class SettingsPage(QWidget):
         self.section_nav.currentRowChanged.connect(
             self.section_stack.setCurrentIndex
         )
+        self.section_nav.currentRowChanged.connect(self._section_changed)
         self.section_nav.setCurrentRow(0)
+        for form in self.findChildren(QFormLayout):
+            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+            form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+
+    def _section_changed(self, index: int) -> None:
+        blocked = self.section_picker.blockSignals(True)
+        self.section_picker.setCurrentIndex(index)
+        self.section_picker.blockSignals(blocked)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        if not hasattr(self, "_body_layout"):
+            return
+        narrow = self.width() < 940
+        short = self.height() < 620
+        self.section_nav.setVisible(not narrow)
+        self.section_picker.setVisible(narrow)
+        self._body_layout.setDirection(QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight)
+        self._body_layout.setSpacing(12 if narrow else 18)
+        self._root_layout.setContentsMargins(16 if short else 28, 16 if short else 24,
+                                            16 if short else 28, 16 if short else 28)
+        self._root_layout.setSpacing(12 if short else 18)
+        self._intro.setVisible(not short)
 
     @staticmethod
     def _section_page(
@@ -181,15 +217,15 @@ class SettingsPage(QWidget):
 
         self.window_material_combo = ProductComboBox()
         self.window_material_combo.addItem(
-            "Acrylic — blurred desktop",
+            "Acrylic · blurred desktop",
             "acrylic",
         )
         self.window_material_combo.addItem(
-            "Mica — subtle wallpaper tint",
+            "Mica · wallpaper tint",
             "mica",
         )
         self.window_material_combo.addItem(
-            "Solid Dark — no transparency",
+            "Solid dark · no transparency",
             "solid",
         )
         self.window_material_combo.setToolTip(
@@ -405,6 +441,8 @@ class SettingsPage(QWidget):
             label = QLabel(
                 f"{grp['name']}  ·  {count} device{'s' if count != 1 else ''}"
             )
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setWordWrap(True)
             row.addWidget(label)
             row.addStretch(1)
             delete_btn = QPushButton("Delete")
@@ -439,15 +477,27 @@ class SettingsPage(QWidget):
     def _build_about_group(self) -> QGroupBox:
         group = QGroupBox("About")
         layout = QVBoxLayout(group)
-        layout.setSpacing(6)
+        layout.setSpacing(4)
 
         from ... import __version__ as _version  # local import to avoid cycles
-        version_label = QLabel(f"<b>LumiSync</b> · v{_version}")
-        layout.addWidget(version_label)
+        self.about_version_label = QLabel(f"<b>LumiSync</b> · v{_version}")
+        layout.addWidget(self.about_version_label)
 
-        desc = QLabel("Sync your Govee lights with your screen and audio.")
+        desc = QLabel(
+            "Control Govee, Tuya and LSC lights, switches and smart plugs. "
+            "Sync local lights with your screen or music and draw on iDotMatrix panels."
+        )
         desc.setProperty("role", "subtle")
+        desc.setWordWrap(True)
         layout.addWidget(desc)
+
+        capabilities = QLabel(
+            "Connect your vendor accounts. Supported plugs show live electrical "
+            "readings and monthly energy usage."
+        )
+        capabilities.setProperty("role", "subtle")
+        capabilities.setWordWrap(True)
+        layout.addWidget(capabilities)
 
         self.update_status_label = QLabel("Updates have not been checked yet.")
         self.update_status_label.setProperty("role", "subtle")
@@ -466,13 +516,32 @@ class SettingsPage(QWidget):
         self.open_release_button.setVisible(False)
         self.open_release_button.clicked.connect(self._open_latest_release)
         buttons.addWidget(self.open_release_button)
+
+        self.open_logs_button = QPushButton("Open logs folder")
+        self.open_logs_button.setToolTip("Open connection logs and crash diagnostics")
+        self.open_logs_button.clicked.connect(self._open_logs)
+        buttons.addWidget(self.open_logs_button)
         buttons.addStretch(1)
         layout.addLayout(buttons)
 
-        link = QPushButton("Open GitHub Repository")
-        link.setObjectName("LinkButton")
-        link.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://github.com/Minlor/LumiSync")))
-        layout.addWidget(link, alignment=Qt.AlignmentFlag.AlignLeft)
+        links = QHBoxLayout()
+        links.setSpacing(8)
+        self.account_setup_button = QPushButton("Account setup")
+        self.account_setup_button.setObjectName("LinkButton")
+        self.account_setup_button.clicked.connect(self._open_account_setup)
+        links.addWidget(self.account_setup_button)
+
+        self.repository_button = QPushButton("GitHub repository")
+        self.repository_button.setObjectName("LinkButton")
+        self.repository_button.clicked.connect(self._open_repository)
+        links.addWidget(self.repository_button)
+        links.addStretch(1)
+        layout.addLayout(links)
+
+        credit = QLabel("Created by Minlor · Open source under the MIT license.")
+        credit.setProperty("role", "subtle")
+        credit.setWordWrap(True)
+        layout.addWidget(credit)
 
         self._latest_release_url = None
         self._connect_update_controller()
@@ -480,6 +549,16 @@ class SettingsPage(QWidget):
         return group
 
     # ---------------------------------------------------------------- helpers
+
+    def _open_account_setup(self) -> None:
+        QDesktopServices.openUrl(QUrl("https://github.com/Minlor/LumiSync/blob/main/docs/vendor-accounts.md"))
+
+    def _open_repository(self) -> None:
+        QDesktopServices.openUrl(QUrl("https://github.com/Minlor/LumiSync"))
+
+    def _open_logs(self) -> None:
+        from ...utils.logging import get_logs_directory
+        QDesktopServices.openUrl(QUrl.fromLocalFile(get_logs_directory()))
 
     def _connect_update_controller(self) -> None:
         controller = getattr(self._main_window, "update_controller", None)

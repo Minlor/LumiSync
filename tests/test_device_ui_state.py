@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -18,12 +19,28 @@ class DeviceUiStateTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def setUp(self):
+        self._existing_widgets = set(self.app.topLevelWidgets())
+        self._controllers = []
+
+    def tearDown(self):
+        for controller in self._controllers:
+            controller.shutdown()
+            controller.deleteLater()
+        for widget in set(self.app.topLevelWidgets()) - self._existing_widgets:
+            widget.close()
+            widget.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.app.processEvents()
+
     def _controller(self):
         with patch(
             "lumisync.gui.controllers.device_controller.devices.get_data",
             return_value={"devices": [], "selectedDevice": 0},
         ):
-            return DeviceController()
+            controller = DeviceController()
+            self._controllers.append(controller)
+            return controller
 
     def test_bluetooth_default_state_is_unknown_not_offline(self):
         controller = self._controller()
@@ -91,7 +108,8 @@ class DeviceUiStateTests(unittest.TestCase):
             "bluetooth": {"available": None, "found": 0, "error": None},
         }
 
-        controller._on_discovery_finished([lan], 0, 1)
+        with patch("lumisync.gui.controllers.device_controller.devices.writeJSON"):
+            controller._on_discovery_finished([lan], 0, 1)
 
         self.assertEqual(
             {controller._device_key(device) for device in controller.devices},
@@ -134,7 +152,7 @@ class DeviceUiStateTests(unittest.TestCase):
 
         self.assertEqual(card.power_button.property("powerState"), "unknown")
         self.assertIn("unknown", card.power_button.toolTip().lower())
-        self.assertFalse(card._power_shadow.isEnabled())
+        self.assertEqual(card.power_button.accessibleDescription(), "Unknown")
 
         card.set_state(
             {
@@ -148,8 +166,7 @@ class DeviceUiStateTests(unittest.TestCase):
         self.assertEqual(card.power_button.property("powerState"), "on")
         self.assertEqual(card.power_button.toolTip(), "Turn off")
         self.assertEqual(card.brightness_summary.text(), "64%")
-        self.assertGreater(card._power_shadow.blurRadius(), 0)
-        self.assertTrue(card._power_shadow.isEnabled())
+        self.assertEqual(card.power_button.accessibleDescription(), "On")
 
         card.set_state(
             {
@@ -160,8 +177,7 @@ class DeviceUiStateTests(unittest.TestCase):
         )
         self.assertEqual(card.power_button.property("powerState"), "off")
         self.assertEqual(card.power_button.toolTip(), "Turn on")
-        self.assertEqual(card._power_shadow.blurRadius(), 0)
-        self.assertFalse(card._power_shadow.isEnabled())
+        self.assertEqual(card.power_button.accessibleDescription(), "Off")
 
     def test_compact_card_hides_address_and_uses_transport_icon(self):
         card = DeviceCard(

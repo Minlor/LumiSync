@@ -53,18 +53,18 @@ QMainWindow[backdrop="mica"] QFrame#GroupSelectionBar,
 QMainWindow[backdrop="mica"] QFrame#DrawToolsPanel,
 QMainWindow[backdrop="mica"] QFrame#DrawCanvasPanel,
 QMainWindow[backdrop="mica"] QFrame#DrawTimelinePanel {
-    background: {mica_surface};
-    border-color: {mica_border};
+    background: {surface};
+    border-color: {border};
 }
 
 QMainWindow[backdrop="mica"] QFrame#DeviceCard {
-    background: {mica_device_surface};
-    border-color: {mica_border};
+    background: {device_surface};
+    border-color: {border};
 }
 
 QMainWindow[backdrop="mica"] QFrame#DeviceInspector {
-    background: {mica_inspector_surface};
-    border-color: {mica_border};
+    background: {surface};
+    border-color: {border};
 }
 
 QMainWindow[backdrop="mica"] QPushButton,
@@ -75,12 +75,12 @@ QMainWindow[backdrop="mica"] QDoubleSpinBox,
 QMainWindow[backdrop="mica"] QTextEdit,
 QMainWindow[backdrop="mica"] QPlainTextEdit,
 QMainWindow[backdrop="mica"] QListWidget {
-    background: {mica_control};
-    border-color: {mica_border};
+    background: {surface_alt};
+    border-color: {border};
 }
 
-/* Desktop Acrylic continuously blurs what is behind the whole window. The
-   canvas is the most transparent layer, followed by navigation and panels. */
+/* Desktop Acrylic remains on the canvas and navigation. Forms and ordinary
+   controls use solid surfaces to preserve contrast above the native backdrop. */
 QMainWindow[backdrop="acrylic"] QStackedWidget#ContentStack {
     background: {acrylic_bg};
 }
@@ -100,18 +100,18 @@ QMainWindow[backdrop="acrylic"] QFrame#GroupSelectionBar,
 QMainWindow[backdrop="acrylic"] QFrame#DrawToolsPanel,
 QMainWindow[backdrop="acrylic"] QFrame#DrawCanvasPanel,
 QMainWindow[backdrop="acrylic"] QFrame#DrawTimelinePanel {
-    background: {acrylic_surface};
-    border-color: {acrylic_border};
+    background: {surface};
+    border-color: {border};
 }
 
 QMainWindow[backdrop="acrylic"] QFrame#DeviceCard {
-    background: {acrylic_device_surface};
-    border-color: {acrylic_border};
+    background: {device_surface};
+    border-color: {border};
 }
 
 QMainWindow[backdrop="acrylic"] QFrame#DeviceInspector {
-    background: {acrylic_inspector_surface};
-    border-color: {acrylic_border};
+    background: {surface};
+    border-color: {border};
 }
 
 QMainWindow[backdrop="acrylic"] QPushButton,
@@ -122,11 +122,11 @@ QMainWindow[backdrop="acrylic"] QDoubleSpinBox,
 QMainWindow[backdrop="acrylic"] QTextEdit,
 QMainWindow[backdrop="acrylic"] QPlainTextEdit,
 QMainWindow[backdrop="acrylic"] QListWidget {
-    background: {acrylic_control};
-    border-color: {acrylic_border};
+    background: {surface_alt};
+    border-color: {border};
 }
 
-/* Preserve semantic actions after the scoped translucent-control override. */
+/* Preserve semantic actions after the scoped control surface override. */
 QMainWindow[backdrop="mica"] QPushButton#Primary:enabled,
 QMainWindow[backdrop="mica"] QPushButton[role="primary"]:enabled,
 QMainWindow[backdrop="acrylic"] QPushButton#Primary:enabled,
@@ -157,7 +157,7 @@ QMainWindow[backdrop="mica"] QPushButton[role="danger"]:enabled,
 QMainWindow[backdrop="acrylic"] QPushButton#DangerButton:enabled,
 QMainWindow[backdrop="acrylic"] QPushButton[role="danger"]:enabled {
     background: {danger};
-    color: white;
+    color: {bg};
     border-color: {danger};
 }
 
@@ -214,6 +214,18 @@ QLabel[role="strong"] {
     font-weight: 600;
 }
 
+QLabel[role="sectionTitle"] {
+    color: {text};
+    font-size: 11pt;
+    font-weight: 600;
+}
+
+QLabel[role="fieldLabel"] {
+    color: {text_dim};
+    font-size: {font_small};
+    font-weight: 600;
+}
+
 QLabel[role="link"] {
     color: {accent_bright};
     font-size: {font_small};
@@ -239,7 +251,7 @@ QLabel[role="hint"] {
 }
 
 QLabel[role="status"] {
-    color: {text_disabled};
+    color: {text_dim};
     font-size: {font_small};
 }
 
@@ -252,7 +264,7 @@ QLabel[role="status"][statusState="warning"] {
 }
 
 QLabel[role="status"][statusState="offline"] {
-    color: {text_disabled};
+    color: {text_dim};
 }
 
 QLabel[role="warn"] {
@@ -381,6 +393,12 @@ QMainWindow[backdrop="mica"] QFrame#DeviceCard[inspected="true"] {
     border-color: {accent};
 }
 
+QFrame#DeviceCard:focus,
+QMainWindow[backdrop="mica"] QFrame#DeviceCard:focus,
+QMainWindow[backdrop="acrylic"] QFrame#DeviceCard:focus {
+    border: 2px solid {accent_bright};
+}
+
 QToolButton#DevicePowerButton {
     background: {surface_alt};
     border: 1px solid {border_strong};
@@ -466,7 +484,7 @@ QPushButton {
     border: 1px solid {border};
     border-radius: {radius_md};
     padding: 8px 16px;
-    min-height: 22px;
+    min-height: 26px;
 }
 
 QPushButton:hover {
@@ -520,7 +538,7 @@ QPushButton[role="primary"]:disabled {
 QPushButton#DangerButton:enabled,
 QPushButton[role="danger"]:enabled {
     background: {danger};
-    color: white;
+    color: {bg};
     border: 1px solid {danger};
     font-weight: 600;
 }
@@ -738,7 +756,7 @@ QTextEdit {
     border: 1px solid {border};
     border-radius: {radius_md};
     padding: 8px 10px;
-    min-height: 20px;
+    min-height: 26px;
     selection-background-color: {accent_dim};
     selection-color: {text};
 }
@@ -1113,8 +1131,32 @@ QFrame#DrawTimelinePanel {
 }
 
 QLabel#DrawColorSwatch {
-    min-width: 32px;
-    min-height: 32px;
+    min-width: 28px;
+    min-height: 28px;
+}
+
+QDialog#PanelToolsDialog QTabWidget::pane {
+    background: {surface};
+    border: 1px solid {border};
+    border-radius: {radius_sm};
+}
+
+QDialog#PanelToolsDialog QTabBar::tab {
+    background: {surface_alt};
+    color: {text_dim};
+    padding: 8px 12px;
+    min-height: 28px;
+    border: 1px solid {border};
+}
+
+QDialog#PanelToolsDialog QTabBar::tab:selected {
+    background: {surface};
+    color: {text};
+    border-bottom-color: {accent_bright};
+}
+
+QDialog#PanelToolsDialog QTabBar::tab:focus {
+    border-color: {accent_bright};
 }
 
 /* ---- Active sync row ---- */
@@ -1140,6 +1182,259 @@ QFrame#Toast[kind="success"] {
 
 QFrame#Toast[kind="error"] {
     border-left-color: {danger};
+}
+
+/* Account sign-in uses a solid form surface and a quieter account list.
+   Blue emphasis belongs to submission and keyboard focus. */
+QFrame#AccountSignInPanel {
+    background: {surface};
+    border: 1px solid {border};
+    border-radius: {radius_lg};
+}
+
+QDialog#AccountsDialog QPushButton {
+    min-height: 26px;
+}
+
+QDialog#AccountsDialog QLineEdit,
+QDialog#AccountsDialog QComboBox {
+    min-height: 26px;
+    placeholder-text-color: {text_dim};
+}
+
+QDialog#AccountsDialog QCheckBox {
+    min-height: 44px;
+}
+
+QListWidget#ConnectedAccounts {
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+QListWidget#ConnectedAccounts::item {
+    padding: 0;
+    margin: 0 0 4px 0;
+    border: 1px solid transparent;
+    border-radius: {radius_sm};
+}
+
+QListWidget#ConnectedAccounts::item:hover {
+    background: {surface};
+}
+
+QListWidget#ConnectedAccounts::item:selected {
+    background: {surface_alt};
+    border-color: {text_disabled};
+}
+
+QListWidget#ConnectedAccounts:focus::item:selected {
+    border-color: {accent_bright};
+}
+
+QPushButton[role="accountProvider"] {
+    background: transparent;
+    border-color: {border};
+    padding: 2px 8px;
+    color: {text_dim};
+}
+
+QDialog#AccountsDialog QPushButton[role="accountProvider"] {
+    min-height: 38px;
+}
+
+QDialog#AccountsDialog QPushButton#AccountOptionsToggle {
+    min-height: 38px;
+}
+
+QPushButton[role="accountProvider"]:checked {
+    background: {surface_alt};
+    border-color: {text_disabled};
+    color: {text};
+    font-weight: 600;
+}
+
+QPushButton[role="accountProvider"]:hover {
+    background: {hover};
+    color: {text};
+}
+
+QPushButton[role="accountProvider"]:focus {
+    border-color: {accent_bright};
+}
+
+QPushButton#AccountOptionsToggle {
+    text-align: left;
+    background: transparent;
+    padding: 2px 10px;
+    color: {text_dim};
+}
+
+QPushButton#AccountOptionsToggle:checked,
+QPushButton#AccountOptionsToggle:hover {
+    background: {surface_alt};
+    color: {text};
+}
+
+QToolButton#ShowPassword {
+    background: {surface_alt};
+    color: {text_dim};
+    border: 1px solid {border};
+    border-radius: {radius_sm};
+    padding: 0 6px;
+}
+
+QToolButton#ShowPassword:hover {
+    background: {hover};
+    color: {text};
+}
+
+QToolButton#ShowPassword:focus {
+    border-color: {accent_bright};
+}
+
+QLabel#AccountFeedback {
+    background: {surface_alt};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: {radius_sm};
+    padding: 12px;
+}
+
+QLabel#AccountFeedback[feedbackState="error"] {
+    color: {danger};
+    border-color: {danger};
+}
+
+QLabel#AccountFeedback[feedbackState="success"] {
+    color: {success};
+}
+
+QProgressBar#AccountProgress {
+    background: {surface_alt};
+    border: none;
+    border-radius: 1px;
+    padding: 0;
+}
+
+QProgressBar#AccountProgress::chunk {
+    background: {accent};
+}
+
+/* Meter hierarchy distinguishes present power, electrical detail and
+   account-reported energy totals without a grid of unrelated stat cards. */
+QFrame#EnergyReadings,
+QFrame#EnergyHistory {
+    background: {device_surface};
+    border: 1px solid {border_dim};
+    border-radius: {radius_md};
+}
+
+QFrame#DeviceInspector QPushButton {
+    min-height: 26px;
+}
+
+QFrame#DeviceInspector QPushButton[role="danger"]:enabled {
+    color: {bg};
+}
+
+QFrame#DeviceInspector QComboBox {
+    min-height: 26px;
+}
+
+QFrame#DeviceInspector QSlider {
+    min-height: 44px;
+}
+
+QLabel[role="meterPrimary"] {
+    color: {text};
+    font-size: 28pt;
+    font-weight: 600;
+}
+
+QLabel[role="meterSecondary"] {
+    color: {text};
+    font-size: 16pt;
+    font-weight: 600;
+}
+
+QLabel[role="meterPrimary"][reported="false"],
+QLabel[role="meterSecondary"][reported="false"] {
+    color: {text_dim};
+    font-size: {font_body};
+    font-weight: 400;
+}
+
+QLabel[role="energyTotal"] {
+    color: {text};
+    font-size: 22pt;
+    font-weight: 600;
+}
+
+QTableWidget#EnergyDailyTable {
+    background: transparent;
+    alternate-background-color: {surface};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: {radius_sm};
+    selection-background-color: {hover};
+    selection-color: {text};
+}
+
+QTableWidget#EnergyDailyTable:focus {
+    border-color: {accent_bright};
+}
+
+QTableWidget#EnergyDailyTable::item {
+    padding: 5px 8px;
+}
+
+QTableWidget#EnergyDailyTable QHeaderView::section {
+    background: {surface_alt};
+    color: {text_dim};
+    border: none;
+    padding: 8px;
+    font-weight: 600;
+}
+
+/* Keep focus visible after the ghost-button and icon-button role rules. */
+QPushButton:focus,
+QPushButton#Primary:enabled:focus,
+QPushButton[role="primary"]:enabled:focus,
+QPushButton#DangerButton:enabled:focus,
+QPushButton[role="danger"]:enabled:focus,
+QToolButton:focus,
+QToolButton#InspectorCloseButton:focus,
+QToolButton#DevicePowerButton:focus {
+    border-color: {accent_bright};
+}
+
+/* Material surface selectors must not override keyboard focus. */
+QMainWindow[backdrop="mica"] QPushButton:focus,
+QMainWindow[backdrop="acrylic"] QPushButton:focus,
+QMainWindow[backdrop="mica"] QPushButton#Primary:enabled:focus,
+QMainWindow[backdrop="acrylic"] QPushButton#Primary:enabled:focus,
+QMainWindow[backdrop="mica"] QPushButton[role="primary"]:enabled:focus,
+QMainWindow[backdrop="acrylic"] QPushButton[role="primary"]:enabled:focus,
+QMainWindow[backdrop="mica"] QPushButton#DangerButton:enabled:focus,
+QMainWindow[backdrop="acrylic"] QPushButton#DangerButton:enabled:focus,
+QMainWindow[backdrop="mica"] QPushButton[role="danger"]:enabled:focus,
+QMainWindow[backdrop="acrylic"] QPushButton[role="danger"]:enabled:focus,
+QMainWindow[backdrop="mica"] QComboBox:focus,
+QMainWindow[backdrop="acrylic"] QComboBox:focus,
+QMainWindow[backdrop="mica"] QLineEdit:focus,
+QMainWindow[backdrop="acrylic"] QLineEdit:focus,
+QMainWindow[backdrop="mica"] QSpinBox:focus,
+QMainWindow[backdrop="acrylic"] QSpinBox:focus,
+QMainWindow[backdrop="mica"] QDoubleSpinBox:focus,
+QMainWindow[backdrop="acrylic"] QDoubleSpinBox:focus,
+QMainWindow[backdrop="mica"] QTextEdit:focus,
+QMainWindow[backdrop="acrylic"] QTextEdit:focus,
+QMainWindow[backdrop="mica"] QPlainTextEdit:focus,
+QMainWindow[backdrop="acrylic"] QPlainTextEdit:focus,
+QMainWindow[backdrop="mica"] QListWidget:focus,
+QMainWindow[backdrop="acrylic"] QListWidget:focus {
+    border-color: {accent_bright};
 }
 
 QLabel#ToastLabel {

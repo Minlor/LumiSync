@@ -93,6 +93,18 @@ def fit_led_mapping_to_count(
     return led_mapping.fit_normalized_mapping_to_count(mapping, segment_count)
 
 
+def zone_text_color(fill: QColor) -> QColor:
+    """Choose AA text contrast over the actual composited preview fill."""
+    background = qcolor("surface_alt")
+    alpha = fill.alphaF()
+    channels = [((first * alpha + second * (1 - alpha)) / 255)
+                for first, second in zip((fill.red(), fill.green(), fill.blue()),
+                                         (background.red(), background.green(), background.blue()))]
+    linear = [value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4 for value in channels]
+    luminance = sum(value * weight for value, weight in zip(linear, (0.2126, 0.7152, 0.0722)))
+    return QColor("black" if luminance > 0.179 else "white")
+
+
 class ScreenRegionPreview(QFrame):
     """Visual preview of the monitor with draggable content zones."""
 
@@ -119,13 +131,53 @@ class ScreenRegionPreview(QFrame):
         self._drag_source: Optional[int] = None
         self._drag_active = False
         self._drag_pos: Optional[QPoint] = None
+        self._keyboard_zone = 0
+        self._keyboard_source = None
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName("LED positions on the screen")
+        self.setAccessibleDescription("Arrow keys select a zone. Enter chooses a source, then Enter on another zone swaps them. Escape cancels.")
 
         self.setMouseTracking(True)
         self.setAcceptDrops(True)
 
     def set_mapping(self, mapping: List[NormalizedRect]) -> None:
         self._mapping = [led_mapping.normalize_rect(rect) for rect in mapping]
+        self._keyboard_zone = min(self._keyboard_zone, max(0, len(self._mapping) - 1))
+        self._keyboard_source = None
         self.update()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if not self._mapping:
+            return
+        key = event.key()
+        if key in (Qt.Key.Key_Left, Qt.Key.Key_Up, Qt.Key.Key_Right, Qt.Key.Key_Down):
+            step = -1 if key in (Qt.Key.Key_Left, Qt.Key.Key_Up) else 1
+            self._keyboard_zone = (self._keyboard_zone + step) % len(self._mapping)
+        elif key in (Qt.Key.Key_Enter, Qt.Key.Key_Return, Qt.Key.Key_Space):
+            if self._keyboard_source is None:
+                self._keyboard_source = self._keyboard_zone
+            else:
+                source, self._keyboard_source = self._keyboard_source, None
+                if source != self._keyboard_zone:
+                    self.zone_drag_swap.emit(source, self._keyboard_zone)
+        elif key == Qt.Key.Key_Escape:
+            self._keyboard_source = None
+        else:
+            super().keyPressEvent(event)
+            return
+        self.setAccessibleDescription(f"Zone {self._keyboard_zone + 1} of {len(self._mapping)}. "
+                                     + ("Choose the destination and press Enter." if self._keyboard_source is not None else "Press Enter to choose a source."))
+        self.update()
+        event.accept()
+
+    def focusInEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self.update()
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self._keyboard_source = None
+        self.update()
+        super().focusOutEvent(event)
 
     def get_mapping(self) -> List[NormalizedRect]:
         return [dict(rect) for rect in self._mapping]
@@ -249,9 +301,9 @@ class ScreenRegionPreview(QFrame):
         for index, _rect in enumerate(self._mapping):
             rect = self._zone_rect(index).adjusted(2, 2, -2, -2)
             color = self._zone_colors.get(index, qcolor("accent"))
-            is_source = self._drag_active and index == self._drag_source
+            is_source = (self._drag_active and index == self._drag_source) or index == self._keyboard_source
             is_target = self._drag_active and index == self._hover_zone
-            is_hover = index == self._hover_zone
+            is_hover = index == self._hover_zone or (self.hasFocus() and index == self._keyboard_zone)
 
             if self._show_colors:
                 fill_color = QColor(color)
@@ -282,13 +334,7 @@ class ScreenRegionPreview(QFrame):
             painter.setBrush(QBrush(fill_color))
             painter.drawRoundedRect(rect, 4, 4)
 
-            brightness = (
-                fill_color.red() * 299
-                + fill_color.green() * 587
-                + fill_color.blue() * 114
-            ) / 1000
-            text_color = QColor(0, 0, 0) if brightness > 128 else QColor(255, 255, 255)
-            painter.setPen(text_color)
+            painter.setPen(zone_text_color(fill_color))
             font = QFont()
             font.setPointSize(9 if len(self._mapping) < 24 else 7)
             font.setBold(True)
@@ -309,7 +355,7 @@ class ScreenRegionPreview(QFrame):
                 QBrush(QColor(drag_color.red(), drag_color.green(), drag_color.blue(), 200))
             )
             painter.drawRoundedRect(indicator_rect, 6, 6)
-            painter.setPen(QColor(255, 255, 255))
+            painter.setPen(zone_text_color(QColor(drag_color.red(), drag_color.green(), drag_color.blue(), 200)))
             painter.drawText(
                 indicator_rect,
                 Qt.AlignmentFlag.AlignCenter,
@@ -343,7 +389,7 @@ class LedMappingWidget(QWidget):
         layout.setSpacing(8)
 
         instructions = QLabel(
-            "Drag zones to swap LED positions. Colors show on your LED strip."
+            "Drag zones to swap positions, or use arrow keys and Enter to choose two zones. Test colors appear on your lights."
         )
         instructions.setWordWrap(True)
         instructions.setProperty("role", "subtle")
@@ -376,7 +422,7 @@ class LedMappingWidget(QWidget):
 
         button_layout = QHBoxLayout()
 
-        self.test_button = QPushButton("■ Stop Test")
+        self.test_button = QPushButton("Test colors")
         self.test_button.setToolTip("Toggle test colors on LED strip")
         self.test_button.clicked.connect(self._toggle_test_mode)
         self.test_button.setCheckable(True)
@@ -512,7 +558,7 @@ class LedMappingWidget(QWidget):
 
     def _start_test_mode(self) -> None:
         self._test_mode_active = True
-        self.test_button.setText("■ Stop Test")
+        self.test_button.setText("Stop test")
         self.test_button.setChecked(True)
         self.selection_label.setText("Test mode - drag zones to swap LEDs")
         self._enable_razer_mode()
@@ -524,7 +570,7 @@ class LedMappingWidget(QWidget):
 
     def _stop_test_mode(self) -> None:
         self._test_mode_active = False
-        self.test_button.setText("Test Colors")
+        self.test_button.setText("Test colors")
         self.test_button.setChecked(False)
         self.selection_label.setText("Drag a zone to swap LED positions")
 

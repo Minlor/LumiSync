@@ -5,7 +5,7 @@ This module provides a dialog for manually adding devices.
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel,
-    QLineEdit, QFormLayout, QDialogButtonBox
+    QLineEdit, QFormLayout, QDialogButtonBox, QCheckBox, QScrollArea, QWidget
 )
 from PySide6.QtCore import Qt
 
@@ -20,11 +20,13 @@ class AddDeviceDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Add Device")
+        self.setObjectName("AddDeviceDialog")
         self.setModal(True)
         self.setMinimumWidth(400)
 
         # Set up the UI
         self.setup_ui()
+        self.resize(560, min(620, max(400, self.screen().availableGeometry().height() - 72)))
 
         # Center on parent
         if parent:
@@ -35,6 +37,8 @@ class AddDeviceDialog(QDialog):
     def setup_ui(self):
         """Set up the user interface."""
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 16)
+        layout.setSpacing(12)
 
         # Header
         header = QLabel("Add Device")
@@ -47,7 +51,15 @@ class AddDeviceDialog(QDialog):
         self.description_label.setWordWrap(True)
         layout.addWidget(self.description_label)
 
-        layout.addSpacing(10)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        fields = QWidget()
+        fields_layout = QVBoxLayout(fields)
+        fields_layout.setContentsMargins(0, 0, 0, 0)
+        fields_layout.setSpacing(12)
+        scroll.setWidget(fields)
+        layout.addWidget(scroll, 1)
 
         # Device type selector
         type_form = QFormLayout()
@@ -57,10 +69,12 @@ class AddDeviceDialog(QDialog):
         self.type_combo.addItem("LSC / Tuya (Wi-Fi)", "tuya")
         self.type_combo.currentIndexChanged.connect(self._on_type_changed)
         type_form.addRow("Device type:", self.type_combo)
-        layout.addLayout(type_form)
+        fields_layout.addLayout(type_form)
 
         # Form layout
         form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setSpacing(10)
 
         # IP Address (required for LAN)
         self.ip_entry = QLineEdit()
@@ -103,11 +117,12 @@ class AddDeviceDialog(QDialog):
 
         # --- Tuya/LSC-only fields (hidden unless type == tuya) ---
         self.tuya_id_entry = QLineEdit()
-        self.tuya_id_entry.setPlaceholderText("22-char device id (see docs)")
+        self.tuya_id_entry.setPlaceholderText("Device ID from your linked account")
         self.tuya_id_label = QLabel("Device ID *:")
         form.addRow(self.tuya_id_label, self.tuya_id_entry)
 
         self.tuya_key_entry = QLineEdit()
+        self.tuya_key_entry.setEchoMode(QLineEdit.EchoMode.Password)
         self.tuya_key_entry.setPlaceholderText("16-char local key")
         self.tuya_key_label = QLabel("Local key *:")
         form.addRow(self.tuya_key_label, self.tuya_key_entry)
@@ -117,13 +132,31 @@ class AddDeviceDialog(QDialog):
             self.tuya_version_combo.addItem(ver, ver)
         self.tuya_version_label = QLabel("Protocol version:")
         form.addRow(self.tuya_version_label, self.tuya_version_combo)
+        self.tuya_schema_combo = ProductComboBox()
+        self.tuya_schema_combo.addItem("Modern light (DP 20–24)", "v2")
+        self.tuya_schema_combo.addItem("Legacy light (DP 1–5)", "v1")
+        self.tuya_schema_label = QLabel("Light data points:")
+        form.addRow(self.tuya_schema_label, self.tuya_schema_combo)
+        self.remember_key = QCheckBox("Remember local key")
+        self.remember_key.setToolTip("Save this local key in your system credential store.")
+        self.remember_key.setChecked(True)
+        form.addRow(self.remember_key)
 
-        layout.addLayout(form)
+        fields_layout.addLayout(form)
+        fields_layout.addStretch(1)
+        for control in (self.type_combo, self.ip_entry, self.model_entry, self.mac_entry, self.port_entry,
+                        self.ble_address_entry, self.matrix_size_combo, self.tuya_id_entry, self.tuya_key_entry,
+                        self.tuya_version_combo, self.tuya_schema_combo):
+            label = form.labelForField(control) or type_form.labelForField(control)
+            if isinstance(label, QLabel):
+                label.setBuddy(control)
+                control.setAccessibleName(label.text().rstrip(" *:"))
         self._on_type_changed()
 
         # Status label
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
+        self.status_label.hide()
         layout.addWidget(self.status_label)
 
         layout.addSpacing(10)
@@ -132,7 +165,11 @@ class AddDeviceDialog(QDialog):
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        button_box.button(QDialogButtonBox.StandardButton.Ok).setText("Add Device")
+        self.add_button = button_box.button(QDialogButtonBox.StandardButton.Ok)
+        self.add_button.setText("Add Device")
+        self.add_button.setObjectName("Primary")
+        self.add_button.setDefault(True)
+        button_box.button(QDialogButtonBox.StandardButton.Cancel).setAutoDefault(False)
         button_box.accepted.connect(self.validate_and_accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
@@ -189,7 +226,8 @@ class AddDeviceDialog(QDialog):
         # Tuya/LSC fields.
         for widget in (self.tuya_id_entry, self.tuya_id_label,
                        self.tuya_key_entry, self.tuya_key_label,
-                       self.tuya_version_combo, self.tuya_version_label):
+                       self.tuya_version_combo, self.tuya_version_label,
+                       self.tuya_schema_combo, self.tuya_schema_label, self.remember_key):
             widget.setVisible(is_tuya)
 
         placeholder = {
@@ -214,6 +252,7 @@ class AddDeviceDialog(QDialog):
         """Validate input and accept dialog if valid."""
         # Clear previous status
         self.status_label.setText("")
+        self.status_label.hide()
         self.status_label.setProperty("state", "")
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
@@ -231,13 +270,19 @@ class AddDeviceDialog(QDialog):
                 self.show_error("IP address is required")
                 self.ip_entry.setFocus()
                 return
+            if not self.ip_entry.hasAcceptableInput():
+                self.show_error("Enter a valid IPv4 address")
+                return
             if not self.tuya_device_id():
-                self.show_error("Device ID is required (see docs/lsc-tuya-research.md)")
+                self.show_error("Enter the device ID from your Tuya or LSC account.")
                 self.tuya_id_entry.setFocus()
                 return
             if not self.tuya_local_key():
-                self.show_error("Local key is required (see docs/lsc-tuya-research.md)")
+                self.show_error("Enter this device's local key.")
                 self.tuya_key_entry.setFocus()
+                return
+            if len(self.tuya_local_key().encode("utf-8")) != 16:
+                self.show_error("The local key must contain exactly 16 bytes")
                 return
             self.accept()
             return
@@ -282,7 +327,8 @@ class AddDeviceDialog(QDialog):
 
     def show_error(self, message: str):
         """Show error message in status label."""
-        self.status_label.setText(f"⚠ {message}")
+        self.status_label.setText(message)
+        self.status_label.show()
         self.status_label.setProperty("state", "error")
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)

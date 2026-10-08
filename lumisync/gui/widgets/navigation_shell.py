@@ -18,7 +18,7 @@ from PySide6.QtCore import (
     QSize,
     Qt,
 )
-from PySide6.QtGui import QColor, QPainter, QPixmap
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QFrame,
@@ -89,6 +89,15 @@ class NavRailItemDelegate(QStyledItemDelegate):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(bg)
             painter.drawRoundedRect(pill_rect, 12, 12)
+
+        if option.state & QStyle.StateFlag.State_HasFocus:
+            focus_width = RAIL_ITEM_SIZE if self._icon_only else rect.width() - 16
+            focus_rect = QRect(rect.center().x() - focus_width // 2,
+                               rect.center().y() - RAIL_ITEM_SIZE // 2,
+                               focus_width, RAIL_ITEM_SIZE)
+            painter.setPen(QPen(qcolor("accent_bright"), 1.5))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(focus_rect, 12, 12)
 
         if selected:
             icon_color = qcolor("accent_bright")

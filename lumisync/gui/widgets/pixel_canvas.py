@@ -8,6 +8,8 @@ from PySide6.QtCore import Qt, Signal, QRect
 from PySide6.QtGui import QColor, QPainter, QMouseEvent
 from PySide6.QtWidgets import QWidget
 
+from ..theme import qcolor
+
 RGB = Tuple[int, int, int]
 
 
@@ -47,11 +49,14 @@ class PixelCanvas(QWidget):
         self._grid: List[List[RGB]] = [[(0, 0, 0)] * cols for _ in range(rows)]
         self._color: RGB = (255, 0, 0)
         self._last_cell: Tuple[int, int] | None = None
-        self.setMinimumSize(256, 256)
+        self._keyboard_cell = (0, 0)
+        self.setMinimumSize(160, 160)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     # --- state ---
     def set_matrix_size(self, cols: int, rows: int) -> None:
         self._cols, self._rows = max(1, cols), max(1, rows)
+        self._keyboard_cell = (0, 0)
         self.clear()
 
     def set_color(self, rgb: RGB) -> None:
@@ -121,10 +126,39 @@ class PixelCanvas(QWidget):
             self.changed.emit()
 
     # --- events ---
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt API
+        x, y = self._keyboard_cell
+        moves = {Qt.Key.Key_Left: (-1, 0), Qt.Key.Key_Right: (1, 0),
+                 Qt.Key.Key_Up: (0, -1), Qt.Key.Key_Down: (0, 1)}
+        if event.key() in moves:
+            dx, dy = moves[event.key()]
+            self._keyboard_cell = (max(0, min(self._cols - 1, x + dx)), max(0, min(self._rows - 1, y + dy)))
+        elif event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._paint_stroke(self._keyboard_cell, self._keyboard_cell)
+        elif event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            if self._grid[y][x] != (0, 0, 0):
+                self._grid[y][x] = (0, 0, 0)
+                self.changed.emit()
+        else:
+            super().keyPressEvent(event)
+            return
+        self.setAccessibleDescription(f"Pixel column {self._keyboard_cell[0] + 1}, row {self._keyboard_cell[1] + 1}. Space paints; Delete erases.")
+        self.update()
+        event.accept()
+
+    def focusInEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self.update()
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self.update()
+        super().focusOutEvent(event)
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             cell = self._cell_at(event.position().toPoint())
             if cell is not None:
+                self._keyboard_cell = cell
                 self._last_cell = cell
                 self._paint_stroke(cell, cell)
         super().mousePressEvent(event)
@@ -167,3 +201,10 @@ class PixelCanvas(QWidget):
                 painter.fillRect(rect, QColor(r, g, b))
                 painter.setPen(grid_line)
                 painter.drawRect(rect)
+        if self.hasFocus():
+            x, y = self._keyboard_cell
+            selected = QRect(origin_x + x * size, origin_y + y * size, size, size)
+            painter.setPen(qcolor("text"))
+            painter.drawRect(selected.adjusted(0, 0, -1, -1))
+            painter.setPen(qcolor("accent_bright"))
+            painter.drawRect(self.rect().adjusted(1, 1, -2, -2))
