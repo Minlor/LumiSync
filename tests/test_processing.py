@@ -152,6 +152,12 @@ class MonitorLoopTests(unittest.TestCase):
                 if len(self.frames) == 2:
                     raise StopLoop
 
+            def end_stream(self):
+                self.ended = True
+
+            def close(self):
+                self.closed = True
+
         class FakeScreenGrab:
             def capture_array(self):
                 return np.full((2, 2, 3), (120, 30, 10), dtype=np.uint8)
@@ -167,6 +173,8 @@ class MonitorLoopTests(unittest.TestCase):
                 monitor.start(object(), {"model": "H6672"})
 
         self.assertEqual(len(adapter.frames), 2)
+        self.assertTrue(adapter.ended)
+        self.assertTrue(adapter.closed)
 
 
 class ColorSmootherTests(unittest.TestCase):

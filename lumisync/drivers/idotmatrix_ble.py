@@ -2,7 +2,7 @@
 
 Pixel-matrix displays (16x16, 16x32, 16x64, 32x32) controlled over BLE GATT.
 The transport constants and framing here were derived by inspecting the official
-app (``com.tech.idotmatrix`` v2.1.2); the encoder below is LumiSync's own code,
+app (``com.tech.idotmatrix`` v2.1.6); the encoder below is LumiSync's own code,
 not a port of any third-party library.
 
 Two layers:
@@ -15,19 +15,19 @@ Two layers:
   ``bleak`` ships with LumiSync; the adapter raises a clear error if it is
   somehow missing from the environment.
 
-PROVISIONAL opcodes are marked below. They match the app's structure but should
-be confirmed against a BLE capture on a real device before shipping; each is a
-named constant so correcting it is a one-line change.
+Protocol bytes are checked against the app's command builders. Physical panel
+testing is still needed to confirm behavior across firmware variants.
 """
 
 from __future__ import annotations
 
 import threading
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from .base import RGB, DeviceCapabilities, TransportAdapter
 
-# --- Confirmed from the app (com.tech.idotmatrix 2.1.2) ---
+# --- Confirmed from the app (com.tech.idotmatrix 2.1.6) ---
 # Service + write characteristic (com.heaton.baselib.ble.BleManager UUID_*).
 SERVICE_UUID = "000000fa-0000-1000-8000-00805f9b34fb"
 WRITE_CHAR_UUID = "0000fa02-0000-1000-8000-00805f9b34fb"
@@ -62,6 +62,8 @@ def frame(body: bytes) -> bytes:
     ``[len & 0xFF, (len >> 8) & 0xFF]``.
     """
     total = len(body) + 2
+    if total > 65535:
+        raise ValueError("iDotMatrix frame is too large")
     return bytes([total & 0xFF, (total >> 8) & 0xFF]) + bytes(body)
 
 
@@ -76,7 +78,39 @@ def build_power_frame(on: bool) -> bytes:
 
 def build_color_frame(r: int, g: int, b: int) -> bytes:
     """Solid-color command (whole panel), matching the app's ``sendColor``."""
-    return frame(bytes([*_OP_COLOR, int(r) & 0xFF, int(g) & 0xFF, int(b) & 0xFF]))
+    return frame(bytes([*_OP_COLOR, *(max(0, min(255, int(c))) for c in (r, g, b))]))
+
+
+def build_time_frame(now: datetime | None = None) -> bytes:
+    now = now or datetime.now()
+    if not 2000 <= now.year <= 2099:
+        raise ValueError("Panel clock supports years 2000 through 2099")
+    # The app's DateUtils maps Calendar.DAY_OF_WEEK to Monday=1, Sunday=7.
+    weekday = now.isoweekday()
+    return frame(bytes([1, 0x80, now.year - 2000, now.month, now.day, weekday, now.hour, now.minute, now.second]))
+
+
+def build_rotation_frame(rotated: bool) -> bytes:
+    return frame(bytes([6, 0x80, int(bool(rotated))]))
+
+
+def build_clock_frame(style: int = 0, twenty_four_hour: bool = True, color: RGB = (255, 255, 255)) -> bytes:
+    if not 0 <= int(style) <= 7:
+        raise ValueError("Choose a clock style between 0 and 7")
+    return frame(bytes([6, 1, int(style) | (0x80 if twenty_four_hour else 0),
+                        *(max(0, min(255, int(c))) for c in color)]))
+
+
+def build_countdown_frame(minutes: int, seconds: int = 0) -> bytes:
+    if not 0 <= int(minutes) <= 255 or not 0 <= int(seconds) <= 59:
+        raise ValueError("Countdown must be 0–255 minutes and 0–59 seconds")
+    return frame(bytes([8, 0x80, 1, int(minutes), int(seconds)]))
+
+
+def build_scoreboard_frame(left: int, right: int) -> bytes:
+    if not all(0 <= int(score) <= 65535 for score in (left, right)):
+        raise ValueError("Scores must be between 0 and 65535")
+    return frame(bytes([10, 0x80]) + int(left).to_bytes(2, "big") + int(right).to_bytes(2, "big"))
 
 
 # --- DIY pixel drawing (confirmed from SendCore.payload type 5 + BleProtocolN) ---
@@ -198,7 +232,11 @@ class _BleLoop:
         import asyncio
 
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout)
+        try:
+            return future.result(timeout)
+        except TimeoutError:
+            future.cancel()
+            raise RuntimeError("Bluetooth operation timed out. Check the panel connection and try again.") from None
 
 
 def looks_like_idotmatrix(name: Optional[str]) -> bool:
@@ -242,6 +280,7 @@ class IDotMatrixBleAdapter(TransportAdapter):
         self._client = None
         self._mtu = 512
         self._last_response = None
+        self._write_lock = threading.RLock()
 
     @property
     def capabilities(self) -> DeviceCapabilities:
@@ -254,11 +293,12 @@ class IDotMatrixBleAdapter(TransportAdapter):
             supports_color=True,
             supports_segments=True,
             matrix_size=self._size,
+            max_update_hz=10.0,
         )
 
     # --- connection ---
     def _ensure_client(self):
-        if self._client is not None:
+        if self._client is not None and self._client.is_connected:
             return self._client
         bleak = _require_bleak()
         if not self._address:
@@ -266,14 +306,17 @@ class IDotMatrixBleAdapter(TransportAdapter):
 
         async def _connect():
             client = bleak.BleakClient(self._address)
-            await client.connect()
-            # The app subscribes for responses right after connecting; some
-            # firmware only act on commands once notifications are enabled.
             try:
-                await client.start_notify(NOTIFY_CHAR_UUID, self._on_notify)
-            except Exception:
-                pass
-            return client
+                await client.connect()
+                # Firmware variants can omit the optional notification handle.
+                try:
+                    await client.start_notify(NOTIFY_CHAR_UUID, self._on_notify)
+                except Exception:
+                    pass
+                return client
+            except BaseException:
+                await client.disconnect()
+                raise
 
         self._client = _BleLoop.instance().run(_connect(), timeout=20.0)
         return self._client
@@ -283,15 +326,15 @@ class IDotMatrixBleAdapter(TransportAdapter):
         self._last_response = bytes(data)
 
     def _write(self, data: bytes) -> None:
-        client = self._ensure_client()
-
-        async def _send():
-            # The app writes with response (Android default write type), and the
-            # panel ignores no-response writes — so we must request a response.
-            for piece in chunk(data, self._mtu):
-                await client.write_gatt_char(WRITE_CHAR_UUID, piece, response=True)
-
-        _BleLoop.instance().run(_send(), timeout=10.0)
+        with self._write_lock:
+            client = self._ensure_client()
+            async def _send():
+                # The app uses Android's default write type, with a response.
+                # ATT permits at most MTU-3 bytes; never assume a 512-byte MTU.
+                size = min(512, max(20, int(getattr(client, "mtu_size", 23)) - 3))
+                for piece in chunk(data, size):
+                    await client.write_gatt_char(WRITE_CHAR_UUID, piece, response=True)
+            _BleLoop.instance().run(_send(), timeout=10.0)
 
     # --- control surface ---
     def set_power(self, on: bool) -> None:
@@ -312,10 +355,30 @@ class IDotMatrixBleAdapter(TransportAdapter):
     # --- DIY pixel drawing / animation ---
     def draw_grid(self, grid: List[List[RGB]], clear: bool = True) -> None:
         """Draw a full 2D pixel grid (rows of RGB) on the panel via DIY mode."""
-        self._write(build_diy_mode_frame(DIY_ENTER_CLEAR if clear else DIY_ENTER_NOCLEAR))
-        for packet in build_diy_frames(grid):
-            self._write(packet)
-        self._write(build_diy_mode_frame(DIY_QUIT_KEEP))
+        with self._write_lock:
+            self._write(build_diy_mode_frame(DIY_ENTER_CLEAR if clear else DIY_ENTER_NOCLEAR))
+            try:
+                for packet in build_diy_frames(grid, skip_black=clear):
+                    self._write(packet)
+            finally:
+                self._write(build_diy_mode_frame(DIY_QUIT_KEEP))
+
+    def synchronize_time(self) -> None:
+        self._write(build_time_frame())
+
+    def set_rotation(self, rotated: bool) -> None:
+        self._write(build_rotation_frame(rotated))
+
+    def show_clock(self, style: int = 0, twenty_four_hour: bool = True) -> None:
+        with self._write_lock:
+            self.synchronize_time()
+            self._write(build_clock_frame(style, twenty_four_hour))
+
+    def show_countdown(self, minutes: int, seconds: int = 0) -> None:
+        self._write(build_countdown_frame(minutes, seconds))
+
+    def show_scoreboard(self, left: int, right: int) -> None:
+        self._write(build_scoreboard_frame(left, right))
 
     def show_image(self, frame_rgb) -> None:
         """Downscale an ``(H, W, 3)`` RGB array to the matrix and draw it."""
@@ -373,11 +436,7 @@ class IDotMatrixBleAdapter(TransportAdapter):
         return _BleLoop.instance().run(_scan(), timeout=timeout + 8.0)
 
     def close(self) -> None:
-        client = self._client
-        self._client = None
-        if client is None:
-            return
-        try:
-            _BleLoop.instance().run(client.disconnect(), timeout=5.0)
-        except Exception:
-            pass
+        with self._write_lock:
+            client, self._client = self._client, None
+            if client is not None:
+                _BleLoop.instance().run(client.disconnect(), timeout=5.0)

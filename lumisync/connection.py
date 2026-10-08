@@ -130,7 +130,7 @@ def get_segment_count(device: Dict[str, Any], default: int = 10) -> int:
             return count
 
     catalog_count = sku_catalog.segment_count_for(
-        device.get("model") or device.get("sku")
+        device.get("sku") or device.get("model")
     )
     if catalog_count and 0 < catalog_count <= 255:
         return catalog_count

@@ -1,5 +1,6 @@
 import socket
 import time
+import threading
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -153,7 +154,7 @@ def apply_brightness(
     return processing.apply_brightness(colors, brightness_factor)
 
 
-def start(server: socket.socket, device: Dict[str, Any]) -> None:
+def start(server: socket.socket, device: Dict[str, Any], stop_event=None) -> None:
     """Run the CLI monitor-sync loop for a single device.
 
     Each iteration captures one frame, averages the mapped edge zones, applies
@@ -163,7 +164,19 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
     approach.
     """
     adapter = create_adapter(device, server)
-    adapter.begin_stream()
+    try:
+        if not getattr(adapter.capabilities, "supports_streaming", True):
+            raise RuntimeError("Monitor sync requires a local LAN or Bluetooth connection.")
+        adapter.begin_stream()
+        _run_monitor(adapter, stop_event or threading.Event())
+    finally:
+        try:
+            adapter.end_stream()
+        finally:
+            adapter.close()
+
+
+def _run_monitor(adapter, stop_event) -> None:
     try:
         screen_grab = ScreenGrab()
     except ScreenCaptureDependencyError as exc:
@@ -172,13 +185,13 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
 
     segment_count = adapter.capabilities.segment_count
     smoother = processing.ColorSmoother(SYNC.smoothing, segment_count)
-    frame_interval = 1.0 / max(1, SYNC.monitor_fps)
+    frame_interval = 1.0 / max(0.1, min(SYNC.monitor_fps, getattr(adapter.capabilities, "max_update_hz", 40.0)))
     mapping: Optional[List[led_mapping.NormalizedRect]] = None
     mapping_aspect: Optional[float] = None
     last_sent: Optional[List[Tuple[int, int, int]]] = None
     last_sent_at: Optional[float] = None
 
-    while True:
+    while not stop_event.is_set():
         frame_start = time.monotonic()
         try:
             frame = screen_grab.capture_array()
@@ -187,10 +200,11 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
             return
         except OSError:
             print("Warning: Screenshot failed, trying again...")
+            stop_event.wait(0.05)
             continue
 
         if frame is None:
-            time.sleep(0.01)
+            stop_event.wait(0.01)
             continue
 
         height, width = frame.shape[:2]
@@ -221,4 +235,4 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
 
         elapsed = time.monotonic() - frame_start
         if elapsed < frame_interval:
-            time.sleep(frame_interval - elapsed)
+            stop_event.wait(frame_interval - elapsed)

@@ -1,5 +1,11 @@
 # iDotMatrix BLE Research + Integration Plan
 
+> Historical investigation of version 2.1.2. The supplied 2.1.6 was checked
+> again for the [October 2026 audit](vendor-integration-audit-2026-10-08.md).
+> It adds verified command-byte builders for clock/time, rotation, countdown,
+> and scoreboard, plus MTU, timeout and drawing fixes. Physical firmware
+> validation remains outstanding; see the [current guide](vendor-accounts.md).
+
 First pass at supporting **iDotMatrix** pixel-matrix displays as a second device
 family in LumiSync, from the official app `com.tech.idotmatrix` v2.1.2
 (`iDotMatrix_2.1.2_APKPure.xapk`).

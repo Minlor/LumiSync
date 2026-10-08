@@ -25,6 +25,8 @@ class DeviceCapabilities:
     supports_color: bool = True
     supports_segments: bool = True      # per-zone / per-pixel color stream
     supports_white: bool = False        # tunable color temperature
+    supports_streaming: bool = True     # cloud APIs must not receive sync frames
+    max_update_hz: float = 40.0         # device-specific transport pacing
     color_temp_min: int = 0
     color_temp_max: int = 0
     matrix_size: Optional[Tuple[int, int]] = None  # (cols, rows) for pixel grids

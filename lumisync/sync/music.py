@@ -1,6 +1,7 @@
 import socket
 import sys
 import time
+import threading
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
@@ -65,7 +66,7 @@ def default_loopback_microphone():
     )
 
 
-def start(server: socket.socket, device: Dict[str, Any]) -> None:
+def start(server: socket.socket, device: Dict[str, Any], stop_event=None) -> None:
     """Run the CLI music-sync loop for a single device.
 
     Each captured audio window is split into bass/mid/treble energy by an FFT
@@ -76,8 +77,12 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
         import pythoncom
         pythoncom.CoInitialize()
 
+    adapter = None
+    stop_event = stop_event or threading.Event()
     try:
         adapter = create_adapter(device, server)
+        if not getattr(adapter.capabilities, "supports_streaming", True):
+            raise RuntimeError("Music sync requires a local LAN or Bluetooth connection.")
         adapter.begin_stream()
         segment_count = adapter.capabilities.segment_count
         renderer = audio.MusicPatternRenderer(segment_count, SYNC.music_fps)
@@ -93,13 +98,13 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
         )
         active_reaction = SYNC.music_reaction
         numframes = int(max(AUDIO.duration, AUDIO.music_window) * AUDIO.sample_rate)
-        frame_interval = 1.0 / max(1, SYNC.music_fps)
+        frame_interval = 1.0 / max(0.1, min(SYNC.music_fps, getattr(adapter.capabilities, "max_update_hz", 40.0)))
 
-        while True:
+        while not stop_event.is_set():
             with default_loopback_microphone().recorder(
                 samplerate=AUDIO.sample_rate
             ) as mic:
-                while True:
+                while not stop_event.is_set():
                     frame_start = time.monotonic()
                     # NOTE: Try/except due to a soundcard error when no audio plays.
                     try:
@@ -144,10 +149,17 @@ def start(server: socket.socket, device: Dict[str, Any]) -> None:
 
                     elapsed = time.monotonic() - frame_start
                     if elapsed < frame_interval:
-                        time.sleep(frame_interval - elapsed)
+                        stop_event.wait(frame_interval - elapsed)
     finally:
-        if sys.platform == "win32":
-            pythoncom.CoUninitialize()
+        try:
+            if adapter is not None:
+                try:
+                    adapter.end_stream()
+                finally:
+                    adapter.close()
+        finally:
+            if sys.platform == "win32":
+                pythoncom.CoUninitialize()
 
 
 def get_amplitude(mic_data=None) -> float:
