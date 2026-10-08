@@ -61,8 +61,7 @@ Voltage and current are live readings; historical energy is measured in kWh.
 
 ## Screenshots
 
-Screenshots show the development version with **example devices, accounts
-and readings**.
+Screenshots show LumiSync 0.8.2 with **example devices, accounts and readings**.
 
 ### Devices
 
@@ -182,8 +181,8 @@ installation is needed. Govee also offers an **API key** method.
 Passwords and verification codes are not saved, and account labels mask emails.
 Use **Find Devices** to refresh linked accounts and local devices together.
 
-The current development version includes Tuya/LSC sign-in configuration.
-Version 0.8.0 requires the matching Android app package once.
+Tuya and LSC sign-in configuration is included. No Android package,
+Android installation or developer account is needed.
 
 ### Interface
 
