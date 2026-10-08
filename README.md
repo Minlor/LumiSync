@@ -23,12 +23,13 @@ Visit the website: [lumisync.minlor.net](https://lumisync.minlor.net)
 > [!NOTE]
 > This project is in active development. Windows is fully supported; Linux X11 is partial, macOS/Wayland are WIP.
 
-## What's new in 0.8.0
+## What's new in 0.8.1
 
-Sign in with your own Govee, Tuya Smart or LSC account, see controls suited to
-each device, and check live power readings and monthly energy usage on supported
-plugs. Device layouts adapt to your window, and rapid light adjustments have
-safer command queues and thread cleanup. See the [release notes](docs/releases/0.8.0.md).
+Tuya Smart and LSC email/password sign-in now works without an Android app
+package. Fresh sign-ins were checked with real Tuya, LSC and Govee accounts.
+Rapid device controls do less repeated UI style work, and local account logs
+help diagnose sign-in failures without recording credentials.
+See the [release notes](docs/releases/0.8.1.md).
 
 ## Features
 
@@ -55,10 +56,9 @@ support depends on its firmware, capabilities, and the account's authorization.
 | LSC / Tuya WiFi lights, switches and plugs | Tuya LAN, personal account or Smart Life QR | LSC/Tuya Smart email/password; authorized local-key import; controls follow the device schema; supported plug metering |
 
 See [account setup](docs/vendor-accounts.md) and the
-[October 2026 audit](docs/vendor-integration-audit-2026-10-08.md). LSC and Tuya
-Smart password login read the matching Android app package once; the supplied
-APKM/XAPK files can be found automatically in Downloads or selected manually.
-These packages are not bundled with LumiSync. Each brand uses its own account
+[integration reference](docs/integrations.md). LSC and Tuya Smart password login
+use built-in client configuration; no Android package, installation or developer
+account is required. Each brand uses its own account
 namespace: choose the service and country used in your phone app. LumiSync
 suggests a country from your computer's region; you can change it before signing
 in. Account routing is automatic, and account lists partially hide email addresses.
@@ -70,13 +70,13 @@ Voltage and current are live readings; historical energy is measured in kWh.
 
 ## Screenshots
 
-These are the actual 0.8.0 interface with isolated **example devices, accounts
+These are the actual 0.8.1 interface with isolated **example devices, accounts
 and readings**. No personal account details appear in these images.
 
 ### Devices
 
 <div align="center">
-<img src="docs/images/lumisync-devices.png" alt="LumiSync 0.8.0 inventory with example LED strip, matrix panel, wall switch and smart plugs" width="100%"/>
+<img src="docs/images/lumisync-devices.png" alt="LumiSync inventory with example LED strip, matrix panel, wall switch and smart plugs" width="100%"/>
 
 <sub>Recognize each device type and use the controls it supports.</sub>
 </div>
@@ -185,8 +185,8 @@ with `lumisync --cli`; direct headless modes are available through
 The UI adapts to short/narrow windows: account actions and sync Start/Stop stay
 visible, Draw tools reflow above the canvas, and Settings uses a section dropdown
 when space is tight. Daily readings and technical details expand on demand.
-See the [UI direction](docs/account-device-ui-design.md) and
-[verification report](docs/account-device-ui-verification.md) for scope and checks.
+See the [verification record](docs/verification.md) for UI scope, design direction
+and executed checks.
 
 ### Configuration
 

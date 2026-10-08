@@ -1,5 +1,8 @@
 # Personal vendor accounts and Wi-Fi control
 
+Since `0.8.1`, Tuya Smart and LSC email/password sign-in needs no Android app
+package. Older `0.8.0` binaries retain their original one-time package setup.
+
 Open **Devices → Accounts** to connect an account. Network requests run in the
 background. Imported lights, light switches and smart plugs appear alongside existing devices; existing local
 connections and groups are retained.
@@ -60,14 +63,21 @@ codes distinguish countries sharing a calling code, such as Canada and the US.
 The Windows lookup uses
 [GetUserDefaultGeoName](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-getuserdefaultgeoname).
 
-The first connection reads login configuration from the matching Tuya Smart
-APK/APKM/XAPK. LumiSync looks for the supplied APKM in Downloads automatically;
-open **App setup options → Browse** if the package is elsewhere or automatic
-setup fails. These optional settings are collapsed during ordinary sign-in and
-open automatically when app configuration needs attention. This reads app data without running
-Android code or requiring Android developer tools. The validated configuration
-is saved in the system vault, or kept for this session when Remember is off.
-Vendor application secrets are not bundled into LumiSync or saved in settings.
+Password sign-in uses built-in client configuration for Tuya Smart. No Android
+package, Android installation or developer account is required, and LumiSync
+does not download or execute Android code during sign-in. The shared client
+configuration identifies the matching vendor app and signs its protocol
+requests; it is separate from account credentials and grants no account access
+on its own. LumiSync checks that configuration with the vendor before sending
+the encrypted password. Password authentication, email verification and account
+sessions still take place with the vendor's HTTPS service.
+
+If a vendor changes its app protocol before a LumiSync update is available,
+**Advanced options → Browse** accepts a matching APK/APKM/XAPK as an optional
+configuration override. A validated explicit override is saved in the system
+vault, or kept for this session when Remember is off. Normal sign-in does not
+search Downloads or require any of these files. Old automatic configuration
+caches are replaced by the current built-in configuration on a new sign-in.
 
 The client obtains a single-use RSA challenge and encrypts the password in the
 format required by the vendor. If email verification is requested, the vendor
@@ -117,11 +127,15 @@ Smart Life. Choose **LSC** and use
 your own LSC account, select its country, and enter an email verification code
 if requested. A Tuya project is not required for this method.
 
-LumiSync reads the supplied LSC XAPK in Downloads automatically on the first
-connection. Use **App setup options → Browse** for a package stored elsewhere. Configuration,
-password clearing, verification, session storage, and regional routing follow
-the same rules as Tuya Smart password login above. The supplied LSC 2.0.7 and
-Tuya Smart 7.11.4 packages pass live signed-clock and RSA-challenge checks.
+LSC password sign-in also uses built-in client configuration and needs no
+Android package. Password clearing, verification, session storage, optional
+configuration overrides and regional routing follow the same rules as Tuya
+Smart password login above. The built-in configurations for LSC 2.0.7 and
+Tuya Smart 7.11.4 pass live signed-clock checks in all four API regions and
+return fresh RSA password challenges without local app files. The user also
+confirmed fresh Tuya and LSC password sign-ins in the local Windows build with
+no package selected; diagnostics recorded built-in configuration and successful
+imports of one Tuya device and three LSC devices.
 The linked Tuya account was also checked read-only: its `kg` / `switch_1`
 light switch is discovered and returns online and power state. The user has
 confirmed successful Govee, LSC and Tuya account login. Physical commands,

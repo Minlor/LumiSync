@@ -261,7 +261,7 @@ class TuyaSharingClient:
             raise AccountError("Could not request a Tuya authorization code. Check your connection and user code.", "network") from None
         token = reply.get("result", {}).get("qrcode") if reply.get("success") else None
         if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", token):
-            raise AccountError("Tuya could not authorize this user code. Use Tuya Smart / Smart Life, or the linked cloud project option for LSC.", "authentication")
+            raise AccountError("Tuya could not authorize this user code. Check the code in Tuya Smart / Smart Life, or use email and password for your LSC account.", "authentication")
         self._qr_token = token
         return "tuyaSmart--qrLogin?token=" + token
 

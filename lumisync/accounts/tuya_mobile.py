@@ -140,7 +140,7 @@ class TuyaMobileClient:
             profile = self.credentials.get("profile", {})
             if (not isinstance(profile, dict) or profile.get("package") != PACKAGES[self.brand]
                     or not all(isinstance(profile.get(k), str) and profile[k] for k in ("app_key", "signing_key", "ch_key", "ttid", "app_version"))):
-                raise AccountError("Select the matching vendor app package before signing in.", "app_profile")
+                raise AccountError("The app login configuration is incomplete. Update LumiSync and try again.", "app_profile")
             if authenticated and not self.credentials.get("sid"):
                 raise AccountError(f"Sign in to your {self.label} account first.", "authentication")
             params = {"a": action, "v": version, "clientId": profile["app_key"],
@@ -173,7 +173,7 @@ class TuyaMobileClient:
         if "MFA" in code:
             raise AccountError("Check your verification code, or clear it to request a new one.", "verification")
         if code in ("ILLEGAL_CLIENT_ID", "SING_VALIDATE_FALED", "SIGN_VALIDATE_FAILED"):
-            raise AccountError(f"{self.label} rejected the app login configuration. Select a current matching app package and try again.", "app_profile")
+            raise AccountError(f"{self.label} rejected the app login configuration. Update LumiSync, or use a current matching package under Advanced options.", "app_profile")
         if code in ("USER_SESSION_INVALID", "SESSION_INVALID", "USER_SESSION_EXPIRED"):
             self.credentials.pop("sid", None)
             self._changed()
@@ -221,6 +221,8 @@ class TuyaMobileClient:
                 raise AccountError("Enter your account email, password and country calling code.", "validation")
             if mfa_code and not re.fullmatch(r"[0-9]{4,10}", mfa_code):
                 raise AccountError("Enter the verification code sent by your vendor.", "validation")
+            if not self.credentials.get("profile"):
+                self.load_profile()
             if region == "auto":
                 region = "cn" if country_code == "86" else "us" if country_code in _AMERICA_CODES else "in" if country_code == "91" and self.brand == "tuya" else "eu"
             if region not in MOBILE_REGIONS:

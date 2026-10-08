@@ -4,14 +4,14 @@ LSC Smart Connect (Action's retail smart-home app) is a rebrand of the Tuya
 "Smart Life" platform — confirmed by decompiling ``com.lscsmartconnection.smart``
 v2.0.4, whose native libraries are Tuya's SDK (``libthingsmart.so``,
 ``libThingSmartLink.so``, ``libthing_security.so``). See
-``docs/lsc-tuya-research.md``.
+``docs/integrations.md``.
 
 Tuya WiFi bulbs and strips speak the **Tuya local protocol** over TCP ``6668``:
 every command is AES-encrypted with a per-device 16-byte *local key* that is
 provisioned at pairing by the vendor account service. Unlike Govee LAN (open UDP
 JSON) or iDotMatrix BLE (open GATT), a Tuya device is uncontrollable without
 that key, and the key cannot be recovered by decompiling the app — the user
-must supply it (``docs/lsc-tuya-research.md`` documents how to obtain it).
+must authorize access to it (see ``docs/vendor-accounts.md``).
 
 The account integrations can obtain authorized local keys; this adapter itself
 speaks only the local protocol using the OS credential store or a supplied key.
@@ -193,7 +193,7 @@ class TuyaLightAdapter(TransportAdapter):
         if not (ip and dev_id and local_key):
             raise RuntimeError(
                 "Tuya device needs ip, device_id and local_key. See "
-                "docs/lsc-tuya-research.md for how to obtain the local key."
+                "docs/vendor-accounts.md for how to obtain the local key."
             )
 
         tinytuya = _require_tinytuya()

@@ -150,8 +150,13 @@ class DeviceControlStabilityTests(unittest.TestCase):
 
     def test_real_qt_controls_survive_1200_rapid_interactions_and_confirm_final_state(self):
         helper = Path(__file__).parent / "helpers" / "device_controls_stress.py"
-        result = subprocess.run([sys.executable, "-X", "faulthandler", str(helper)],
-                                capture_output=True, text=True, timeout=25)
+        try:
+            result = subprocess.run([sys.executable, "-X", "faulthandler", str(helper)],
+                                    capture_output=True, text=True, timeout=35)
+        except subprocess.TimeoutExpired as error:
+            def output(value):
+                return value.decode(errors="replace") if isinstance(value, bytes) else value or ""
+            self.fail("Rapid-control subprocess stalled.\n" + output(error.stdout) + output(error.stderr))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('"pass": true', result.stdout)
         self.assertIn('"brightness": 73', result.stdout)

@@ -12,7 +12,7 @@ const downloads = {
 };
 
 const accountGuide = "https://github.com/Minlor/LumiSync/blob/main/docs/vendor-accounts.md";
-const releaseNotes = "https://github.com/Minlor/LumiSync/releases/tag/0.8.0";
+const releaseNotes = "https://github.com/Minlor/LumiSync/releases/tag/0.8.1";
 
 function Screenshot({ name, alt, caption }: { name: string; alt: string; caption: string }) {
   return <figure className="screenshot">
@@ -60,7 +60,7 @@ export default function Home() {
             <a className="button secondary" href={downloads.linux}><FaLinux aria-hidden="true" /> Download for Linux</a>
           </div>
           <p className="heroNote">Free &amp; open source · Windows &amp; Linux. Local sync, with optional vendor accounts for cloud control.</p>
-          <p className="releaseNote"><a href={releaseNotes}>New in 0.8.0: personal accounts, plug metering and a more adaptable interface.</a></p>
+          <p className="releaseNote"><a href={releaseNotes}>New in 0.8.1: Tuya and LSC password sign-in without an Android package.</a></p>
         </div>
         <div className="heroPreview">
           <Screenshot name="plug-energy" alt="LumiSync device inventory and smart plug readings" caption="Device controls and supported plug readings." />
@@ -132,7 +132,7 @@ export default function Home() {
         <div className="productCopy">
           <h2>Use the accounts<br />you already have.</h2>
           <p>Sign in with your Govee, Tuya Smart or LSC email and password. Choose your account country from a dropdown; LumiSync suggests your computer&apos;s region and handles account routing.</p>
-          <p>Tuya and LSC password sign-in reads the matching Android app package once. LumiSync can find it in Downloads or let you browse for it. Account lists partially hide emails.</p>
+          <p>Tuya and LSC password sign-in works without an Android app package or developer account. Account lists partially hide emails.</p>
           <a className="textLink" href={accountGuide}>Read account setup <ArrowRight aria-hidden="true" /></a>
         </div>
         <Screenshot name="accounts" alt="Tuya password sign-in with country selection and masked example accounts" caption="Personal sign-in, with connected accounts alongside." />
@@ -149,7 +149,7 @@ export default function Home() {
 
       <section className="download" id="download">
         <img src="/lumisync-app.png" alt="LumiSync app icon" />
-        <h2>Download LumiSync 0.8.0.</h2>
+        <h2>Download LumiSync 0.8.1.</h2>
         <p>Discover local devices or connect your vendor account. Prebuilt downloads include the runtime; Python is only needed for pip or source installs.</p>
         <div className="downloadGrid">
           <a className="downloadOption featured" href={downloads.windows}><FaWindows aria-hidden="true" /><span><strong>Windows</strong><small>Single-file app · x64</small></span><ArrowDownToLine aria-hidden="true" /></a>

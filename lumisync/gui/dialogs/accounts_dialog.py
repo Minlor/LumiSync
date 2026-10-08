@@ -22,9 +22,12 @@ from ...accounts.govee import GoveeAccountClient
 from ...accounts.privacy import mask_account_label, mask_email
 from ...accounts.tuya import TuyaSharingClient
 from ...accounts.secrets import vault
+from ...utils.logging import setup_logger
 from ..controllers.background import start_task
 from ..utils.account_country import suggested_account_country
 from ..widgets.product_controls import ProductComboBox
+
+logger = setup_logger("lumisync_accounts")
 
 
 PROVIDER_NAMES = {
@@ -346,7 +349,7 @@ class AccountsDialog(QDialog):
         verification_actions.addWidget(self.resend_button, 1)
         verification_actions.addWidget(self.restart_button, 1)
         root.addWidget(self.verification_actions)
-        self.connection_options = QPushButton("App setup options")
+        self.connection_options = QPushButton("Advanced options")
         self.connection_options.setObjectName("AccountOptionsToggle")
         self.connection_options.setAutoDefault(False)
         self.connection_options.setMinimumHeight(44)
@@ -358,7 +361,7 @@ class AccountsDialog(QDialog):
         options_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         self.app_package = QLineEdit()
         self.app_package.setMinimumWidth(80)
-        self.app_package.setPlaceholderText("Find automatically in Downloads")
+        self.app_package.setPlaceholderText("Use built-in configuration (recommended)")
         self.app_package.setAccessibleName("Vendor app package path")
         self.package_row = QWidget()
         package_layout = QHBoxLayout(self.package_row)
@@ -368,9 +371,9 @@ class AccountsDialog(QDialog):
         self.browse_package.setAutoDefault(False)
         self.browse_package.clicked.connect(self._choose_package)
         package_layout.addWidget(self.browse_package)
-        self.package_label = QLabel("App configuration file")
+        self.package_label = QLabel("Optional app configuration override")
         options_layout.addRow(self.package_label, self.package_row)
-        options_help = QLabel("LumiSync finds the matching app file in Downloads or uses its saved configuration. Select an APK, APKM or XAPK only if automatic setup fails.")
+        options_help = QLabel("Email and password sign-in works without an Android app package. Import an APK, APKM or XAPK only to override the built-in configuration after a vendor change.")
         options_help.setWordWrap(True)
         options_layout.addRow(options_help)
         self.connection_options.toggled.connect(self.options_panel.setVisible)
@@ -842,6 +845,8 @@ class AccountsDialog(QDialog):
                 elif mobile:
                     if pending_client is None:
                         client.load_profile(credentials["app_package"])
+                    logger.info("Password sign-in: provider=%s configuration=%s", provider,
+                                "package override" if client.credentials["profile"].get("source") == "package" else "built-in")
                     client.login(credentials["email"], credentials["password"], credentials["country_code"],
                                  mfa_code=credentials["mfa_code"], region=credentials["region"])
                     vault.put("vendor-app/" + provider.removesuffix("_account"), client.credentials["profile"], remember=remember)
@@ -915,6 +920,7 @@ class AccountsDialog(QDialog):
 
     def _save_connection(self, value) -> None:
         if isinstance(value, SignInFailure):
+            logger.info("Sign-in needs attention: provider=%s code=%s", self.provider.currentData(), value.code)
             self._show_status(value.message, "info" if value.client is not None else "error")
             self._pending_client = value.client
             self._pending_context = self._context_pending if value.client is not None else None
@@ -970,6 +976,7 @@ class AccountsDialog(QDialog):
         self._clear_pending_login()
         self.entries["email"].clear()
         count = len(descriptors)
+        logger.info("Account connected: provider=%s supported_devices=%d", self._provider_pending, count)
         self._show_status(f"Account connected. {count} supported device{'s' if count != 1 else ''} imported. Open Devices to control them.", "success")
         for key in ("api_key",):
             self.entries[key].clear()
