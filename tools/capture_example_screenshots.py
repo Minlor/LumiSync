@@ -29,7 +29,7 @@ from readme_fixtures import example_accounts, example_devices, example_history  
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "docs" / "images")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "assets" / "screenshots")
     args = parser.parse_args()
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)

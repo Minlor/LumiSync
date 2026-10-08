@@ -38,9 +38,8 @@ secrets and should run `npm test` before deploying.
 
 Download buttons use GitHub's stable `releases/latest/download/` URLs, so releases do not require website updates while artifact names remain unchanged.
 
-The 0.8.1 page documents personal vendor accounts without required Android
-packages, device capability controls, supported plug metering and local-sync
-limitations. Screenshots show the real
+The page covers personal vendor accounts, device controls, plug metering and
+local-sync limitations. Screenshots show the real
 application with labelled example data. Regenerate them from the repository root:
 
 ```bash
@@ -48,9 +47,9 @@ python tools/capture_example_screenshots.py
 ```
 
 Copy the devices, monitor-sync, music-sync, accounts and plug-energy captures
-from `docs/images/lumisync-*.png` to the corresponding files in `public/images/`.
+from `assets/screenshots/lumisync-*.png` to the corresponding files in `public/images/`.
 Run `npm test` before deploying, and publish the matching app release before
 updating the public website's version and release-notes link.
 
-Browser checks and the design delivery gate are recorded in
-[the verification record](../docs/verification.md).
+Check navigation, screenshot links and the phone layout in a browser before
+deploying. Run `npm test` to verify the production HTML and assets.

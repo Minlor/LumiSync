@@ -40,8 +40,8 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=ROOT / "docs" / "images",
-        help="Destination directory (default: docs/images).",
+        default=ROOT / "assets" / "screenshots",
+        help="Destination directory (default: assets/screenshots).",
     )
     parser.add_argument(
         "--material",

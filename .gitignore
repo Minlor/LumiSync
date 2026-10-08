@@ -180,10 +180,13 @@ cython_debug/
 # Project specific ignores
 .idea/
 *.json
+# Local agent notes; product setup belongs in README.md.
+docs/
 
 # Reverse-engineering / capture artifacts (large, local-only, may hold PII)
 *.xapk
 *.apk
+*.apkm
 *.dex
 *.pcapng
 *.etl

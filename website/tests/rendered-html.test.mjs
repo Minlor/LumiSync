@@ -8,10 +8,10 @@ test("builds the LumiSync product page as static HTML", async () => {
   assert.match(html, /<title>LumiSync — Screen\. Sound\. Light\. In sync\.<\/title>/i);
   assert.match(html, /Lights and plugs\./);
   assert.match(html, /optional vendor accounts for cloud control/);
-  assert.match(html, /Download LumiSync 0\.8\.1/);
+  assert.match(html, /Download LumiSync 0\.8\.2/);
   assert.match(html, /without an Android app package or developer account/);
-  assert.doesNotMatch(html, /reads the matching Android app package once|find it in Downloads/);
-  assert.match(html, /vendor-accounts\.md/);
+  assert.match(html, /https:\/\/github\.com\/Minlor\/LumiSync#account-setup/);
+  assert.doesNotMatch(html, /docs\/vendor-accounts\.md/);
   assert.match(html, /readings refresh every five seconds/i);
   assert.match(html, /Example data\./);
   assert.match(html, /<table class="deviceTable">/);

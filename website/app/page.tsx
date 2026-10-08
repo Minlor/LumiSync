@@ -11,8 +11,8 @@ const downloads = {
   pypi: "https://pypi.org/project/lumisync/",
 };
 
-const accountGuide = "https://github.com/Minlor/LumiSync/blob/main/docs/vendor-accounts.md";
-const releaseNotes = "https://github.com/Minlor/LumiSync/releases/tag/0.8.1";
+const accountGuide = "https://github.com/Minlor/LumiSync#account-setup";
+const releaseNotes = "https://github.com/Minlor/LumiSync/releases/tag/0.8.2";
 
 function Screenshot({ name, alt, caption }: { name: string; alt: string; caption: string }) {
   return <figure className="screenshot">
@@ -60,7 +60,7 @@ export default function Home() {
             <a className="button secondary" href={downloads.linux}><FaLinux aria-hidden="true" /> Download for Linux</a>
           </div>
           <p className="heroNote">Free &amp; open source · Windows &amp; Linux. Local sync, with optional vendor accounts for cloud control.</p>
-          <p className="releaseNote"><a href={releaseNotes}>New in 0.8.1: Tuya and LSC password sign-in without an Android package.</a></p>
+          <p className="releaseNote"><a href={releaseNotes}>New in 0.8.2: Tuya and LSC password sign-in without an Android package.</a></p>
         </div>
         <div className="heroPreview">
           <Screenshot name="plug-energy" alt="LumiSync device inventory and smart plug readings" caption="Device controls and supported plug readings." />
@@ -149,7 +149,7 @@ export default function Home() {
 
       <section className="download" id="download">
         <img src="/lumisync-app.png" alt="LumiSync app icon" />
-        <h2>Download LumiSync 0.8.1.</h2>
+        <h2>Download LumiSync 0.8.2.</h2>
         <p>Discover local devices or connect your vendor account. Prebuilt downloads include the runtime; Python is only needed for pip or source installs.</p>
         <div className="downloadGrid">
           <a className="downloadOption featured" href={downloads.windows}><FaWindows aria-hidden="true" /><span><strong>Windows</strong><small>Single-file app · x64</small></span><ArrowDownToLine aria-hidden="true" /></a>
