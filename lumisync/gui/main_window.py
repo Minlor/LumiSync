@@ -4,7 +4,7 @@ Main application window for the LumiSync GUI.
 
 import sys
 from PySide6.QtWidgets import QMainWindow, QMenu, QMessageBox, QApplication, QSystemTrayIcon
-from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
+from PySide6.QtCore import QSettings, Qt, QTimer, QUrl, QThreadPool
 from PySide6.QtGui import QDesktopServices
 
 from .resources.icons import IconKey, icon as app_icon
@@ -28,7 +28,7 @@ class LumiSyncMainWindow(QMainWindow):
         logger.info("Initializing LumiSync GUI")
 
         self.setWindowTitle("LumiSync")
-        self.setMinimumSize(940, 620)
+        self.setMinimumSize(800, 520)
         self.resize(1120, 760)
         self.setMenuBar(None)
 
@@ -51,6 +51,8 @@ class LumiSyncMainWindow(QMainWindow):
         self.update_controller = UpdateController()
 
         self._quitting = False
+        self._shutdown_started = False
+        self._shutdown_ready = False
 
         self.setup_controller_connections()
         self.setup_ui()
@@ -263,7 +265,7 @@ class LumiSyncMainWindow(QMainWindow):
         QMessageBox.about(
             self, "About LumiSync",
             "<h2>LumiSync</h2>"
-            "<p>Sync your Govee lights with your screen and audio.</p>"
+            "<p>Sync smart lights and pixel panels with your screen and audio.</p>"
             f"<p><b>Version:</b> {_version}</p>"
             "<p><a href='https://github.com/Minlor/LumiSync'>GitHub Repository</a></p>"
         )
@@ -303,8 +305,22 @@ class LumiSyncMainWindow(QMainWindow):
         geometry = self.settings.value("geometry")
         if geometry:
             self.restoreGeometry(geometry)
+        if not self.isMaximized() and not self.isFullScreen():
+            available = self.screen().availableGeometry().adjusted(12, 12, -12, -36)
+            self.resize(min(self.width(), available.width()), min(self.height(), available.height()))
+            self.move(max(available.left(), min(self.x(), available.right() - self.width() + 1)),
+                      max(available.top(), min(self.y(), available.bottom() - self.height() + 1)))
 
     def closeEvent(self, event):
+        if self._shutdown_ready:
+            if self.tray is not None:
+                self.tray.hide()
+            event.accept()
+            QApplication.instance().quit()
+            return
+        if self._shutdown_started:
+            event.ignore()
+            return
         # Closing the window hides to the tray (syncs keep running) unless the
         # user quit deliberately or disabled the tray behavior in Settings.
         if (
@@ -337,6 +353,11 @@ class LumiSyncMainWindow(QMainWindow):
                 return
 
         self.settings.setValue("geometry", self.saveGeometry())
+        self._shutdown_started = True
+        self._quitting = True
+        self.setEnabled(False)
+        self.device_controller.shutdown()
+        self.update_controller.shutdown()
         if hasattr(self.sync_controller, 'stop_sync'):
             self.sync_controller.stop_sync()
         draw_view = getattr(self, "draw_view", None)
@@ -345,16 +366,25 @@ class LumiSyncMainWindow(QMainWindow):
                 draw_view._stop_send()
             except Exception:
                 pass
-        # Close any persistent BLE connections.
-        try:
-            from ..drivers import pool
-            pool.close_all()
-        except Exception:
-            pass
-        if self.tray is not None:
-            self.tray.hide()
-        event.accept()
-        QApplication.instance().quit()
+        # Keep the event loop alive while bounded I/O drains. Destroying a
+        # running QThread or closing its pooled connection can crash Qt.
+        event.ignore()
+        self._finish_shutdown()
+
+    def _finish_shutdown(self) -> None:
+        draw_view = getattr(self, "draw_view", None)
+        draw_thread = getattr(draw_view, "_thread", None)
+        draw_running = draw_thread is not None and not draw_thread.wait(0)
+        if not self.device_controller.shutdown() or not self.update_controller.shutdown() or self.sync_controller.is_syncing() or draw_running or QThreadPool.globalInstance().activeThreadCount():
+            self.statusBar().showMessage("Finishing device connections before closing…")
+            QTimer.singleShot(100, self._finish_shutdown)
+            return
+        from ..drivers import pool
+        from ..accounts.manager import account_manager
+        pool.close_all()
+        account_manager.close_all()
+        self._shutdown_ready = True
+        self.close()
 
 
 def main():
@@ -367,6 +397,9 @@ def main():
         app.setOrganizationName("Minlor")
         # The window can hide to the tray; the tray Quit action ends the app.
         app.setQuitOnLastWindowClosed(False)
+
+        from .crash_reporting import install_crash_reporting
+        install_crash_reporting(logger)
 
         from .utils.single_instance import SingleInstance
         guard = SingleInstance(app)
@@ -423,7 +456,7 @@ def _install_excepthook():
         try:
             QMessageBox.critical(
                 None,
-                "LumiSync — Unexpected Error",
+                "LumiSync · Unexpected Error",
                 f"Something went wrong:\n\n{exc_type.__name__}: {exc_value}\n\n"
                 f"Details were written to the logs in:\n{get_logs_directory()}",
             )

@@ -4,14 +4,16 @@ This module handles device discovery and management with PySide6 signals.
 """
 
 import socket
+import ipaddress
 import time
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QObject, Signal, QThread, QTimer
+from PySide6.QtCore import QObject, Signal, Slot, QThread, QTimer, Qt
 
 from ... import connection, devices, groups
 from ...drivers import pool
-from ...drivers.registry import create_adapter
+from ...drivers.registry import create_adapter, is_cloud, capabilities_for_device
+from .background import start_task
 
 
 class DeviceDiscoveryWorker(QObject):
@@ -28,16 +30,16 @@ class DeviceDiscoveryWorker(QObject):
         nothing, so devices are still discovered on multicast-hostile networks.
         """
         try:
-            settings = devices.discover_lan_devices(preserve_existing=True)
+            settings = devices.discover_lan_devices(preserve_existing=True, persist=False)
 
             if int(settings.get("lastDiscoveryCount", 0)) == 0:
                 settings = devices.discover_lan_devices(
-                    preserve_existing=True, deep=True
+                    preserve_existing=True, deep=True, persist=False
                 )
 
             # Emit success signal with discovered devices
             self.finished.emit(
-                settings["devices"],
+                settings.get("lastDiscoveryDevices", settings["devices"]),
                 settings["selectedDevice"],
                 int(settings.get("lastDiscoveryCount", 0)),
             )
@@ -58,10 +60,11 @@ class DeviceStatusWorker(QObject):
         super().__init__()
         self.indexed_devices = [(i, dict(d)) for i, d in indexed_devices]
 
+    @Slot()
     def run(self) -> None:
         server = None
         try:
-            if any(device.get("ip") for _, device in self.indexed_devices):
+            if any(device.get("ip") and str(device.get("transport", "lan")) in ("", "lan") for _, device in self.indexed_devices):
                 try:
                     server = connection.create_lan_socket(timeout=0.45)
                 except OSError as exc:
@@ -69,10 +72,21 @@ class DeviceStatusWorker(QObject):
                     self.error.emit(str(exc))
 
             for index, device in self.indexed_devices:
+                if QThread.currentThread().isInterruptionRequested():
+                    break
                 try:
+                    query_started_at = time.time()
                     status = None
-                    if server is not None and device.get("ip"):
+                    transport = str(device.get("transport", "lan"))
+                    if transport in ("", "lan") and server is not None and device.get("ip"):
                         status = connection.query_status(server, device, timeout=0.45)
+                    elif transport not in ("", "lan", "ble"):
+                        adapter = pool.acquire(device)
+                        try:
+                            status = adapter.query_status()
+                        finally:
+                            if not pool.is_pooled(device):
+                                adapter.close()
                     if status is None:
                         self.state_updated.emit(
                             index,
@@ -82,21 +96,27 @@ class DeviceStatusWorker(QObject):
                                 "status_source": "offline",
                                 "readback_supported": True,
                                 "last_error": "No status reply",
+                                "device_key": groups.device_key(device),
+                                "query_started_at": query_started_at,
                             },
                         )
                     else:
                         status.update(
                             {
-                                "online": True,
-                                "stale": False,
-                                "status_source": "confirmed",
+                                "online": status.get("online", True),
+                                "stale": not status.get("online", True),
+                                "status_source": "confirmed" if status.get("online", True) else "offline",
                                 "readback_supported": True,
                                 "last_error": None,
                                 "last_seen": time.time(),
+                                "device_key": groups.device_key(device),
+                                "query_started_at": query_started_at,
                             }
                         )
                         self.state_updated.emit(index, status)
                 except Exception as exc:
+                    from ...accounts.errors import AccountError
+                    message = str(exc) if isinstance(exc, AccountError) or not is_cloud(device) else "Could not read account device status. Reconnect the account and try again."
                     self.state_updated.emit(
                         index,
                         {
@@ -104,7 +124,9 @@ class DeviceStatusWorker(QObject):
                             "stale": True,
                             "status_source": "offline",
                             "readback_supported": True,
-                            "last_error": str(exc),
+                            "last_error": message,
+                            "device_key": groups.device_key(device),
+                            "query_started_at": query_started_at,
                         },
                     )
         except Exception as exc:
@@ -167,8 +189,19 @@ class DeviceController(QObject):
         self._combined_search_active = False
         self._search_pending: set[str] = set()
         self._search_results: Dict[str, Dict[str, Any]] = {}
+        self._account_refresh_tasks = {}
+        self._tuya_scan_results = []
+        self._refresh_all_pending = False
+        self._refresh_keys_pending: dict[str, None] = {}
         self.server = None
         self.device_states: Dict[str, Dict[str, Any]] = {}
+        self._command_tasks = {}
+        self._command_queue = {}
+        self._requested_power = {}
+        self._confirmation_timers = {}
+        self._confirmation_delays = {}
+        self._tuya_task = None
+        self._closing = False
 
         # Initialize devices on startup
         self._init_devices()
@@ -176,7 +209,7 @@ class DeviceController(QObject):
     def _init_devices(self):
         """Initialize with existing devices from settings."""
         try:
-            settings = devices.get_data()
+            settings = devices.get_data(refresh=False)
             self.devices = settings["devices"]
             self.selected_device_index = settings["selectedDevice"]
 
@@ -198,37 +231,96 @@ class DeviceController(QObject):
         if self.discovery_thread is None:
             return False
         try:
-            return self.discovery_thread.isRunning()
+            self.discovery_thread.isRunning()
+            return True  # Retain ownership through native thread cleanup.
         except RuntimeError:
             self.discovery_thread = None
             self.discovery_worker = None
             return False
 
+    @Slot()
     def _clear_discovery_refs(self) -> None:
-        self.discovery_thread = None
-        self.discovery_worker = None
+        self._release_worker_thread("discovery_thread", "discovery_worker", self._clear_discovery_refs)
+
+    def _release_worker_thread(self, thread_field, worker_field, retry) -> None:
+        thread = getattr(self, thread_field)
+        sender = self.sender()
+        if thread is None or (isinstance(sender, QThread) and sender is not thread):
+            return
+        if not thread.wait(0):
+            QTimer.singleShot(1, retry)
+            return
+        setattr(self, worker_field, None)
+        setattr(self, thread_field, None)
+        thread.deleteLater()
 
     def _status_running(self) -> bool:
         if self.status_thread is None:
             return False
         try:
-            return self.status_thread.isRunning()
+            self.status_thread.isRunning()
+            # Keep ownership until the finished callback has cleared the refs.
+            # Starting a replacement earlier lets the old callback erase it.
+            return True
         except RuntimeError:
             self.status_thread = None
             self.status_worker = None
             return False
 
+    @Slot()
     def _clear_status_refs(self) -> None:
-        self.status_thread = None
+        sender = self.sender()
+        if isinstance(sender, QThread) and sender is not self.status_thread:
+            return
+        thread = self.status_thread
+        if thread is not None and not thread.wait(0):
+            # isRunning() becomes false before native/deferred QObject cleanup
+            # finishes. Releasing the worker then can race its deleteLater and
+            # corrupt the Windows heap. wait(0) verifies the native thread has
+            # actually joined without blocking the GUI.
+            QTimer.singleShot(1, self._clear_status_refs)
+            return
         self.status_worker = None
+        self.status_thread = None
+        if thread is not None:
+            thread.deleteLater()
+        if self._closing:
+            self._refresh_keys_pending.clear()
+            return
+        if self._refresh_keys_pending:
+            QTimer.singleShot(0, self._drain_status_refresh)
+        elif self._refresh_all_pending:
+            self._refresh_all_pending = False
+            QTimer.singleShot(0, self.refresh_device_states)
+
+    @Slot()
+    def _drain_status_refresh(self) -> None:
+        if self._closing or self._status_running():
+            return
+        # Resolve identities now: discovery can reorder or remove saved rows
+        # while another query is in flight. One queued read per device is enough.
+        keys = list(self._refresh_keys_pending)
+        self._refresh_keys_pending.clear()
+        by_key = {self._device_key(device): index for index, device in enumerate(self.devices)}
+        indexes = [by_key[key] for key in keys if key in by_key]
+        if self._refresh_all_pending:
+            self._refresh_all_pending = False
+            indexes.extend(index for index in range(len(self.devices)) if index not in indexes)
+        self._start_status_refresh(indexes)
+
+    @Slot(str)
+    def _on_status_error(self, message: str) -> None:
+        self.status_updated.emit(f"Status refresh error: {message}")
 
     def _ble_scan_running(self) -> bool:
         if self._ble_scan_thread is None:
             return False
         try:
-            return self._ble_scan_thread.isRunning()
+            self._ble_scan_thread.isRunning()
+            return True
         except RuntimeError:
-            self._clear_ble_scan_refs()
+            self._ble_scan_thread = None
+            self._ble_scan_worker = None
             return False
 
     @staticmethod
@@ -247,7 +339,9 @@ class DeviceController(QObject):
         )
 
     def find_devices(self) -> None:
-        """Search LAN and Bluetooth together, then refresh all known states."""
+        """Refresh linked accounts, scan locally, then update all saved states."""
+        if self._closing:
+            return
         if (
             self._combined_search_active
             or self._discovery_running()
@@ -257,7 +351,10 @@ class DeviceController(QObject):
             return
 
         has_network = self._local_network_available()
+        accounts = list({account["id"]: dict(account) for account in self.get_accounts()
+                         if account.get("id") and account.get("provider")}.values())
         self._combined_search_active = True
+        self._tuya_scan_results = []
         self._search_pending = {"bluetooth"}
         self._search_results = {
             "lan": {
@@ -272,16 +369,30 @@ class DeviceController(QObject):
                 "seen": 0,
                 "error": None,
             },
+            "accounts": {"available": not accounts, "total": len(accounts), "refreshed": 0,
+                         "found": 0, "errors": []},
         }
+        self._search_pending.update("account:" + account["id"] for account in accounts)
         if has_network:
             self._search_pending.add("lan")
+            self._search_pending.add("tuya")
+            self._search_results["tuya"] = {"available": None, "found": 0, "error": None}
 
         self.device_search_started.emit()
         self.status_updated.emit(
-            "Finding devices on the local network and over Bluetooth..."
+            "Finding devices and refreshing linked accounts…"
         )
 
+        for metadata in accounts:
+            def callback(value, error, account=metadata):
+                self._on_account_refresh_finished(account, value, error)
+            try:
+                self._account_refresh_tasks[metadata["id"]] = start_task(
+                    lambda account=metadata: self._list_account_devices(account), callback)
+            except Exception:
+                callback(None, "The account refresh could not start. Try Find Devices again.")
         if has_network:
+            self._tuya_task = start_task(self._scan_tuya_lan, self._on_tuya_scan_finished)
             if not self._start_lan_discovery(announce=False):
                 self._search_results["lan"].update(
                     {"available": False, "error": "Search could not be started"}
@@ -292,6 +403,36 @@ class DeviceController(QObject):
                 {"available": False, "error": "Search could not be started"}
             )
             self._finish_search_transport("bluetooth")
+
+    @staticmethod
+    def _list_account_devices(metadata: dict) -> list[dict]:
+        from ...accounts.manager import account_manager
+
+        client = account_manager.client_for({"account_id": metadata["id"]})
+        return account_manager.descriptors(metadata, client.list_devices())
+
+    def _on_account_refresh_finished(self, metadata, descriptors, error) -> None:
+        self._account_refresh_tasks.pop(metadata["id"], None)
+        if self._closing or not self._combined_search_active:
+            return
+        result = self._search_results["accounts"]
+        current = next((account for account in self.get_accounts() if account.get("id") == metadata["id"]), None)
+        if current is not None and not error:
+            try:
+                self.import_account_devices(current, descriptors or [])
+                if self._tuya_scan_results:
+                    self._on_tuya_scan_finished(self._tuya_scan_results, None)
+            except Exception:
+                error = "Could not save refreshed account devices. Try Find Devices again."
+            else:
+                result["refreshed"] += 1
+                result["found"] += len(descriptors or [])
+        if error and current is not None:
+            name = {"govee_account": "Govee", "govee_api": "Govee", "tuya_account": "Tuya",
+                    "lsc_account": "LSC", "tuya_qr": "Tuya / Smart Life", "tuya_project": "Tuya project"}.get(metadata["provider"], "Account")
+            result["errors"].append(f"{name}: {error}")
+        result["available"] = result["refreshed"] > 0 or not result["errors"]
+        self._finish_search_transport("account:" + metadata["id"])
 
     def discover_devices(self):
         """Start device discovery in background thread."""
@@ -307,7 +448,7 @@ class DeviceController(QObject):
         if announce:
             self.status_updated.emit("Searching the local network for devices...")
 
-        thread = QThread()
+        thread = QThread(self)
         worker = DeviceDiscoveryWorker()
         worker.moveToThread(thread)
 
@@ -315,14 +456,10 @@ class DeviceController(QObject):
         worker.finished.connect(self._on_discovery_finished)
         worker.error.connect(self._on_discovery_error)
 
-        # Cleanup chain: worker done (success or error) → thread.quit() → both
-        # objects are deleteLater'd → Python refs zeroed so a re-click sees
-        # a clean slate.
         worker.finished.connect(thread.quit)
         worker.error.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._clear_discovery_refs)
+        thread.finished.connect(self._clear_discovery_refs, Qt.ConnectionType.QueuedConnection)
 
         self.discovery_thread = thread
         self.discovery_worker = worker
@@ -341,6 +478,8 @@ class DeviceController(QObject):
             discovered_devices: List of discovered devices
             selected_index: Index of the selected device
         """
+        if self._closing:
+            return
         selected_key = None
         selected = self.get_selected_device()
         if selected:
@@ -348,13 +487,13 @@ class DeviceController(QObject):
 
         # LAN and Bluetooth search concurrently. Preserve a Bluetooth device
         # that may have been added while the LAN worker was still running.
-        merged_devices = [dict(device) for device in discovered_devices]
-        discovered_keys = {self._device_key(device) for device in merged_devices}
-        for device in self.devices:
-            key = self._device_key(device)
-            if key not in discovered_keys:
-                merged_devices.append(dict(device))
-                discovered_keys.add(key)
+        merged_devices = devices.merge_discovered_devices(self.devices, discovered_devices)
+        for device in merged_devices:
+            if device.get("account_id") and device.get("ip") and str(device.get("transport", "lan")) in ("", "lan", "govee_cloud", "govee_account"):
+                if is_cloud(device) and device.get("connection_preference") != "cloud":
+                    device["cloud_transport"] = device["transport"]
+                    device["transport"] = "lan"
+                device["local_transport"] = "lan"
 
         self.devices = merged_devices
         if selected_key:
@@ -370,6 +509,13 @@ class DeviceController(QObject):
             self.selected_device_index = min(
                 selected_index, max(0, len(self.devices) - 1)
             )
+
+        try:
+            settings = self._load_settings_safe()
+            settings.update({"devices": self.devices, "selectedDevice": self.selected_device_index})
+            devices.writeJSON(settings)
+        except Exception:
+            self.status_updated.emit("Could not save the device search results.")
 
         if self._combined_search_active:
             self._search_results["lan"].update(
@@ -416,7 +562,7 @@ class DeviceController(QObject):
             List of device dictionaries
         """
         try:
-            settings = devices.get_data()
+            settings = devices.get_data(refresh=False)
             self.devices = settings["devices"]
             self.selected_device_index = settings["selectedDevice"]
             return self.devices
@@ -425,7 +571,7 @@ class DeviceController(QObject):
             return []
 
     def _device_key(self, device: Dict[str, Any]) -> str:
-        return str(device.get("mac") or device.get("ip") or device.get("model") or "?")
+        return groups.device_key(device) or "?"
 
     def _default_state(self, device: Dict[str, Any]) -> Dict[str, Any]:
         is_ble = self._is_ble(device)
@@ -455,12 +601,27 @@ class DeviceController(QObject):
             self.device_states[key] = self._default_state(device)
         return dict(self.device_states[key])
 
+    def is_device_busy(self, device: Dict[str, Any], *, allowed_outputs=()) -> bool:
+        """Whether another output or queued command currently owns this light."""
+        key = self._device_key(device)
+        state = self.device_states.get(key, {})
+        output = state.get("active_output")
+        return key in self._command_tasks or bool(output and output not in allowed_outputs)
+
+    @Slot(int, dict)
     def _merge_device_state(self, index: int, updates: Dict[str, Any]) -> None:
+        if self._closing:
+            return
         device = self._device_at(index)
         if not device:
             return
         key = self._device_key(device)
+        if updates.get("device_key", key) != key:
+            return  # A removed/reordered device must not inherit an old worker's reply.
         state = self.device_states.get(key, self._default_state(device))
+        if (updates.get("query_started_at") is not None
+                and updates["query_started_at"] < (state.get("last_command_at") or 0)):
+            return  # A read begun before the last write cannot confirm it.
         for field, value in updates.items():
             if field == "color" and value is None and state.get("color") is not None:
                 continue
@@ -553,26 +714,64 @@ class DeviceController(QObject):
 
     def refresh_device_states(self) -> None:
         """Refresh current state for all known devices."""
+        if self._closing:
+            return
+        if self._status_running():
+            self._refresh_all_pending = True
+            return
         indexes = list(range(len(self.devices)))
         self._start_status_refresh(indexes)
 
     def refresh_device_state_at(self, index: int) -> None:
         """Refresh current state for one device."""
+        device = self._device_at(index)
+        if self._closing or not device or self._is_ble(device):
+            return
+        if self._status_running():
+            self._refresh_keys_pending[self._device_key(device)] = None
+            return
         self._start_status_refresh([index])
 
     def _schedule_status_refresh(self, index: int) -> None:
-        """Confirm an optimistic command with a few short LAN status retries."""
+        """Restart one identity-bound confirmation sequence after each write."""
         device = self._device_at(index)
-        if not device or self._is_ble(device):
+        if self._closing or not device or self._is_ble(device):
             return
-        for delay_ms in (250, 700, 1300):
-            QTimer.singleShot(
-                delay_ms,
-                lambda idx=index: self.refresh_device_state_at(idx),
-            )
+        key = self._device_key(device)
+        timer = self._confirmation_timers.get(key)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setProperty("deviceKey", key)
+            timer.timeout.connect(self._on_confirmation_timeout)
+            self._confirmation_timers[key] = timer
+        self._confirmation_delays[key] = [] if is_cloud(device) else [450, 600]
+        timer.start(1800 if is_cloud(device) else 250)
+
+    @Slot()
+    def _on_confirmation_timeout(self) -> None:
+        timer = self.sender()
+        if isinstance(timer, QTimer):
+            self._confirm_device_state(timer.property("deviceKey"))
+
+    def _confirm_device_state(self, key: str) -> None:
+        timer = self._confirmation_timers.get(key)
+        if timer is None:
+            return
+        index = next((i for i, device in enumerate(self.devices) if self._device_key(device) == key), -1)
+        if index >= 0 and not self._closing:
+            self.refresh_device_state_at(index)
+        delays = self._confirmation_delays.get(key, [])
+        if delays and index >= 0 and not self._closing:
+            timer.start(delays.pop(0))
+        else:
+            timer.stop()
+            self._confirmation_delays.pop(key, None)
+            self._confirmation_timers.pop(key, None)
+            timer.deleteLater()
 
     def _start_status_refresh(self, indexes: List[int]) -> None:
-        if self._status_running():
+        if self._closing or self._status_running():
             return
 
         indexed_devices = []
@@ -597,19 +796,16 @@ class DeviceController(QObject):
         if not indexed_devices:
             return
 
-        thread = QThread()
+        thread = QThread(self)
         worker = DeviceStatusWorker(indexed_devices)
         worker.moveToThread(thread)
 
-        thread.started.connect(worker.run)
-        worker.state_updated.connect(self._merge_device_state)
-        worker.error.connect(
-            lambda msg: self.status_updated.emit(f"Status refresh error: {msg}")
-        )
-        worker.finished.connect(thread.quit)
+        thread.started.connect(worker.run, Qt.ConnectionType.QueuedConnection)
+        worker.state_updated.connect(self._merge_device_state, Qt.ConnectionType.QueuedConnection)
+        worker.error.connect(self._on_status_error, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(thread.quit, Qt.ConnectionType.DirectConnection)
         thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._clear_status_refs)
+        thread.finished.connect(self._clear_status_refs, Qt.ConnectionType.QueuedConnection)
 
         self.status_thread = thread
         self.status_worker = worker
@@ -628,7 +824,7 @@ class DeviceController(QObject):
 
         # Update settings
         try:
-            settings = devices.get_data()
+            settings = devices.get_data(refresh=False)
             settings["selectedDevice"] = index
             devices.writeJSON(settings)
 
@@ -664,11 +860,11 @@ class DeviceController(QObject):
         reconnect per action). Govee devices open a short-lived LAN socket per
         action, matching the previous behavior.
         """
-        if self._is_ble(device):
+        if pool.is_pooled(device):
             action(pool.acquire(device))
-            return "BLE"
+            return "BLE" if self._is_ble(device) else "LAN"
 
-        if not self._can_try_lan(device):
+        if not self._can_try_lan(device) and not is_cloud(device):
             raise RuntimeError(
                 "Device has no LAN IP. Discover it on the same network or add it manually."
             )
@@ -680,7 +876,64 @@ class DeviceController(QObject):
                 adapter.close()
             except Exception:
                 pass
-        return "LAN"
+        return "Wi-Fi cloud" if is_cloud(device) else "LAN"
+
+    def _queue_control(self, index: int, method: str, args: tuple, updates: dict, output=None) -> None:
+        device = self._device_at(index)
+        if not device or self._closing:
+            return
+        flag = {"set_power": "supports_power", "set_brightness": "supports_brightness",
+                "set_color": "supports_color", "set_color_temperature": "supports_white"}.get(method)
+        if flag and not getattr(capabilities_for_device(device), flag):
+            self.status_updated.emit("This device does not support that control.")
+            return
+        key = self._device_key(device)
+        request = (dict(device), method, args, updates, output)
+        if method == "set_power":
+            self._requested_power[key] = bool(args[0])
+        if key in self._command_tasks:
+            pending = self._command_queue.setdefault(key, [])
+            # Keep the final intent for each control instead of replaying a
+            # long burst of obsolete toggles or slider positions.
+            pending[:] = [r for r in pending if r[1] != method]
+            pending.append(request)
+            return
+        self._start_control(key, request)
+
+    def _start_control(self, key: str, request) -> None:
+        device, method, args, updates, output = request
+        def action():
+            try:
+                transport = self._run_adapter(device, lambda adapter: getattr(adapter, method)(*args))
+                return {"key": key, "transport": transport, "updates": updates, "output": output, "error": None}
+            except Exception as exc:
+                from ...accounts.errors import AccountError
+                message = str(exc) if isinstance(exc, AccountError) or not is_cloud(device) else "The account could not complete this command. Reconnect the account and try again."
+                return {"key": key, "error": message}
+        self._command_tasks[key] = start_task(action, self._on_control_finished)
+
+    @Slot(object, object)
+    def _on_control_finished(self, result, error) -> None:
+        if result is None:
+            self.status_updated.emit(error or "Device control failed.")
+            return
+        key = result["key"]
+        self._command_tasks.pop(key, None)
+        index = next((i for i, d in enumerate(self.devices) if self._device_key(d) == key), -1)
+        if index >= 0 and not self._closing:
+            if result.get("error"):
+                self._merge_device_state(index, {"last_error": result["error"], "stale": True, "status_source": "error"})
+                self.status_updated.emit(result["error"])
+            else:
+                self._record_command_state(index, result["updates"], output=result.get("output"))
+                self.status_updated.emit(f"{self.devices[index].get('name') or self.devices[index].get('model', 'Device')}: command sent via {result['transport']}")
+                self._schedule_status_refresh(index)
+        pending = self._command_queue.get(key, [])
+        if pending and index >= 0 and not self._closing:
+            self._start_control(key, pending.pop(0))
+        else:
+            self._command_queue.pop(key, None)
+            self._requested_power.pop(key, None)
 
     def _send_turn(self, device: Dict[str, Any], on: bool) -> str:
         return self._run_adapter(device, lambda adapter: adapter.set_power(on))
@@ -700,43 +953,26 @@ class DeviceController(QObject):
 
     def get_capabilities_at(self, index: int):
         """Return the SKU capabilities for a device, or None."""
-        from ...sku_catalog import capabilities_for
-
         device = self._device_at(index)
         if not device:
             return None
-        return capabilities_for(device.get("model") or device.get("sku"))
+        return capabilities_for_device(device)
 
     def supports_color_temp_at(self, index: int) -> bool:
         cap = self.get_capabilities_at(index)
-        return bool(cap and cap.color_temp_max > cap.color_temp_min > 0)
+        return bool(cap and cap.supports_white and cap.color_temp_max > cap.color_temp_min > 0)
 
     def set_color_temperature_at(self, index: int, kelvin: int) -> None:
         """Set a device's tunable-white color temperature (Kelvin)."""
         device = self._device_at(index)
         if not device:
             return
-        try:
-            cap = self.get_capabilities_at(index)
-            if cap and cap.color_temp_max > 0:
-                kelvin = max(cap.color_temp_min, min(cap.color_temp_max, int(kelvin)))
-            transport = self._send_color_temp(device, int(kelvin))
-            from ...utils.colors import kelvin_to_rgb
-
-            self._record_command_state(
-                index,
-                {
-                    "color": kelvin_to_rgb(int(kelvin)),
-                    "color_temp": int(kelvin),
-                },
-                output=f"White {int(kelvin)}K",
-            )
-            self.status_updated.emit(
-                f"{device.get('model', 'Device')}: white {int(kelvin)}K via {transport}"
-            )
-            self._schedule_status_refresh(index)
-        except Exception as e:
-            self.status_updated.emit(f"Error: {str(e)}")
+        cap = self.get_capabilities_at(index)
+        if cap and cap.color_temp_max > 0:
+            kelvin = max(cap.color_temp_min, min(cap.color_temp_max, int(kelvin)))
+        from ...utils.colors import kelvin_to_rgb
+        self._queue_control(index, "set_color_temperature", (int(kelvin),),
+                            {"color": kelvin_to_rgb(int(kelvin)), "color_temp": int(kelvin)}, f"White {int(kelvin)}K")
 
     def add_device_manually(self, ip: str, model: str = "Manual Device",
                            mac: str = None, port: int = 4003) -> bool:
@@ -754,8 +990,8 @@ class DeviceController(QObject):
         try:
             # Validate IP address
             try:
-                socket.inet_aton(ip)
-            except socket.error:
+                ipaddress.IPv4Address(ip)
+            except ipaddress.AddressValueError:
                 self.status_updated.emit(f"Invalid IP address: {ip}")
                 return False
 
@@ -779,17 +1015,15 @@ class DeviceController(QObject):
                 "manual": True
             }
 
-            # Add to list
-            self.devices.append(new_device)
-
             # Save settings
             try:
-                settings = devices.get_data()
+                settings = devices.get_data(refresh=False)
             except Exception:
                 settings = {"devices": [], "selectedDevice": 0, "time": 0}
 
-            settings["devices"] = self.devices
+            settings["devices"] = self.devices + [new_device]
             devices.writeJSON(settings)
+            self.devices = settings["devices"]
 
             # Emit signals
             self.device_added.emit(new_device)
@@ -833,14 +1067,13 @@ class DeviceController(QObject):
                 "matrix_size": matrix_size or "32x32",
                 "manual": True,
             }
-            self.devices.append(new_device)
-
             try:
-                settings = devices.get_data()
+                settings = devices.get_data(refresh=False)
             except Exception:
                 settings = {"devices": [], "selectedDevice": 0, "time": 0}
-            settings["devices"] = self.devices
+            settings["devices"] = self.devices + [new_device]
             devices.writeJSON(settings)
+            self.devices = settings["devices"]
 
             self.device_added.emit(new_device)
             self.devices_discovered.emit(self.devices)
@@ -860,6 +1093,7 @@ class DeviceController(QObject):
         local_key: str,
         model: str = "LSC / Tuya Light",
         protocol_version: str = "3.3",
+        *, dp_schema: str = "v2", remember: bool = True,
     ) -> bool:
         """Add a Tuya / LSC Smart Connect WiFi light for local control."""
         try:
@@ -872,6 +1106,18 @@ class DeviceController(QObject):
                 )
                 return False
 
+            try:
+                ipaddress.IPv4Address(ip)
+            except ipaddress.AddressValueError:
+                self.status_updated.emit("Enter a valid IPv4 address.")
+                return False
+            if len(local_key.encode("utf-8")) != 16 or protocol_version not in ("3.1", "3.2", "3.3", "3.4", "3.5"):
+                self.status_updated.emit("Tuya requires a 16-byte local key and a supported protocol version.")
+                return False
+            if dp_schema not in ("v1", "v2"):
+                self.status_updated.emit("Choose the modern or legacy light data point schema.")
+                return False
+
             for device in self.devices:
                 if device.get("device_id") == device_id or device.get("ip") == ip:
                     self.status_updated.emit("Device already exists")
@@ -880,20 +1126,24 @@ class DeviceController(QObject):
             new_device = {
                 "ip": ip,
                 "device_id": device_id,
+                "mac": f"tuya:{device_id}",
                 "local_key": local_key,
                 "model": model or "LSC / Tuya Light",
                 "transport": "tuya",
                 "protocol_version": protocol_version or "3.3",
+                "dp_schema": dp_schema,
                 "manual": True,
             }
-            self.devices.append(new_device)
+            from ...accounts.secrets import protect_device
+            new_device = protect_device(new_device, remember=remember)
 
             try:
-                settings = devices.get_data()
+                settings = devices.get_data(refresh=False)
             except Exception:
                 settings = {"devices": [], "selectedDevice": 0, "time": 0}
-            settings["devices"] = self.devices
+            settings["devices"] = self.devices + [new_device]
             devices.writeJSON(settings)
+            self.devices = settings["devices"]
 
             self.device_added.emit(new_device)
             self.devices_discovered.emit(self.devices)
@@ -923,7 +1173,7 @@ class DeviceController(QObject):
         if announce:
             self.status_updated.emit("Searching for nearby Bluetooth devices...")
 
-        thread = QThread()
+        thread = QThread(self)
         worker = BleScanWorker()
         worker.moveToThread(thread)
 
@@ -934,17 +1184,16 @@ class DeviceController(QObject):
         worker.finished.connect(thread.quit)
         worker.error.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._clear_ble_scan_refs)
+        thread.finished.connect(self._clear_ble_scan_refs, Qt.ConnectionType.QueuedConnection)
 
         self._ble_scan_thread = thread
         self._ble_scan_worker = worker
         thread.start()
         return True
 
+    @Slot()
     def _clear_ble_scan_refs(self) -> None:
-        self._ble_scan_thread = None
-        self._ble_scan_worker = None
+        self._release_worker_thread("_ble_scan_thread", "_ble_scan_worker", self._clear_ble_scan_refs)
 
     def _on_ble_scan_error(self, message: str) -> None:
         if self._combined_search_active:
@@ -958,6 +1207,8 @@ class DeviceController(QObject):
             self._finish_search_transport("bluetooth")
 
     def _on_ble_scan_finished(self, found: List[Dict[str, Any]]) -> None:
+        if self._closing:
+            return
         likely = [d for d in found if d.get("likely")]
         added = 0
         for entry in likely:
@@ -1061,25 +1312,31 @@ class DeviceController(QObject):
 
         lan = summary.get("lan", {})
         bluetooth = summary.get("bluetooth", {})
+        tuya = summary.get("tuya", {})
+        accounts = summary.get("accounts", {})
         issues = []
         if not lan.get("available"):
             issues.append("local network unavailable")
         if not bluetooth.get("available"):
             issues.append("Bluetooth unavailable")
+        if tuya and not tuya.get("available"):
+            issues.append("Tuya LAN search unavailable")
+        if accounts.get("errors"):
+            issues.append("some accounts could not refresh; open Accounts to reconnect if needed")
 
-        found = int(lan.get("found", 0)) + int(bluetooth.get("found", 0))
+        found = int(lan.get("found", 0)) + int(bluetooth.get("found", 0)) + int(tuya.get("found", 0)) + int(accounts.get("found", 0))
         if issues:
             self.status_updated.emit(
-                "Device search complete — " + "; ".join(issues) + "."
+                "Device search complete. " + "; ".join(issues) + ". Updating saved device readings."
             )
         elif found:
             self.status_updated.emit(
-                f"Device search complete — found {found} supported "
-                f"device{'s' if found != 1 else ''}."
+                f"Device search complete. Updating {len(self.devices)} saved "
+                f"device{'s' if len(self.devices) != 1 else ''}."
             )
         else:
             self.status_updated.emit(
-                "Device search complete — no new supported devices found."
+                "Device search complete. No new supported devices found. Updating saved device readings."
             )
         self.refresh_device_states()
 
@@ -1096,24 +1353,32 @@ class DeviceController(QObject):
             if not (0 <= index < len(self.devices)):
                 return False
 
-            removed = self.devices.pop(index)
-            pool.close(removed)  # drop any persistent BLE connection
+            removed = self.devices[index]
+            if self.get_device_state_at(index).get("active_output"):
+                self.status_updated.emit("Stop this device's active output before removing it.")
+                return False
+            updated = self.devices[:index] + self.devices[index + 1:]
+            selected_index = self.selected_device_index
 
             # Adjust selected index
-            if self.selected_device_index >= len(self.devices):
-                self.selected_device_index = max(0, len(self.devices) - 1)
-            elif self.selected_device_index > index:
-                self.selected_device_index -= 1
+            if selected_index >= len(updated):
+                selected_index = max(0, len(updated) - 1)
+            elif selected_index > index:
+                selected_index -= 1
 
             # Save settings
             try:
-                settings = devices.get_data()
+                settings = devices.get_data(refresh=False)
             except Exception:
                 settings = {"devices": [], "selectedDevice": 0, "time": 0}
 
-            settings["devices"] = self.devices
-            settings["selectedDevice"] = self.selected_device_index
+            settings["devices"] = updated
+            settings["selectedDevice"] = selected_index
             devices.writeJSON(settings)
+            self.devices = updated
+            self.selected_device_index = selected_index
+            self._command_queue.pop(self._device_key(removed), None)
+            pool.close(removed)
 
             # Emit signals
             self.device_removed.emit(index)
@@ -1137,7 +1402,15 @@ class DeviceController(QObject):
         if not device:
             return False
 
+        if str(device.get("transport", "lan")).lower() != "lan" or not self.get_capabilities_at(index).supports_segments:
+            self.status_updated.emit("This device does not support configurable LED zones.")
+            return False
+        if self.is_device_busy(device):
+            self.status_updated.emit("Finish the current output before changing this device's zone count.")
+            return False
+
         try:
+            device = dict(device)
             if zone_count is None:
                 device.pop("segment_count_override", None)
                 message = f"{device.get('model', 'Device')}: using default zone count"
@@ -1148,15 +1421,17 @@ class DeviceController(QObject):
                 device["segment_count_override"] = count
                 message = f"{device.get('model', 'Device')}: zone count set to {count}"
 
-            self.devices[index] = device
+            updated = list(self.devices)
+            updated[index] = device
             try:
-                settings = devices.get_data()
+                settings = devices.get_data(refresh=False)
             except Exception:
                 settings = {"devices": [], "selectedDevice": self.selected_device_index, "time": 0}
 
-            settings["devices"] = self.devices
+            settings["devices"] = updated
             settings["selectedDevice"] = self.selected_device_index
             devices.writeJSON(settings)
+            self.devices = updated
 
             self.device_updated.emit(index, dict(device))
             self.devices_discovered.emit(self.devices)
@@ -1175,26 +1450,7 @@ class DeviceController(QObject):
         Args:
             on: True to turn on, False to turn off
         """
-        try:
-            device = self.get_selected_device()
-            if not device:
-                self.status_updated.emit("No device selected")
-                return
-
-            transport = self._send_turn(device, on)
-            self._record_command_state(
-                self.selected_device_index,
-                {
-                    "power_on": on,
-                },
-                output="Off" if not on else "On",
-            )
-            self.status_updated.emit(
-                f"Device turned {'on' if on else 'off'} via {transport}"
-            )
-            self._schedule_status_refresh(self.selected_device_index)
-        except Exception as e:
-            self.status_updated.emit(f"Error: {str(e)}")
+        self.turn_on_off_at(self.selected_device_index, on)
 
     def set_razer_mode(self, on: bool = True):
         """Set the device to Razer mode.
@@ -1231,24 +1487,7 @@ class DeviceController(QObject):
             g: Green component (0-255)
             b: Blue component (0-255)
         """
-        try:
-            device = self.get_selected_device()
-            if not device:
-                self.status_updated.emit("No device selected")
-                return
-
-            transport = self._send_color(device, r, g, b)
-            self._record_command_state(
-                self.selected_device_index,
-                {
-                    "color": (r, g, b),
-                },
-                output=f"#{r:02X}{g:02X}{b:02X}",
-            )
-            self.status_updated.emit(f"Set color to ({r}, {g}, {b}) via {transport}")
-            self._schedule_status_refresh(self.selected_device_index)
-        except Exception as e:
-            self.status_updated.emit(f"Error: {str(e)}")
+        self.set_color_at(self.selected_device_index, r, g, b)
 
     def set_device_brightness(self, brightness: int):
         """Set the brightness of the selected device.
@@ -1256,24 +1495,7 @@ class DeviceController(QObject):
         Args:
             brightness: Brightness value (0-100)
         """
-        try:
-            device = self.get_selected_device()
-            if not device:
-                self.status_updated.emit("No device selected")
-                return
-
-            bounded = max(0, min(100, brightness))
-            transport = self._send_brightness(device, bounded)
-            self._record_command_state(
-                self.selected_device_index,
-                {
-                    "brightness": bounded,
-                },
-            )
-            self.status_updated.emit(f"Set brightness to {bounded}% via {transport}")
-            self._schedule_status_refresh(self.selected_device_index)
-        except Exception as e:
-            self.status_updated.emit(f"Error: {str(e)}")
+        self.set_brightness_at(self.selected_device_index, brightness)
 
     # --- Per-index variants (used by multi-device card UI) ------------------
     # These act on a specific device without changing the "primary" selection.
@@ -1284,69 +1506,141 @@ class DeviceController(QObject):
         return None
 
     def turn_on_off_at(self, index: int, on: bool = True) -> None:
-        device = self._device_at(index)
-        if not device:
-            return
-        try:
-            transport = self._send_turn(device, on)
-            self._record_command_state(
-                index,
-                {
-                    "power_on": on,
-                },
-                output="Off" if not on else "On",
-            )
-            self.status_updated.emit(
-                f"{device.get('model', 'Device')} turned {'on' if on else 'off'} via {transport}"
-            )
-            self._schedule_status_refresh(index)
-        except Exception as e:
-            self.status_updated.emit(f"Error: {str(e)}")
+        self._queue_control(index, "set_power", (bool(on),), {"power_on": bool(on)}, "On" if on else "Off")
 
     def toggle_power_at(self, index: int) -> None:
         state = self.get_device_state_at(index)
-        current = state.get("power_on")
+        current = self._requested_power.get(state.get("device_key"), state.get("power_on"))
         self.turn_on_off_at(index, True if current is None else not bool(current))
 
     def set_color_at(self, index: int, r: int, g: int, b: int) -> None:
-        device = self._device_at(index)
-        if not device:
-            return
-        try:
-            transport = self._send_color(device, r, g, b)
-            self._record_command_state(
-                index,
-                {
-                    "color": (r, g, b),
-                },
-                output=f"#{r:02X}{g:02X}{b:02X}",
-            )
-            self.status_updated.emit(
-                f"{device.get('model', 'Device')}: color ({r}, {g}, {b}) via {transport}"
-            )
-            self._schedule_status_refresh(index)
-        except Exception as e:
-            self.status_updated.emit(f"Error: {str(e)}")
+        r, g, b = (max(0, min(255, int(c))) for c in (r, g, b))
+        self._queue_control(index, "set_color", (r, g, b), {"color": (r, g, b), "color_temp": 0}, f"#{r:02X}{g:02X}{b:02X}")
 
     def set_brightness_at(self, index: int, brightness: int) -> None:
+        bounded = max(0, min(100, int(brightness)))
+        self._queue_control(index, "set_brightness", (bounded,), {"brightness": bounded})
+
+    # --- Vendor account imports / connection preference -------------------
+
+    def get_accounts(self) -> list[dict]:
+        return self._load_settings_safe().get("accounts", [])
+
+    def import_account_devices(self, metadata: dict, imported: list[dict]) -> None:
+        settings = self._load_settings_safe()
+        merged = devices.merge_discovered_devices(self.devices, imported)
+        for device in merged:
+            previous = next((d for d in self.devices if self._device_key(d) == self._device_key(device)), None)
+            was_imported = any(set(devices._device_keys(device)) & set(devices._device_keys(raw)) for raw in imported)
+            if was_imported and previous and previous.get("ip") and not is_cloud(previous):
+                device["cloud_transport"] = device["transport"]
+                device["transport"] = previous.get("transport", "lan")
+                device["local_transport"] = device["transport"]
+            if was_imported and previous and previous.get("connection_preference") == "local" and previous.get("local_transport"):
+                device["cloud_transport"] = next(raw["transport"] for raw in imported if set(devices._device_keys(device)) & set(devices._device_keys(raw)))
+                device["transport"] = previous["local_transport"]
+        accounts = [a for a in settings.get("accounts", []) if a.get("id") != metadata["id"]]
+        accounts.append(dict(metadata))
+        settings.update({"devices": merged, "accounts": accounts, "selectedDevice": self.selected_device_index})
+        devices.writeJSON(settings)
+        self.devices = merged
+        self.devices_discovered.emit(self.devices)
+        self.status_updated.emit(f"Imported {len(imported)} account device(s)")
+
+    def remove_account(self, identity: str) -> None:
+        settings = self._load_settings_safe()
+        settings["accounts"] = [a for a in settings.get("accounts", []) if a.get("id") != identity]
+        updated = [dict(d) for d in self.devices]
+        for device in updated:
+            if device.get("account_id") == identity:
+                device.pop("account_id", None)
+        settings["devices"] = updated
+        devices.writeJSON(settings)
+        self.devices = updated
+        self.devices_discovered.emit(self.devices)
+
+    def set_connection_at(self, index: int, transport: str) -> None:
         device = self._device_at(index)
-        if not device:
+        if not device or transport not in (device.get("local_transport"), device.get("cloud_transport")):
             return
+        if self.get_device_state_at(index).get("active_output") or self._device_key(device) in self._command_tasks:
+            self.status_updated.emit("Finish the current output before changing this device's connection.")
+            self.device_updated.emit(index, dict(device))
+            return
+        updated = [dict(d) for d in self.devices]
+        updated[index]["transport"] = transport
+        updated[index]["connection_preference"] = "cloud" if is_cloud(updated[index]) else "local"
+        settings = self._load_settings_safe()
+        settings["devices"] = updated
+        devices.writeJSON(settings)
+        pool.close(device)
+        self.devices = updated
+        self.devices_discovered.emit(self.devices)
+        self.refresh_device_state_at(index)
+
+    @staticmethod
+    def _scan_tuya_lan() -> list[dict]:
+        import tinytuya
+        found = tinytuya.deviceScan(verbose=False, maxretry=3, poll=False)
+        return [{"device_id": d.get("gwId") or d.get("id"), "ip": d.get("ip"),
+                 "protocol_version": str(d.get("version", "3.3"))} for d in found.values()
+                if isinstance(d, dict) and (d.get("gwId") or d.get("id")) and d.get("ip")]
+
+    @Slot(object, object)
+    def _on_tuya_scan_finished(self, found, error) -> None:
+        if self._closing:
+            return
+        found = found or []
+        if self._combined_search_active:
+            self._tuya_scan_results = list(found)
+        updated = [dict(d) for d in self.devices]
+        matched = 0
+        for raw in found:
+            for index, device in enumerate(updated):
+                if device.get("device_id") != raw["device_id"] or not device.get("local_supported", True):
+                    continue  # Broadcasts contain no key; only enrich known devices.
+                matched += 1
+                if self.get_device_state_at(index).get("active_output") or self._device_key(device) in self._command_tasks:
+                    continue
+                pool.close(device)
+                device.update(raw)
+                if device.get("local_key_ref") or device.get("local_key"):
+                    device["local_transport"] = "tuya"
+                    if is_cloud(device) and device.get("connection_preference") != "cloud":
+                        device["cloud_transport"] = device["transport"]
+                        device["transport"] = "tuya"
         try:
-            bounded = max(0, min(100, brightness))
-            transport = self._send_brightness(device, bounded)
-            self._record_command_state(
-                index,
-                {
-                    "brightness": bounded,
-                },
-            )
-            self.status_updated.emit(
-                f"{device.get('model', 'Device')}: brightness {bounded}% via {transport}"
-            )
-            self._schedule_status_refresh(index)
-        except Exception as e:
-            self.status_updated.emit(f"Error: {str(e)}")
+            if matched:
+                settings = self._load_settings_safe()
+                settings["devices"] = updated
+                devices.writeJSON(settings)
+                self.devices = updated
+                self.devices_discovered.emit(self.devices)
+        except Exception:
+            error = "Could not save the local Tuya connections."
+        if self._combined_search_active:
+            self._search_results["tuya"] = {"available": not bool(error), "found": matched, "seen": len(found), "error": error}
+            self._finish_search_transport("tuya")
+
+    def shutdown(self) -> bool:
+        """Request cancellation, retaining running QThreads until they finish."""
+        self._closing = True
+        self._command_queue.clear()
+        for timer in self._confirmation_timers.values():
+            timer.stop()
+            timer.deleteLater()
+        self._confirmation_timers.clear()
+        self._confirmation_delays.clear()
+        running = False
+        for thread in (self.discovery_thread, self.status_thread, self._ble_scan_thread):
+            if thread is not None:
+                try:
+                    thread.requestInterruption()
+                    thread.quit()
+                    running = not thread.wait(0) or running
+                except RuntimeError:
+                    pass
+        return not running
 
     # --- Sync groups -------------------------------------------------------
 
@@ -1371,7 +1665,8 @@ class DeviceController(QObject):
     def save_group(self, name: str, indices: List[int]) -> bool:
         """Create or replace a group from the given device indices."""
         name = (name or "").strip()
-        members = [self.devices[i] for i in indices if 0 <= i < len(self.devices)]
+        members = [self.devices[i] for i in indices if 0 <= i < len(self.devices)
+                   and capabilities_for_device(self.devices[i]).supports_streaming]
         if not name or not members:
             self.status_updated.emit("Group needs a name and at least one device.")
             return False
@@ -1419,10 +1714,6 @@ class DeviceController(QObject):
 
     def __del__(self):
         """Clean up resources when the controller is deleted."""
-        try:
-            pool.close_all()
-        except Exception:
-            pass
         for thread_attr in (
             "status_thread",
             "discovery_thread",

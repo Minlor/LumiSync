@@ -10,7 +10,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from threading import Thread
+from threading import Thread, Event
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -62,21 +62,7 @@ def _start_sync(mode: str) -> int:
             print(f"{Fore.RED}No devices found.")
             return 1
 
-        if mode == "monitor":
-            from .sync import monitor as sync
-        else:
-            from .sync import music as sync
-
-        thread = Thread(
-            daemon=True,
-            target=sync.start,
-            name="sync",
-            kwargs={"server": server, "device": devices[0]},
-        )
-        thread.start()
-        logger.info(f"Started {mode} sync")
-        input(f"{Fore.GREEN}{mode.capitalize()} sync running. Press Enter to exit...")
-        return 0
+        return _run_cli_sync(server, devices[0], mode)
     except Exception as e:
         logger.critical(f"Sync error: {e}", exc_info=True)
         return 1
@@ -86,6 +72,31 @@ def _start_sync(mode: str) -> int:
                 server.close()
             except Exception:
                 pass
+
+
+def _run_cli_sync(server, device, mode: str) -> int:
+    from .sync import monitor, music
+    sync = monitor if mode == "monitor" else music
+    stop_event = Event()
+    failures = []
+    def run():
+        try:
+            sync.start(server, device, stop_event)
+        except Exception as exc:
+            failures.append(exc)
+            logger.error("CLI sync failed: %s", exc)
+            print(f"Sync failed: {exc}")
+    thread = Thread(daemon=True, target=run, name="sync")
+    thread.start()
+    try:
+        input(f"{Fore.GREEN}{mode.capitalize()} sync running. Press Enter to exit...")
+    finally:
+        stop_event.set()
+        thread.join(35)  # Bound connection/write/disconnect completion before exit.
+    if thread.is_alive():
+        logger.error("CLI sync is still waiting for a device operation to finish")
+        return 1
+    return 1 if failures else 0
 
 
 def _run_tests() -> int:
@@ -113,6 +124,60 @@ def _run_tests() -> int:
     return 1
 
 
+def _check_integrations() -> int:
+    """Exercise frozen-package dependencies without login or device traffic."""
+    import importlib
+    try:
+        for module in ("requests", "certifi", "keyring", "qrcode", "tuya_sharing", "paho.mqtt.client",
+                       "cryptography.hazmat.primitives.serialization.pkcs12", "bleak", "tinytuya"):
+            importlib.import_module(module)
+        import certifi
+        import qrcode
+        from .accounts.errors import AccountError
+        from .accounts.secrets import CredentialVault
+        from .accounts.tuya import TuyaSharingClient
+        from .accounts.tuya_mobile import TuyaMobileClient, mobile_signature
+        from cryptography.hazmat.primitives.asymmetric import padding, rsa
+        import cryptography.x509  # noqa: F401 — the APK certificate reader requires this in frozen builds.
+        if not Path(certifi.where()).is_file():
+            raise RuntimeError("TLS certificate bundle is missing")
+        qrcode.make("lumisync-integration-check")
+        client = TuyaSharingClient()
+        client.close()
+        for brand in ("lsc", "tuya"):
+            client = TuyaMobileClient(brand)
+            client.close()
+        if len(mobile_signature({"a": "offline.check"}, "fixture-key")) != 64:
+            raise RuntimeError("Mobile request signer failed")
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        ciphertext = key.public_key().encrypt(b"offline-integration-check", padding.PKCS1v15())
+        if key.decrypt(ciphertext, padding.PKCS1v15()) != b"offline-integration-check":
+            raise RuntimeError("Mobile password encryption failed")
+        try:
+            backend = type(CredentialVault._backend()).__name__
+        except AccountError:
+            backend = "unavailable; session-only connections supported"
+        print(f"Vendor integration dependencies OK. Credential store: {backend}")
+        return 0
+    except Exception as exc:
+        print(f"Vendor integration dependency check failed: {type(exc).__name__}")
+        return 1
+
+
+def _check_gui() -> int:
+    """Render the actual main window without using personal device settings."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from .gui.diagnostics import check_gui_startup
+        check_gui_startup()
+        print("GUI startup OK. Main window rendered and closed with isolated settings.")
+        return 0
+    except Exception:
+        logger.error("GUI startup check failed", exc_info=True)
+        print("GUI startup check failed. See the LumiSync logs for details.")
+        return 1
+
+
 def _run_cli_menu() -> int:
     """The legacy interactive terminal menu (--cli)."""
     server = None
@@ -131,19 +196,7 @@ def _run_cli_menu() -> int:
                 if not devices:
                     print(f"{Fore.RED}No devices found.")
                     return 1
-                if mode == "1":
-                    from .sync import monitor as sync
-                else:
-                    from .sync import music as sync
-                thread = Thread(
-                    daemon=True,
-                    target=sync.start,
-                    name="sync",
-                    kwargs={"server": server, "device": devices[0]},
-                )
-                thread.start()
-                input("Press Enter to exit...")
-                return 0
+                return _run_cli_sync(server, devices[0], "monitor" if mode == "1" else "music")
             case "3":
                 # Close discovery server before handing off to the GUI
                 if server is not None:
@@ -172,13 +225,15 @@ def _run_cli_menu() -> int:
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="lumisync",
-        description="Sync Govee lights with your screen and audio. Default: launch GUI.",
+        description="Sync smart lights and pixel panels with your screen and audio. Default: launch GUI.",
     )
     g = p.add_mutually_exclusive_group()
     g.add_argument("--cli", "-c", action="store_true", help="Open the interactive terminal menu instead of the GUI.")
     g.add_argument("--monitor", action="store_true", help="Start monitor sync directly (headless).")
     g.add_argument("--music", action="store_true", help="Start music sync directly (headless).")
     g.add_argument("--test", action="store_true", help="Run the test selector.")
+    g.add_argument("--check-integrations", action="store_true", help="Check vendor integration dependencies offline.")
+    g.add_argument("--check-gui", action="store_true", help="Check GUI startup with isolated settings and no device connections.")
     return p
 
 
@@ -196,6 +251,10 @@ def main() -> None:
         sys.exit(_start_sync("music"))
     if args.test:
         sys.exit(_run_tests())
+    if args.check_integrations:
+        sys.exit(_check_integrations())
+    if args.check_gui:
+        sys.exit(_check_gui())
 
     # Default: GUI. No discovery here — the GUI handles its own.
     sys.exit(_launch_gui())
