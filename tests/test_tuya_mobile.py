@@ -20,7 +20,8 @@ from cryptography.x509.oid import NameOID
 
 from lumisync.accounts.errors import AccountError
 from lumisync.accounts.manager import AccountManager, make_client
-from lumisync.accounts.mobile_profile import _dex_config, _embedded_key, _manifest, extract_profile
+from lumisync.accounts.mobile_app_profiles import builtin_profile
+from lumisync.accounts.mobile_profile import _dex_config, _embedded_key, _manifest, extract_profile, profile_for
 from lumisync.accounts.tuya_mobile import TuyaMobileClient, _endpoint, mobile_signature
 
 
@@ -43,6 +44,35 @@ SCHEMA = [{"id": dp, "code": code, "mode": "rw", "property": prop} for dp, code,
     (22, "bright_value_v2", {"type": "value", "min": 10, "max": 1000}),
     (23, "temp_value_v2", {"type": "value", "min": 0, "max": 1000}), (24, "colour_data_v2", {"type": "string"}),
 )]
+
+
+class BuiltinProfileTests(unittest.TestCase):
+    def test_builtin_configuration_is_independent_and_contains_no_account_fields(self):
+        for brand, package in (("lsc", "com.lscsmartconnection.smart"), ("tuya", "com.tuya.smart")):
+            first = builtin_profile(brand)
+            self.assertEqual(first["package"], package)
+            self.assertEqual(set(first), {"package", "app_key", "signing_key", "ch_key", "app_version", "ttid"})
+            first["signing_key"] = "changed-by-one-client"
+            self.assertNotEqual(builtin_profile(brand)["signing_key"], first["signing_key"])
+
+    def test_missing_vault_and_legacy_automatic_cache_use_current_builtin_configuration(self):
+        for saved in ({}, profile("lsc"), None, {"source": "package", "package": "com.lscsmartconnection.smart"},
+                      {**profile("tuya"), "source": "package"}):
+            with self.subTest(saved=saved), patch("lumisync.accounts.mobile_profile.vault.get", return_value=saved):
+                self.assertEqual(profile_for("lsc"), builtin_profile("lsc"))
+        with patch("lumisync.accounts.mobile_profile.vault.get", side_effect=AccountError("Vault unavailable")):
+            self.assertEqual(profile_for("tuya"), builtin_profile("tuya"))
+
+    def test_explicit_optional_overrides_are_remembered_for_the_matching_brand(self):
+        override = {**profile("lsc"), "source": "package"}
+        with patch("lumisync.accounts.mobile_profile.extract_profile", return_value=profile("lsc")) as extract:
+            self.assertEqual(profile_for("lsc", "custom.apk"), override)
+            extract.assert_called_once_with("custom.apk", "lsc")
+        with patch("lumisync.accounts.mobile_profile.vault.get", return_value=override):
+            self.assertEqual(profile_for("lsc"), override)
+            self.assertEqual(profile_for("tuya"), builtin_profile("tuya"))
+        with self.assertRaises(AccountError):
+            profile_for("unsupported")
 
 
 class MobileTests(unittest.TestCase):
@@ -87,6 +117,28 @@ class MobileTests(unittest.TestCase):
             self.assertNotIn("password", client.credentials)
             self.assertNotIn("passwd", client.credentials)
             self.assertNotIn("token", client.credentials)
+
+    def test_fresh_password_login_works_for_both_brands_without_package_or_saved_profile(self):
+        for brand in ("lsc", "tuya"):
+            with self.subTest(brand=brand):
+                session = Mock()
+                session.request.side_effect = [reply({}), reply(self.token()), reply({"sid": "account-session"})]
+                client = TuyaMobileClient(brand, session=session)
+                with patch("lumisync.accounts.mobile_profile.vault.get", return_value={}), \
+                        patch("lumisync.accounts.mobile_profile.extract_profile", side_effect=AssertionError("No APK access")), \
+                        patch.object(Path, "glob", side_effect=AssertionError("No Downloads search")):
+                    client.login("me@example.com", "fixture-password", "48")
+                calls = session.request.call_args_list
+                self.assertEqual(calls[0].kwargs["data"]["a"], "smartlife.p.time.get")
+                self.assertEqual(calls[1].kwargs["data"]["a"], "thing.m.user.username.token.get")
+                self.assertEqual(calls[2].kwargs["data"]["a"], "thing.m.user.email.password.login")
+                self.assertEqual(client.credentials["profile"], builtin_profile(brand))
+                encrypted = bytes.fromhex(post_data(session, 2)["passwd"])
+                self.assertEqual(self.key.decrypt(encrypted, padding.PKCS1v15()),
+                                 hashlib.md5(b"fixture-password").hexdigest().encode())
+                self.assertEqual(client.credentials["sid"], "account-session")
+                self.assertNotIn("password", client.credentials)
+                client.close()
 
     def test_pem_challenge_is_supported_and_invalid_rsa_has_no_plaintext_fallback(self):
         token = self.token()

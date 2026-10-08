@@ -268,6 +268,18 @@ class AccountDeviceUiTests(unittest.TestCase):
         dialog.remember.click()
         self.assertTrue(dialog.remember.isChecked())
 
+    def test_signin_diagnostics_do_not_log_account_credentials_or_vendor_messages(self):
+        dialog = self.dialog()
+        dialog.provider_buttons["lsc"].click()
+        message = "fixture@example.test fixture-password fixture-verification-code"
+        with patch("lumisync.gui.dialogs.accounts_dialog.logger") as diagnostics:
+            dialog._save_connection(SignInFailure(message, "authentication", password="fixture-password"))
+        recorded = str(diagnostics.info.call_args_list)
+        self.assertIn("lsc_account", recorded)
+        self.assertIn("authentication", recorded)
+        for private_value in message.split():
+            self.assertNotIn(private_value, recorded)
+
     def test_connected_account_actions_refresh_then_remove_the_selected_fixture(self):
         accounts = [{"id": "fixture", "provider": "lsc_account", "remember": False}]
         dialog = self.dialog(accounts)

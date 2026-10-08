@@ -1,8 +1,8 @@
-"""Read Tuya OEM login configuration from an app package without executing it.
+"""Resolve Tuya OEM client configuration, with optional app-package overrides.
 
-Vendor application keys stay in the credential vault. Android tooling and vendor
-native libraries are not required at runtime. Account passwords are unrelated to
-this configuration and are never read from an APK.
+The supported apps have built-in configuration. Android packages, tooling and
+native libraries are not required at runtime. An explicitly imported override
+stays in the credential vault. Account passwords are unrelated to this data.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import tempfile
 import zipfile
 
 from .errors import AccountError
+from .mobile_app_profiles import builtin_profile
 from .secrets import vault
 
 PACKAGES = {"lsc": "com.lscsmartconnection.smart", "tuya": "com.tuya.smart"}
@@ -298,17 +299,21 @@ def extract_profile(path: str | Path, brand: str) -> dict:
 
 
 def profile_for(brand: str, path: str = "") -> dict:
+    if brand not in PACKAGES:
+        raise AccountError("Unknown vendor app.", "validation")
     if path:
-        return extract_profile(path, brand)
+        profile = extract_profile(path, brand)
+        profile["source"] = "package"
+        return profile
     try:
         saved = vault.get("vendor-app/" + brand)
     except AccountError:
         saved = {}
-    if saved.get("package") == PACKAGES.get(brand):
+    # Remember explicit overrides, but let application updates replace the
+    # old automatic cache with the current built-in client configuration.
+    if (isinstance(saved, dict) and saved.get("source") == "package"
+            and saved.get("package") == PACKAGES[brand]
+            and all(isinstance(saved.get(key), str) and saved[key]
+                    for key in ("app_key", "signing_key", "ch_key", "ttid", "app_version"))):
         return saved
-    downloads = Path.home() / "Downloads"
-    pattern = "LSC*Smart*Connect*.xapk" if brand == "lsc" else "com.tuya.smart*.apkm"
-    candidates = sorted(downloads.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
-    if candidates:
-        return extract_profile(candidates[0], brand)
-    raise AccountError("Select your vendor's APK, APKM or XAPK app package once using Browse, then sign in with your email and password.", "app_profile")
+    return builtin_profile(brand)
