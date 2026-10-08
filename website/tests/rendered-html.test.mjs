@@ -21,7 +21,7 @@ test("builds the LumiSync product page as static HTML", async () => {
   assert.doesNotMatch(html, /codex-preview|chatgpt\.site|react-loading-skeleton/i);
 });
 
-test("ships Cloudflare Workers configuration and branded assets", async () => {
+test("ships the existing Cloudflare Pages target and branded assets", async () => {
   await Promise.all([
     access(new URL("../dist/404.html", import.meta.url)),
     access(new URL("../dist/favicon.svg", import.meta.url)),
@@ -42,9 +42,9 @@ test("ships Cloudflare Workers configuration and branded assets", async () => {
   ]);
 
   assert.match(page, /Free &amp; open source · Windows &amp; Linux/);
-  assert.match(config, /"pattern": "lumisync\.minlor\.net"/);
-  assert.match(config, /"custom_domain": true/);
-  assert.match(config, /"directory": "\.\/dist"/);
-  assert.match(packageJson, /"deploy": "npm run build && wrangler deploy"/);
+  assert.match(config, /"name": "lumisync"/);
+  assert.match(config, /"pages_build_output_dir": "\.\/dist"/);
+  assert.doesNotMatch(config, /"workers_dev"|"custom_domain"|"assets"/);
+  assert.match(packageJson, /wrangler pages deploy dist --project-name=lumisync --branch=main/);
   assert.doesNotMatch(packageJson, /vinext|site-creator|react-loading-skeleton/);
 });
