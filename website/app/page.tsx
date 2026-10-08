@@ -11,16 +11,28 @@ const downloads = {
   pypi: "https://pypi.org/project/lumisync/",
 };
 
+const accountGuide = "https://github.com/Minlor/LumiSync/blob/main/docs/vendor-accounts.md";
+const releaseNotes = "https://github.com/Minlor/LumiSync/releases/tag/0.8.0";
+
+function Screenshot({ name, alt, caption }: { name: string; alt: string; caption: string }) {
+  return <figure className="screenshot">
+    <a href={`/images/${name}.png`} aria-label={`Open full-size screenshot: ${alt}`}>
+      <img src={`/images/${name}.png`} alt={alt} loading="lazy" />
+    </a>
+    <figcaption>{caption} Example data.</figcaption>
+  </figure>;
+}
+
 const features = [
   { title: "Match your screen", copy: "Mirror the colours at the edge of your display across a single light or an entire room.", icon: Monitor },
   { title: "React to music", copy: "Turn audio into responsive colour and motion, with Auto Director when you want it hands-free.", icon: Music2 },
-  { title: "Control everything", copy: "Discover, group, dim, recolour, and power supported lights from one focused desktop app.", icon: SlidersHorizontal },
+  { title: "Control lights and plugs", copy: "Use the controls each device supports. Switches get power controls; compatible plugs also show electrical readings.", icon: SlidersHorizontal },
 ];
 
 const devices = [
-  ["Govee", "LAN / UDP", "Strips and bulbs"],
+  ["Govee", "LAN / account / API", "Strips and bulbs"],
   ["iDotMatrix", "Bluetooth LE", "Pixel displays"],
-  ["LSC / Tuya", "Local network", "Wi-Fi lights"],
+  ["LSC / Tuya", "LAN / account", "Lights, switches and plugs"],
 ];
 
 export default function Home() {
@@ -41,24 +53,23 @@ export default function Home() {
 
       <section className="hero" id="top">
         <div className="heroCopy">
-          <p className="eyebrow">Free &amp; open source · Windows &amp; Linux</p>
-          <h1>Light that follows<br />what you love.</h1>
-          <p className="heroLead">LumiSync makes your Govee, iDotMatrix, and Tuya lights react to your screen and music. It runs locally, stays private, and keeps setup simple.</p>
+          <h1>Lights and plugs.<br />One desktop app.</h1>
+          <p className="heroLead">Control Govee, Tuya and LSC devices from your desktop. Sync local lights with your screen or music, draw on iDotMatrix panels, and check supported plugs&apos; energy use.</p>
           <div className="heroActions">
             <a className="button primary" href={downloads.windows}><FaWindows aria-hidden="true" /> Download for Windows <ArrowDownToLine aria-hidden="true" /></a>
             <a className="button secondary" href={downloads.linux}><FaLinux aria-hidden="true" /> Download for Linux</a>
           </div>
-          <p className="heroNote">No account · No cloud required · Just your lights.</p>
+          <p className="heroNote">Free &amp; open source · Windows &amp; Linux. Local sync, with optional vendor accounts for cloud control.</p>
+          <p className="releaseNote"><a href={releaseNotes}>New in 0.8.0: personal accounts, plug metering and a more adaptable interface.</a></p>
         </div>
         <div className="heroPreview">
-          <img src="/images/music-sync.png" alt="LumiSync desktop app showing music sync controls" />
+          <Screenshot name="plug-energy" alt="LumiSync device inventory and smart plug readings" caption="Device controls and supported plug readings." />
         </div>
       </section>
 
       <section className="featureSection" id="features">
         <div className="sectionHeading">
-          <p className="eyebrow">Made for the room you are in</p>
-          <h2>One simple app.<br />Three useful modes.</h2>
+          <h2>Sync, control and<br />check your devices.</h2>
         </div>
         <div className="featureGrid">
           {features.map(({ title, copy, icon: Icon }) => (
@@ -73,8 +84,7 @@ export default function Home() {
 
       <section className="productSection">
         <div className="productCopy">
-          <p className="eyebrow">Monitor sync</p>
-          <h2>Bring the screen<br />into the room.</h2>
+          <h2>Screen colors<br />across your lights.</h2>
           <p>Choose a display, map its regions to your LEDs, then adjust brightness, smoothing, saturation, and frame rate until it feels right.</p>
           <ul>
             <li>Multi-monitor selection</li>
@@ -82,12 +92,11 @@ export default function Home() {
             <li>Groups and individual lights</li>
           </ul>
         </div>
-        <img className="productScreenshot" src="/images/monitor-sync.png" alt="LumiSync monitor sync settings" />
+        <Screenshot name="monitor-sync" alt="LumiSync monitor sync settings" caption="Map screen regions to compatible local lights." />
       </section>
 
       <section className="productSection productReverse">
         <div className="productCopy">
-          <p className="eyebrow">Music sync</p>
           <h2>Let every beat<br />set the mood.</h2>
           <p>Choose a reaction and a palette yourself, or let Auto Director follow the energy so the lighting stays alive without needing attention.</p>
           <ul>
@@ -96,44 +105,66 @@ export default function Home() {
             <li>Automatic scene direction</li>
           </ul>
         </div>
-        <img className="productScreenshot" src="/images/music-sync.png" alt="LumiSync music sync settings" />
+        <Screenshot name="music-sync" alt="LumiSync music sync settings" caption="Choose reactions, palettes and local targets." />
       </section>
 
       <section className="deviceSection" id="devices">
         <div className="sectionHeading compactHeading">
-          <p className="eyebrow">Supported devices</p>
           <h2>Different brands.<br />One control room.</h2>
-          <p>LumiSync connects directly over your local network or Bluetooth, so your lighting data stays at home.</p>
+          <p>Connect over your local network, Bluetooth or your own vendor account. Screen and music sync use supported local connections; cloud connections provide manual control.</p>
         </div>
         <div className="deviceContent">
-          <img src="/images/devices.png" alt="LumiSync device management screen" />
-          <div className="deviceTable" role="table" aria-label="Supported device families">
-            <div className="tableHead" role="row"><span>Family</span><span>Connection</span><span>Products</span></div>
-            {devices.map(([family, connection, products]) => (
-              <div className="tableRow" role="row" key={family}><strong>{family}</strong><span>{connection}</span><span>{products}</span></div>
-            ))}
+          <Screenshot name="devices" alt="Example LED strip, matrix, wall switch and smart plugs" caption="Distinct device types and controls that fit their capabilities." />
+          <div>
+            <table className="deviceTable">
+              <caption>Supported device families</caption>
+              <thead><tr><th scope="col">Family</th><th scope="col">Connection</th><th scope="col">Products</th></tr></thead>
+              <tbody>{devices.map(([family, connection, products]) => (
+                <tr key={family}><th scope="row">{family}</th><td>{connection}</td><td>{products}</td></tr>
+              ))}</tbody>
+            </table>
+            <p className="supportNote">Support varies by model and firmware. iDotMatrix uses Bluetooth; supported local Tuya connections need an authorized device key.</p>
           </div>
         </div>
       </section>
 
+      <section className="productSection" id="accounts">
+        <div className="productCopy">
+          <h2>Use the accounts<br />you already have.</h2>
+          <p>Sign in with your Govee, Tuya Smart or LSC email and password. Choose your account country from a dropdown; LumiSync suggests your computer&apos;s region and handles account routing.</p>
+          <p>Tuya and LSC password sign-in reads the matching Android app package once. LumiSync can find it in Downloads or let you browse for it. Account lists partially hide emails.</p>
+          <a className="textLink" href={accountGuide}>Read account setup <ArrowRight aria-hidden="true" /></a>
+        </div>
+        <Screenshot name="accounts" alt="Tuya password sign-in with country selection and masked example accounts" caption="Personal sign-in, with connected accounts alongside." />
+      </section>
+
+      <section className="productSection productReverse" id="energy">
+        <div className="productCopy">
+          <h2>See what your<br />plug is drawing.</h2>
+          <p>Open a supported Tuya or LSC smart plug to see power in watts, voltage and current. Readings refresh every five seconds while the inspector is visible.</p>
+          <p>Load monthly energy totals in kWh and expand daily readings. Availability depends on what your device and account report; missing values stay marked as not reported.</p>
+        </div>
+        <Screenshot name="plug-energy" alt="Example smart plug with 215.1 watts, voltage, current and monthly energy use" caption="Live readings and energy history in the device inspector." />
+      </section>
+
       <section className="download" id="download">
         <img src="/lumisync-app.png" alt="LumiSync app icon" />
-        <p className="eyebrow">Ready to try it?</p>
-        <h2>Make room react.</h2>
-        <p>Download LumiSync, connect a supported light, and start syncing in minutes.</p>
+        <h2>Download LumiSync 0.8.0.</h2>
+        <p>Discover local devices or connect your vendor account. Prebuilt downloads include the runtime; Python is only needed for pip or source installs.</p>
         <div className="downloadGrid">
-          <a className="downloadOption featured" href={downloads.windows}><FaWindows aria-hidden="true" /><span><strong>Windows</strong><small>Single-file installer · x64</small></span><ArrowDownToLine aria-hidden="true" /></a>
+          <a className="downloadOption featured" href={downloads.windows}><FaWindows aria-hidden="true" /><span><strong>Windows</strong><small>Single-file app · x64</small></span><ArrowDownToLine aria-hidden="true" /></a>
           <a className="downloadOption" href={downloads.portable}><PackageOpen aria-hidden="true" /><span><strong>Windows portable</strong><small>Extract and run · x64</small></span><ArrowDownToLine aria-hidden="true" /></a>
           <a className="downloadOption" href={downloads.linux}><FaLinux aria-hidden="true" /><span><strong>Linux</strong><small>AppImage · x86_64</small></span><ArrowDownToLine aria-hidden="true" /></a>
           <a className="downloadOption" href={downloads.pypi}><FaPython aria-hidden="true" /><span><strong>Install with pip</strong><small>Python 3.11+ · advanced</small></span><ArrowRight aria-hidden="true" /></a>
         </div>
-        <p className="requirements">Windows 10/11 is fully supported. Linux screen sync requires X11; macOS and Wayland capture are in progress.</p>
+        <p className="requirements">Windows 10/11. Linux AppImage requires glibc 2.35+; screen sync requires X11. macOS and Wayland capture are in progress.</p>
+        <p className="releaseNote"><a href={releaseNotes}>Release notes</a> · <a href={accountGuide}>Account setup</a></p>
       </section>
 
       <footer>
         <a className="brand" href="#top"><img src="/lumisync-mark.png" alt="" /><span>LumiSync</span></a>
         <p>A Minlor project · Screen, sound, and light in sync.</p>
-        <div><a href="https://github.com/Minlor/LumiSync">GitHub</a><a href="https://pypi.org/project/lumisync/">PyPI</a><a href="https://ko-fi.com/Minlor">Support</a><a href="https://minlor.net">minlor.net</a></div>
+        <div><a href="https://github.com/Minlor/LumiSync">GitHub</a><a href={accountGuide}>Account setup</a><a href="https://pypi.org/project/lumisync/">PyPI</a><a href="https://ko-fi.com/Minlor">Support</a><a href="https://minlor.net">minlor.net</a></div>
       </footer>
     </main>
   );
