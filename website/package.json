@@ -9,7 +9,7 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "deploy": "npm run build && wrangler deploy",
+    "deploy": "npm run build && wrangler pages deploy dist --project-name=lumisync --branch=main",
     "test": "npm run build && node --test tests/rendered-html.test.mjs"
   },
   "dependencies": {
