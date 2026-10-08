@@ -1,5 +1,11 @@
 # Govee Desktop Capability Research (build 2.40.50)
 
+> Historical local-protocol research. Optional personal account and Platform
+> API integrations were added in the
+> [October 2026 audit](vendor-integration-audit-2026-10-08.md). Cloud-login scope
+> exclusions below describe the earlier work; current setup and limitations
+> are documented in [Vendor accounts](vendor-accounts.md).
+
 A second, deeper pass over `C:\Program Files\Govee\Govee Desktop` and
 `%LOCALAPPDATA%\GoveeDesktop`, focused on **device compatibility**, the
 **capability model**, and **multi-device sync**. This complements

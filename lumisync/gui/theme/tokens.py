@@ -20,17 +20,17 @@ TOKENS: dict[str, str] = {
     "pressed":        "#393C4E",
     # Windows 11 system-backdrop layers. These are only selected after DWM
     # accepts the request; all other platforms keep the solid colors.
-    "mica_bg":         "rgba(17, 17, 26, 0.74)",
-    "mica_sidebar":    "rgba(9, 10, 17, 0.62)",
+    "mica_bg":         "rgba(17, 17, 26, 0.90)",
+    "mica_sidebar":    "rgba(9, 10, 17, 0.90)",
     "mica_surface":    "rgba(30, 30, 43, 0.78)",
     "mica_control":    "rgba(40, 41, 55, 0.86)",
     "mica_border":     "rgba(222, 226, 255, 0.11)",
     "mica_device_surface": "rgba(15, 17, 25, 0.90)",
     "mica_inspector_surface": "rgba(21, 22, 33, 0.94)",
-    # Desktop Acrylic exposes more of the blurred desktop than Mica. Separate
-    # foundation, panel, and control opacities preserve visual hierarchy.
-    "acrylic_bg":      "rgba(15, 15, 24, 0.70)",
-    "acrylic_sidebar": "rgba(8, 9, 15, 0.58)",
+    # Limit translucency to the foundation and navigation. Even a bright
+    # desktop behind the native material must leave text and focus legible.
+    "acrylic_bg":      "rgba(15, 15, 24, 0.88)",
+    "acrylic_sidebar": "rgba(8, 9, 15, 0.90)",
     "acrylic_surface": "rgba(29, 30, 42, 0.76)",
     "acrylic_control": "rgba(40, 42, 56, 0.84)",
     "acrylic_border":  "rgba(222, 226, 255, 0.11)",
@@ -52,7 +52,7 @@ TOKENS: dict[str, str] = {
     # Text
     "text":           "#F3F7FF",
     "text_dim":       "#B0B2C0",
-    "text_disabled":  "#717383",
+    "text_disabled":  "#9A9CAA",
 
     # Accent (accessible Fluent-inspired blue)
     "accent":          "#4A8BF5",

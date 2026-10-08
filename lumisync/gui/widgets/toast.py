@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
+    QToolButton,
     QWidget,
 )
 
@@ -55,8 +56,15 @@ class Toast(QFrame):
         layout.setContentsMargins(14, 10, 14, 10)
         self.label = QLabel(message)
         self.label.setWordWrap(True)
+        self.label.setTextFormat(Qt.TextFormat.PlainText)
         self.label.setObjectName("ToastLabel")
         layout.addWidget(self.label)
+        self.close_button = QToolButton()
+        self.close_button.setText("×")
+        self.close_button.setAccessibleName("Dismiss notification")
+        self.close_button.setFixedSize(44, 44)
+        self.close_button.clicked.connect(self.dismiss)
+        layout.addWidget(self.close_button)
 
         self._opacity = QGraphicsOpacityEffect(self)
         self._opacity.setOpacity(0.0)

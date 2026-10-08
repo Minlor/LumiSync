@@ -1,5 +1,19 @@
 # LSC Smart Connect (Tuya) Research + Integration Plan
 
+Current implementation (8 October 2026): **Devices → Accounts** supports direct
+LSC Smart Connect and Tuya Smart email/password login, including RSA challenges,
+email verification, account-region routing, lighting-schema imports and cloud
+commands. App-specific login configuration is read from the supplied Android
+packages and stored in the OS vault. Live signed-clock and RSA initialization
+checks pass for LSC 2.0.7 and Tuya Smart 7.11.4; real account/hardware completion
+still needs validation. See [account setup](vendor-accounts.md).
+
+> Historical investigation of version 2.0.4. Current 2.0.7 analysis, account
+> integrations, secure storage and validation limits are in the
+> [October 2026 audit](vendor-integration-audit-2026-10-08.md) and
+> [account guide](vendor-accounts.md). Those supersede local-only assumptions
+> and unfinished-work notes below.
+
 Adding **LSC Smart Connect** devices — WiFi light bulbs, LED strips, plugs — as a
 third device family in LumiSync, from the official app
 `com.lscsmartconnection.smart` v2.0.4 (`LSC+Smart+Connect_2.0.4_APKPure.xapk`).
@@ -61,7 +75,7 @@ How control works:
    | 24 | `colour_data_v2` | `HHHHSSSSVVVV` hex — H 0-360, S/V 0-1000 |
 
    Legacy schema ("v1", older bulbs): DP 1 switch, 2 mode, 3 bright (25-255),
-   4 temp (0-255), 5 `colour_data` (`HHHHSSVV`, S/V as 0-255).
+   4 temp (0-255), 5 `colour_data` (`RRGGBBHHHHSSVV`, S/V as 0-255).
 
 ## The Local Key — the one hard requirement
 
@@ -79,11 +93,11 @@ The user must obtain it once, by one of the established routes:
 - **Pairing capture** — sniff the local key during device onboarding.
 - **App data extraction** — read it from the app's storage on a rooted device.
 
-LumiSync asks for `IP`, `Device ID`, `Local Key`, and `protocol version` in the
-Add-Device dialog and stores them in `settings.json` like any other device. It
-makes **no** calls to any vendor account service — it only speaks the local
-protocol on the LAN with the credentials the user pastes in (this keeps the
-project's local-first invariant; runtime code contains no account-service code).
+LumiSync now obtains authorized keys through account imports or manual entry.
+Local keys are saved in the OS credential store, with references in settings.
+Cloud controls are optional; the local driver still uses the per-device key.
+LSC OEM linking depends on project/app-owner permissions and is not equivalent
+to signing into Tuya Smart with the same email/password.
 
 ## Integration in LumiSync
 
@@ -121,6 +135,6 @@ project's local-first invariant; runtime code contains no account-service code).
   plugs, sensors) expose different DPs and would need per-product mapping.
 - `protocol_version` defaults to **3.3**. 3.4/3.5 devices must select the
   matching version or the session handshake fails.
-- Auto-discovery of Tuya devices on the LAN (UDP `6666`/`6667`) is not yet
-  wired up; devices are added manually. `tinytuya` can enumerate them, and the
-  broadcast still doesn't reveal the local key, so manual entry stays required.
+- **Find Devices** matches LAN broadcasts to devices whose local keys were
+  imported from an authorized account or entered manually. Broadcasts identify
+  addresses and protocol versions; they do not disclose the local key.

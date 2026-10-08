@@ -1,5 +1,10 @@
 # Govee LAN Research And Implementation Plan
 
+> Historical local-protocol plan. The
+> [October 2026 audit](vendor-integration-audit-2026-10-08.md) adds optional
+> personal account and Platform API paths. Earlier cloud scope exclusions
+> below no longer describe the whole app. Local sync still works without login.
+
 This document summarizes the local Govee Desktop investigation done on April 29, 2026 and turns it into an implementation plan for LumiSync.
 
 The goal is interoperability with devices on the user's own LAN. Do not depend on Govee cloud credentials or private app secrets for normal LumiSync operation.

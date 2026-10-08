@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Set
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -21,18 +22,20 @@ from PySide6.QtWidgets import (
 )
 
 from ... import connection
+from ...drivers.registry import capabilities_for_device
+from ...groups import device_key
 from ..controllers.device_controller import DeviceController
 from ..dialogs.add_device_dialog import AddDeviceDialog
 from ..resources.icons import IconKey, tinted_icon
 from ..theme import qcolor
-from ..utils.animations import animate_height, animate_width
-from ..utils.flow_layout import FlowLayout
-from ..widgets.device_card import DeviceCard
+from ..utils.animations import animate_height
+from ..utils.device_grid import DeviceGridLayout
+from ..widgets.device_card import CARD_MIN_WIDTH, DeviceCard
 from ..widgets.device_inspector import DeviceInspector
 
 
 class DevicesView(QWidget):
-    """Quick device controls with a full-height details inspector."""
+    """Stable page actions above a responsive inventory and device inspector."""
 
     def __init__(self, device_controller: DeviceController):
         super().__init__()
@@ -52,15 +55,9 @@ class DevicesView(QWidget):
     # ------------------------------------------------------------------ build
 
     def _build(self) -> None:
-        shell = QHBoxLayout(self)
-        shell.setContentsMargins(28, 24, 28, 28)
-        shell.setSpacing(16)
-
-        self.main_column = QWidget()
-        root = QVBoxLayout(self.main_column)
-        root.setContentsMargins(0, 0, 0, 0)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(28, 24, 28, 28)
         root.setSpacing(18)
-        shell.addWidget(self.main_column, 1)
 
         # Header
         page_header = QVBoxLayout()
@@ -69,14 +66,14 @@ class DevicesView(QWidget):
         header.setProperty("role", "title")
         page_header.addWidget(header)
 
-        intro = QLabel("Find, organize, and control the lights connected to LumiSync.")
+        intro = QLabel("Control your lights, switches, and smart plugs. Open a device for its available controls and readings.")
         intro.setProperty("role", "pageDescription")
         intro.setWordWrap(True)
         page_header.addWidget(intro)
         root.addLayout(page_header)
 
         # Toolbar row
-        toolbar = QHBoxLayout()
+        toolbar = self.toolbar = QGridLayout()
         toolbar.setSpacing(10)
 
         self.find_devices_button = QPushButton("Find Devices")
@@ -84,24 +81,27 @@ class DevicesView(QWidget):
         self.find_devices_button.setProperty("role", "primary")
         self.find_devices_button.setIcon(tinted_icon(IconKey.REFRESH, "#FFFFFF"))
         self.find_devices_button.setToolTip(
-            "Search the local network and Bluetooth, then refresh saved devices"
+            "Search Wi-Fi and Bluetooth, refresh linked accounts, and update saved device readings"
         )
         self.find_devices_button.setAccessibleName("Find and refresh devices")
         self.find_devices_button.clicked.connect(self.controller.find_devices)
-        toolbar.addWidget(self.find_devices_button)
+        toolbar.addWidget(self.find_devices_button, 0, 0)
 
         self.add_button = QPushButton("Add Device")
         self.add_button.setIcon(tinted_icon(IconKey.ADD, qcolor("text")))
         self.add_button.setToolTip("Add a device using its connection details")
         self.add_button.clicked.connect(self._on_add_manual)
-        toolbar.addWidget(self.add_button)
+        toolbar.addWidget(self.add_button, 0, 1)
 
-        toolbar.addSpacing(8)
-        toolbar.addStretch(1)
+        self.accounts_button = QPushButton("Accounts")
+        self.accounts_button.setToolTip("Sign in to your Govee, Tuya, or linked LSC account")
+        self.accounts_button.clicked.connect(self._open_accounts)
+        toolbar.addWidget(self.accounts_button, 0, 2)
+        toolbar.setColumnStretch(3, 1)
 
         self.summary_label = QLabel("")
         self.summary_label.setProperty("role", "subtle")
-        toolbar.addWidget(self.summary_label)
+        toolbar.addWidget(self.summary_label, 0, 3, Qt.AlignmentFlag.AlignRight)
 
         self.group_mode_button = QPushButton("Create Group")
         self.group_mode_button.setIcon(
@@ -111,7 +111,7 @@ class DevicesView(QWidget):
             "Choose devices by clicking their cards, then save them as a group"
         )
         self.group_mode_button.clicked.connect(self._start_group_selection)
-        toolbar.addWidget(self.group_mode_button)
+        toolbar.addWidget(self.group_mode_button, 0, 4)
 
         root.addLayout(toolbar)
 
@@ -119,18 +119,29 @@ class DevicesView(QWidget):
         # so an empty result is not confused with unavailable hardware.
         self.search_status = QFrame()
         self.search_status.setObjectName("DeviceSearchStatus")
-        status_layout = QHBoxLayout(self.search_status)
+        status_layout = QGridLayout(self.search_status)
         status_layout.setContentsMargins(14, 9, 14, 9)
         status_layout.setSpacing(18)
 
         self.network_status = QLabel("Local network · Not checked")
         self.network_status.setProperty("role", "status")
-        status_layout.addWidget(self.network_status)
+        self.network_status.setWordWrap(True)
+        status_layout.addWidget(self.network_status, 0, 0)
 
         self.bluetooth_status = QLabel("Bluetooth · Not checked")
         self.bluetooth_status.setProperty("role", "status")
-        status_layout.addWidget(self.bluetooth_status)
-        status_layout.addStretch(1)
+        self.bluetooth_status.setWordWrap(True)
+        status_layout.addWidget(self.bluetooth_status, 0, 1)
+        self.tuya_status = QLabel("Tuya LAN · Not checked")
+        self.tuya_status.setProperty("role", "status")
+        self.tuya_status.setWordWrap(True)
+        status_layout.addWidget(self.tuya_status, 1, 0)
+        self.accounts_status = QLabel("Accounts · Not refreshed")
+        self.accounts_status.setProperty("role", "status")
+        self.accounts_status.setWordWrap(True)
+        status_layout.addWidget(self.accounts_status, 1, 1)
+        status_layout.setColumnStretch(0, 1)
+        status_layout.setColumnStretch(1, 1)
 
         self.search_status.setVisible(False)
         root.addWidget(self.search_status)
@@ -140,12 +151,13 @@ class DevicesView(QWidget):
         self.group_bar = QFrame()
         self.group_bar.setObjectName("GroupSelectionBar")
         self.group_bar.setMaximumHeight(0)
+        self.group_bar.hide()
         group_layout = QHBoxLayout(self.group_bar)
         group_layout.setContentsMargins(16, 10, 12, 10)
         group_layout.setSpacing(10)
 
         self.group_selection_label = QLabel(
-            "Choose the devices that belong in this group"
+            "Choose local lights for this sync group"
         )
         self.group_selection_label.setProperty("role", "strong")
         group_layout.addWidget(self.group_selection_label)
@@ -163,13 +175,14 @@ class DevicesView(QWidget):
         group_layout.addWidget(self.save_group_button)
         root.addWidget(self.group_bar)
 
-        # Card grid (FlowLayout in a scroll area)
+        # The inventory fills each row rather than wrapping fixed-width cards.
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self.grid_host = QWidget()
-        self.grid_layout = FlowLayout(self.grid_host, h_spacing=16, v_spacing=16)
+        self.grid_layout = DeviceGridLayout(self.grid_host, h_spacing=12, v_spacing=12)
         self.grid_layout.setContentsMargins(0, 0, 0, 0)
 
         self.scroll.setWidget(self.grid_host)
@@ -177,6 +190,7 @@ class DevicesView(QWidget):
         self.inspector = DeviceInspector()
         self.inspector.close_requested.connect(self._close_inspector)
         self.inspector.power_clicked.connect(self.controller.toggle_power_at)
+        self.inspector.refresh_requested.connect(self.controller.refresh_device_state_at)
         self.inspector.set_default_requested.connect(
             self._on_card_primary_clicked
         )
@@ -201,6 +215,7 @@ class DevicesView(QWidget):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self.inspector_scroll.setWidget(self.inspector)
+        self.inspector_scroll.viewport().installEventFilter(self)
         self.inspector_scroll.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding
         )
@@ -209,10 +224,17 @@ class DevicesView(QWidget):
         self.inspector_scroll.setVisible(False)
 
         self.content_host = QWidget()
-        content_layout = QVBoxLayout(self.content_host)
+        body = QHBoxLayout(self.content_host)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(16)
+        self.main_column = QWidget()
+        self.main_column.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
+        content_layout = QVBoxLayout(self.main_column)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
         content_layout.addWidget(self.scroll, 1)
+        body.addWidget(self.main_column, 1)
+        body.addWidget(self.inspector_scroll)
         root.addWidget(self.content_host, 1)
 
         # Empty state label
@@ -226,10 +248,55 @@ class DevicesView(QWidget):
         self.empty_label.setVisible(False)
         root.addWidget(self.empty_label)
 
-        # The inspector is a peer of the entire page column, so it spans from
-        # the page header to the bottom edge instead of starting below the
-        # toolbar like a small card drawer.
-        shell.addWidget(self.inspector_scroll)
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        if not hasattr(self, "inspector_scroll"):
+            return
+        self._layout_toolbar()
+        if self._inspected_index >= 0:
+            self._layout_inspector()
+
+    def _layout_toolbar(self) -> None:
+        available_width = self.width() - 56
+        controls = (self.find_devices_button, self.add_button, self.accounts_button,
+                    self.summary_label, self.group_mode_button)
+        needed = sum(control.sizeHint().width() for control in controls) + self.toolbar.spacing() * 4
+        self.toolbar.removeWidget(self.group_mode_button)
+        if available_width < needed:
+            self.toolbar.addWidget(self.group_mode_button, 1, 0, 1, 4, Qt.AlignmentFlag.AlignLeft)
+        else:
+            self.toolbar.addWidget(self.group_mode_button, 0, 4)
+
+    def _inspector_geometry(self) -> tuple[bool, int]:
+        available = max(0, self.width() - 56)
+        inspector_width = max(400, min(480, int(available * 0.34)))
+        # Allow a scrollbar as well as two readable inventory columns. The
+        # toolbar spans both panes, so it no longer determines this breakpoint.
+        main_minimum = CARD_MIN_WIDTH * 2 + 12 + 10
+        body_height = self.height() - self.content_host.y() - self.layout().contentsMargins().bottom()
+        compact = available < inspector_width + 16 + main_minimum or body_height < 460
+        return compact, inspector_width
+
+    def _layout_inspector(self) -> bool:
+        compact, inspector_width = self._inspector_geometry()
+        self.main_column.setVisible(not compact)
+        self.inspector_scroll.setSizePolicy(
+            QSizePolicy.Policy.Expanding if compact else QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Expanding,
+        )
+        self.inspector.setMaximumWidth(880 if compact else 16777215)
+        self.inspector_scroll.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        self._stop_inspector_animation()
+        self.inspector_scroll.setMinimumWidth(0 if compact else inspector_width)
+        self.inspector_scroll.setMaximumWidth(16777215 if compact else inspector_width)
+        self._layout_toolbar()
+        return compact
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt API
+        if watched is self.inspector_scroll.viewport() and event.type() == QEvent.Type.Resize:
+            size = event.size()
+            self.inspector.set_available_size(size.width(), size.height())
+        return super().eventFilter(watched, event)
 
     # ------------------------------------------------------------------ wiring
 
@@ -240,6 +307,18 @@ class DevicesView(QWidget):
         self.controller.device_state_updated.connect(self._on_device_state_updated)
         self.controller.device_search_started.connect(self._on_search_started)
         self.controller.device_search_finished.connect(self._on_search_finished)
+        self.inspector.connection_changed.connect(self.controller.set_connection_at)
+        self.inspector.panel_tools_requested.connect(self._open_panel_tools)
+
+    def _open_panel_tools(self, index: int) -> None:
+        from ..dialogs.panel_tools_dialog import PanelToolsDialog
+        if 0 <= index < len(self.controller.devices):
+            PanelToolsDialog(self.controller, index, self).exec()
+
+    def _open_accounts(self) -> None:
+        from ..dialogs.accounts_dialog import AccountsDialog
+        dialog = AccountsDialog(self.controller, self)
+        dialog.exec()
 
     def _set_transport_status(
         self,
@@ -264,10 +343,26 @@ class DevicesView(QWidget):
         self._set_transport_status(
             self.bluetooth_status, "Bluetooth · Checking…", "warning"
         )
+        self._set_transport_status(self.tuya_status, "Tuya LAN · Checking…", "warning")
+        self._set_transport_status(self.accounts_status, "Accounts · Refreshing…", "warning")
 
     def _on_search_finished(self, summary: dict) -> None:
         self.find_devices_button.setEnabled(True)
         self.find_devices_button.setText("Find Devices")
+        accounts = summary.get("accounts", {})
+        if accounts.get("errors"):
+            refreshed = int(accounts.get("refreshed", 0))
+            self._set_transport_status(self.accounts_status, f"Accounts · {refreshed} of {int(accounts.get('total', 0))} refreshed",
+                                       "warning", "\n".join(accounts["errors"]))
+        elif accounts.get("total"):
+            self._set_transport_status(self.accounts_status, f"Accounts · {int(accounts.get('found', 0))} devices refreshed", "online")
+        else:
+            self._set_transport_status(self.accounts_status, "Accounts · No accounts connected", "offline")
+        tuya = summary.get("tuya", {})
+        if tuya.get("available"):
+            self._set_transport_status(self.tuya_status, f"Tuya LAN · {int(tuya.get('found', 0))} linked devices found", "online")
+        else:
+            self._set_transport_status(self.tuya_status, "Tuya LAN · Unavailable", "warning", str(tuya.get("error") or "No active local network connection"))
 
         lan = summary.get("lan", {})
         if lan.get("available"):
@@ -319,6 +414,7 @@ class DevicesView(QWidget):
     # ------------------------------------------------------------------ cards
 
     def _rebuild_cards(self) -> None:
+        selected_keys = {device_key(card.device()) for card in self._cards if card._index in self._selected}
         # Wipe existing
         while self.grid_layout.count():
             item = self.grid_layout.takeAt(0)
@@ -326,9 +422,10 @@ class DevicesView(QWidget):
             if w is not None:
                 w.deleteLater()
         self._cards.clear()
-        # Reconcile selection: drop indices that no longer exist
-        max_idx = len(self.controller.devices) - 1
-        self._selected = {i for i in self._selected if 0 <= i <= max_idx}
+        # Refreshes can reorder devices or remove a preceding row. Keep group
+        # choices and the open inspector attached to the same device identity.
+        self._selected = {index for index, device in enumerate(self.controller.devices)
+                          if device_key(device) in selected_keys}
 
         self._inspected_index = next(
             (
@@ -375,7 +472,8 @@ class DevicesView(QWidget):
             self.summary_label.setText("")
         else:
             self.summary_label.setText(f"{total} device{'s' if total != 1 else ''}")
-        self.group_mode_button.setEnabled(total > 0 and not self._group_selection_mode)
+        has_sync_lights = any(capabilities_for_device(d).supports_streaming for d in self.controller.devices)
+        self.group_mode_button.setEnabled(has_sync_lights and not self._group_selection_mode)
         self._update_group_bar()
 
     def _update_group_bar(self) -> None:
@@ -387,18 +485,13 @@ class DevicesView(QWidget):
             else "Choose devices by clicking their cards"
         )
         self.save_group_button.setEnabled(n > 0)
+        self.group_bar.setVisible(self._group_selection_mode)
         if self.group_bar.maximumHeight() != target:
             animate_height(self.group_bar, target, duration=180)
 
     @staticmethod
     def _device_key(device: dict) -> str:
-        return str(
-            device.get("ble_address")
-            or device.get("mac")
-            or device.get("ip")
-            or device.get("model")
-            or ""
-        )
+        return device_key(device)
 
     def _open_inspector(self, index: int) -> None:
         if not (0 <= index < len(self.controller.devices)):
@@ -410,12 +503,8 @@ class DevicesView(QWidget):
             card.set_inspected(card._index == index)
         self._populate_inspector()
 
-        if not self.inspector_scroll.isVisible():
-            self.inspector_scroll.setMaximumWidth(0)
-            self.inspector_scroll.setVisible(True)
-        self._inspector_animation = animate_width(
-            self.inspector_scroll, 444, duration=210
-        )
+        self._layout_inspector()
+        self.inspector_scroll.setVisible(True)
 
     def _populate_inspector(self) -> None:
         index = self._inspected_index
@@ -429,26 +518,19 @@ class DevicesView(QWidget):
         )
 
     def _close_inspector(self) -> None:
-        self._stop_inspector_animation()
-        self._inspected_index = -1
-        self._inspected_key = ""
         for card in self._cards:
             card.set_inspected(False)
-
-        def finish() -> None:
-            if self._inspected_index < 0:
-                self.inspector_scroll.setVisible(False)
-
-        self._inspector_animation = animate_width(
-            self.inspector_scroll, 0, duration=150, on_finished=finish
-        )
+        self._hide_inspector_immediately()
 
     def _hide_inspector_immediately(self) -> None:
         self._stop_inspector_animation()
         self._inspected_index = -1
         self._inspected_key = ""
+        self.inspector_scroll.setMinimumWidth(0)
         self.inspector_scroll.setMaximumWidth(0)
         self.inspector_scroll.setVisible(False)
+        self.main_column.show()
+        self._layout_toolbar()
 
     def _stop_inspector_animation(self) -> None:
         if self._inspector_animation is None:
@@ -462,7 +544,9 @@ class DevicesView(QWidget):
     # ------------------------------------------------------------------ card slots
 
     def _on_card_selection_changed(self, index: int, selected: bool) -> None:
-        if not self._group_selection_mode:
+        if not self._group_selection_mode or not (0 <= index < len(self.controller.devices)):
+            return
+        if not capabilities_for_device(self.controller.devices[index]).supports_streaming:
             return
         if selected:
             self._selected.add(index)
@@ -614,6 +698,8 @@ class DevicesView(QWidget):
                     dialog.tuya_local_key(),
                     dialog.model_entry.text() or "LSC / Tuya Light",
                     dialog.tuya_version(),
+                    dp_schema=dialog.tuya_schema_combo.currentData(),
+                    remember=dialog.remember_key.isChecked(),
                 )
                 return
             ip = dialog.ip_entry.text()

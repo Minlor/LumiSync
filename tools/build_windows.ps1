@@ -76,21 +76,23 @@ function Invoke-SmokeCheck {
         throw "Expected executable was not created: $ExePath"
     }
 
-    $process = Start-Process `
-        -FilePath $ExePath `
-        -ArgumentList "--help" `
-        -PassThru `
-        -WindowStyle Hidden
+    foreach ($argument in @("--help", "--check-integrations", "--check-gui")) {
+        $process = Start-Process `
+            -FilePath $ExePath `
+            -ArgumentList $argument `
+            -PassThru `
+            -WindowStyle Hidden
 
-    if (-not $process.WaitForExit(30000)) {
-        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-        throw "Smoke check timed out for $ExePath"
-    }
+        if (-not $process.WaitForExit(30000)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            throw "Smoke check $argument timed out for $ExePath"
+        }
 
-    $process.Refresh()
+        $process.Refresh()
 
-    if ($process.ExitCode -ne 0) {
-        throw "Smoke check failed for $ExePath with exit code $($process.ExitCode)"
+        if ($process.ExitCode -ne 0) {
+            throw "Smoke check $argument failed for $ExePath with exit code $($process.ExitCode)"
+        }
     }
 }
 

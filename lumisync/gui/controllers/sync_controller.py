@@ -9,7 +9,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QObject, Signal, QThread, QSettings
+from PySide6.QtCore import QObject, Signal, QThread, QSettings, QTimer, Qt, Slot
 
 if platform.system() == "Windows":
     from pythoncom import CoInitialize, CoUninitialize
@@ -149,8 +149,8 @@ class MonitorSyncWorker(QObject):
             # One driver per device; enable its segment/streaming mode once.
             for device in self.devices:
                 adapter = pool.acquire(device, self.server)
-                adapter.begin_stream()
                 adapters[self._device_key(device)] = adapter
+                adapter.begin_stream()
 
             # Per-device smoothing state and last transmitted frame.
             smoothers: Dict[str, processing.ColorSmoother] = {}
@@ -239,6 +239,9 @@ class MonitorSyncWorker(QObject):
                         smoothed = smoother.update(colors)
 
                         now = time.monotonic()
+                        previous_time = last_sent_at.get(key)
+                        if previous_time is not None and now - previous_time < 1.0 / max(0.1, getattr(adapter.capabilities, "max_update_hz", 40.0)):
+                            continue
                         if processing.frame_needs_send(
                             last_sent.get(key),
                             smoothed,
@@ -260,7 +263,7 @@ class MonitorSyncWorker(QObject):
                     return
                 except Exception as e:
                     self.error_occurred.emit(f"Error in monitor sync: {str(e)}")
-                    time.sleep(1)  # Avoid tight loop on error
+                    self.stop_event.wait(1)  # Keep shutdown interruptible.
                     continue
 
                 elapsed = time.monotonic() - frame_start
@@ -275,6 +278,11 @@ class MonitorSyncWorker(QObject):
                     adapter.end_stream()
                 except Exception:
                     pass
+                if not pool.is_pooled(getattr(adapter, "device", {})) and hasattr(adapter, "close"):
+                    try:
+                        adapter.close()
+                    except Exception:
+                        self.status_updated.emit("Could not close a device connection after sync.")
             self.finished.emit()
 
     def _device_key(self, device: Dict[str, Any]) -> str:
@@ -318,12 +326,13 @@ class MusicSyncWorker(QObject):
             # One driver per device; enable its segment/streaming mode once.
             for device in self.devices:
                 adapter = pool.acquire(device, self.server)
-                adapter.begin_stream()
                 adapters[self._device_key(device)] = adapter
+                adapter.begin_stream()
 
             renderers = {}
             smoothers = {}
             active_reaction = None
+            last_output_at = {}
             # Persists across reaction changes so its loudness envelope keeps
             # adapting instead of resetting whenever the style switches.
             normalizer = audio.AutoGain(SYNC.music_fps)
@@ -408,7 +417,10 @@ class MusicSyncWorker(QObject):
                                 adjusted_colors = processing.apply_brightness(
                                     frame, brightness
                                 )
-                                adapter.set_segments(adjusted_colors)
+                                now = time.monotonic()
+                                if now - last_output_at.get(key, float("-inf")) >= 1.0 / max(0.1, getattr(adapter.capabilities, "max_update_hz", 40.0)):
+                                    adapter.set_segments(adjusted_colors)
+                                    last_output_at[key] = now
 
                                 if (
                                     device_index == 0
@@ -465,6 +477,11 @@ class MusicSyncWorker(QObject):
                     adapter.end_stream()
                 except Exception:
                     pass
+                if not pool.is_pooled(getattr(adapter, "device", {})) and hasattr(adapter, "close"):
+                    try:
+                        adapter.close()
+                    except Exception:
+                        self.status_updated.emit("Could not close a device connection after sync.")
             # Ensure COM is uninitialized even if an exception occurs
             try:
                 if platform.system() == "Windows":
@@ -639,12 +656,19 @@ class SyncController(QObject):
         """Start one active sync mode and fan its output to all devices."""
         source_devices = self.selected_devices if devices is None else devices
         selected = [dict(device) for device in source_devices if device]
+        from ...drivers.registry import capabilities_for_device
+        if any(not capabilities_for_device(device).supports_streaming for device in selected):
+            self.status_updated.emit("Screen and music sync require local LAN or Bluetooth control. Choose a local connection in Devices.")
+            return
         if not selected:
             self.status_updated.emit("No devices selected. Please select at least one device first.")
             return
 
         if self.sync_thread and self.sync_thread.isRunning():
             self.stop_sync(announce=False)
+            if self.is_syncing():
+                self.status_updated.emit("The previous output is still stopping. Try again when it has finished.")
+                return
 
         if mode == "monitor":
             BRIGHTNESS.monitor = self.monitor_brightness
@@ -660,13 +684,14 @@ class SyncController(QObject):
             self.status_updated.emit(f"Unknown sync mode: {mode}")
             return
 
-        self._ensure_server()
+        if any(str(device.get("transport", "lan")) in ("", "lan") for device in selected):
+            self._ensure_server()
         self.stop_event.clear()
         self.current_sync_mode = mode
         self.active_devices = selected
         self.selected_devices = selected
 
-        self.sync_thread = QThread()
+        self.sync_thread = QThread(self)
         self.sync_worker = worker_cls(self.server, selected, self.stop_event, self)
         self.sync_worker.moveToThread(self.sync_thread)
 
@@ -679,8 +704,8 @@ class SyncController(QObject):
             self.sync_worker.auto_state_changed.connect(
                 self.music_auto_state_changed.emit
             )
-        self.sync_thread.finished.connect(self._on_sync_thread_finished)
-        self.sync_thread.finished.connect(self.sync_thread.deleteLater)
+        self.sync_thread.finished.connect(self.sync_worker.deleteLater)
+        self.sync_thread.finished.connect(self._on_sync_thread_finished, Qt.ConnectionType.QueuedConnection)
 
         self.sync_thread.start()
         self.sync_started.emit(mode)
@@ -712,20 +737,21 @@ class SyncController(QObject):
                     self.status_updated.emit("Sync stopped")
             return
 
-        if is_running:
+        if is_running or not self.sync_thread.wait(0):
             self.stop_event.set()
             mode = self.current_sync_mode or "sync"
 
             # Wait for thread to finish
             self.sync_thread.quit()
-            self.sync_thread.wait(2000)  # Wait up to 2 seconds
+            joined = self.sync_thread.wait(2000)  # Wait up to 2 seconds
 
             # If thread is still running after timeout
             try:
-                if self.sync_thread.isRunning():
+                if not joined or self.sync_thread.isRunning():
                     self.status_updated.emit(
-                        f"Warning: {mode} thread did not stop cleanly"
+                        f"Waiting for the current {mode} operation to finish…"
                     )
+                    return  # Retain the QThread/worker and socket until finished.
             except RuntimeError:
                 pass
 
@@ -737,19 +763,28 @@ class SyncController(QObject):
                 self.status_updated.emit("Sync stopped")
 
         # Clear the reference to allow garbage collection
+        thread = self.sync_thread
         self.sync_thread = None
         self.sync_worker = None
+        if thread is not None:
+            thread.deleteLater()
         self.close_server()
 
+    @Slot()
     def _on_sync_thread_finished(self) -> None:
         """Clear controller state when a worker exits without an explicit stop."""
-        thread = self.sender()
-        if thread is not self.sync_thread:
+        thread = self.sync_thread
+        sender = self.sender()
+        if thread is None or (isinstance(sender, QThread) and sender is not thread):
+            return
+        if not thread.wait(0):
+            QTimer.singleShot(1, self._on_sync_thread_finished)
             return
 
         had_active_mode = self.current_sync_mode is not None
         self.sync_thread = None
         self.sync_worker = None
+        thread.deleteLater()
         self.current_sync_mode = None
         self.active_devices = []
         self.close_server()
@@ -774,7 +809,8 @@ class SyncController(QObject):
             return False
 
         try:
-            return self.sync_thread.isRunning()
+            self.sync_thread.isRunning()
+            return True  # Ownership continues until the joined-thread cleanup.
         except RuntimeError:
             # Thread was deleted (C/C++ object has been deleted)
             return False

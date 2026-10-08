@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
 
 from ... import __version__
 from ...updates import UpdateCheckResult, check_for_update
@@ -36,21 +36,35 @@ class UpdateController(QObject):
         self.check_worker: Optional[UpdateCheckWorker] = None
         self.last_result: Optional[UpdateCheckResult] = None
         self._silent_check = False
+        self._closing = False
 
     def _check_running(self) -> bool:
         if self.check_thread is None:
             return False
         try:
-            return self.check_thread.isRunning()
+            self.check_thread.isRunning()
+            return True
         except RuntimeError:
-            self._clear_refs()
+            self.check_thread = None
+            self.check_worker = None
             return False
 
+    @Slot()
     def _clear_refs(self) -> None:
-        self.check_thread = None
+        thread = self.check_thread
+        sender = self.sender()
+        if thread is None or (isinstance(sender, QThread) and sender is not thread):
+            return
+        if not thread.wait(0):
+            QTimer.singleShot(1, self._clear_refs)
+            return
         self.check_worker = None
+        self.check_thread = None
+        thread.deleteLater()
 
     def check_now(self, *, silent: bool = False) -> None:
+        if self._closing:
+            return
         if self._check_running():
             if not silent:
                 self.status_updated.emit("Update check already in progress...")
@@ -61,7 +75,7 @@ class UpdateController(QObject):
         if not silent:
             self.status_updated.emit("Checking for updates...")
 
-        thread = QThread()
+        thread = QThread(self)
         worker = UpdateCheckWorker()
         worker.moveToThread(thread)
 
@@ -69,14 +83,15 @@ class UpdateController(QObject):
         worker.finished.connect(self._on_finished)
         worker.finished.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._clear_refs)
+        thread.finished.connect(self._clear_refs, Qt.ConnectionType.QueuedConnection)
 
         self.check_thread = thread
         self.check_worker = worker
         thread.start()
 
     def _on_finished(self, result: UpdateCheckResult) -> None:
+        if self._closing:
+            return
         silent = self._silent_check
         self._silent_check = False
         self.last_result = result
@@ -95,6 +110,13 @@ class UpdateController(QObject):
 
         if not silent:
             self.status_updated.emit("LumiSync is up to date")
+
+    def shutdown(self) -> bool:
+        self._closing = True
+        if self._check_running():
+            self.check_thread.quit()
+            return False
+        return True
 
     def __del__(self) -> None:
         thread = self.check_thread

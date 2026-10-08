@@ -16,11 +16,11 @@ from PySide6.QtWidgets import (
 )
 
 from ..theme import qcolor
-from ..utils.animations import PulseDot
+from ..utils.animations import StatusDot
 
 
 class ActiveSyncRow(QFrame):
-    """One running sync — shows mode, devices, pulse dot, stop button."""
+    """One running sync with mode, devices, a steady status light and Stop."""
 
     stop_requested = Signal(str)  # mode
 
@@ -35,7 +35,7 @@ class ActiveSyncRow(QFrame):
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(10)
 
-        self._dot = PulseDot(qcolor("success"), self, size=10)
+        self._dot = StatusDot(qcolor("success"), self, size=10)
         self._dot.set_active(True)
         layout.addWidget(self._dot)
 

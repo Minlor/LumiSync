@@ -5,15 +5,18 @@ from __future__ import annotations
 import threading
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QColorDialog,
+    QBoxLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -88,7 +91,9 @@ class DrawView(QWidget):
         self._refresh_devices()
 
     def _build(self) -> None:
+        self.setObjectName("DrawView")
         root = QVBoxLayout(self)
+        self._root_layout = root
         root.setContentsMargins(28, 24, 28, 28)
         root.setSpacing(18)
 
@@ -103,69 +108,89 @@ class DrawView(QWidget):
         )
         intro.setProperty("role", "pageDescription")
         intro.setWordWrap(True)
+        self._intro = intro
         page_header.addWidget(intro)
         root.addLayout(page_header)
 
-        workspace = QHBoxLayout()
+        self.workspace_scroll = QScrollArea()
+        self.workspace_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.workspace_scroll.setWidgetResizable(True)
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(12)
+        self.workspace_scroll.setWidget(body)
+        root.addWidget(self.workspace_scroll, 1)
+        workspace = self._workspace_layout = QBoxLayout(QBoxLayout.Direction.LeftToRight)
         workspace.setSpacing(16)
 
-        tools_panel = QFrame()
+        tools_panel = self._tools_panel = QFrame()
         tools_panel.setObjectName("DrawToolsPanel")
         tools_panel.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding
         )
         tools_panel.setFixedWidth(236)
-        tools = QVBoxLayout(tools_panel)
-        tools.setContentsMargins(16, 16, 16, 16)
-        tools.setSpacing(10)
+        tools = self._tools_layout = QGridLayout(tools_panel)
+        tools.setContentsMargins(12, 12, 12, 12)
+        tools.setSpacing(8)
 
-        target_label = QLabel("TARGET PANEL")
-        target_label.setProperty("role", "eyebrow")
-        tools.addWidget(target_label)
+        target = self._target_field = QWidget()
+        target_layout = QVBoxLayout(target)
+        target_layout.setContentsMargins(0, 0, 0, 0)
+        target_layout.setSpacing(4)
+        target_label = QLabel("Target panel")
+        target_label.setProperty("role", "fieldLabel")
+        target_layout.addWidget(target_label)
         self.device_combo = ProductComboBox()
         self.device_combo.setAccessibleName("Target Bluetooth panel")
         self.device_combo.currentIndexChanged.connect(self._update_action_states)
-        tools.addWidget(self.device_combo)
+        target_label.setBuddy(self.device_combo)
+        self.device_combo.setSizeAdjustPolicy(self.device_combo.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.device_combo.setMinimumContentsLength(12)
+        target_layout.addWidget(self.device_combo)
+        tools.addWidget(target, 0, 0)
 
-        size_label = QLabel("CANVAS SIZE")
-        size_label.setProperty("role", "eyebrow")
-        tools.addSpacing(6)
-        tools.addWidget(size_label)
+        size = self._size_field = QWidget()
+        size_layout = QVBoxLayout(size)
+        size_layout.setContentsMargins(0, 0, 0, 0)
+        size_layout.setSpacing(4)
+        size_label = QLabel("Canvas size")
+        size_label.setProperty("role", "fieldLabel")
+        size_layout.addWidget(size_label)
 
         self.size_combo = ProductComboBox()
         for size in KNOWN_SIZES:
             self.size_combo.addItem(size, size)
         self.size_combo.setCurrentText("32x32")
+        self.size_combo.setAccessibleName("Canvas size")
         self.size_combo.currentIndexChanged.connect(self._on_size_changed)
-        tools.addWidget(self.size_combo)
+        size_label.setBuddy(self.size_combo)
+        size_layout.addWidget(self.size_combo)
+        tools.addWidget(self._size_field, 1, 0)
 
-        brush_label = QLabel("BRUSH")
-        brush_label.setProperty("role", "eyebrow")
-        tools.addSpacing(6)
-        tools.addWidget(brush_label)
-
-        color_row = QHBoxLayout()
-        color_row.setSpacing(10)
-        color_row.addWidget(QLabel("Color"), 1)
+        brush = self._brush_field = QWidget()
+        color_row = QHBoxLayout(brush)
+        color_row.setContentsMargins(0, 0, 0, 0)
+        color_row.setSpacing(8)
         self.color_swatch = QLabel()
         self.color_swatch.setObjectName("DrawColorSwatch")
-        self.color_swatch.setFixedSize(32, 32)
+        self.color_swatch.setFixedSize(28, 28)
         self._refresh_swatch()
         color_row.addWidget(self.color_swatch)
-        tools.addLayout(color_row)
 
-        self.color_button = QPushButton("Choose Color")
+        self.color_button = QPushButton("Brush color")
         self.color_button.clicked.connect(self._pick_color)
-        tools.addWidget(self.color_button)
+        color_row.addWidget(self.color_button, 1)
+        tools.addWidget(brush, 2, 0)
 
         self.clear_button = QPushButton("Clear Canvas")
         self.clear_button.clicked.connect(self._clear_canvas)
-        tools.addWidget(self.clear_button)
+        tools.addWidget(self.clear_button, 3, 0)
 
         self.fill_button = QPushButton("Fill Canvas")
         self.fill_button.clicked.connect(lambda: self.canvas.fill(self._color))
-        tools.addWidget(self.fill_button)
-        tools.addStretch(1)
+        tools.addWidget(self.fill_button, 4, 0)
+        tools.setRowStretch(5, 1)
         workspace.addWidget(tools_panel)
 
         canvas_panel = QFrame()
@@ -187,7 +212,7 @@ class DrawView(QWidget):
         self.canvas = PixelCanvas(32, 32)
         self.canvas.setAccessibleName("Pixel canvas")
         self.canvas.setAccessibleDescription(
-            "Paint a pixel image for the selected Bluetooth matrix panel"
+            "Paint a pixel image. Arrow keys move, Space paints, and Delete erases a pixel."
         )
         self.canvas.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -195,9 +220,9 @@ class DrawView(QWidget):
         self.canvas.changed.connect(self._update_action_states)
         canvas_layout.addWidget(self.canvas, 1)
         workspace.addWidget(canvas_panel, 1)
-        root.addLayout(workspace, 1)
+        body_layout.addLayout(workspace, 1)
 
-        animation_panel = QFrame()
+        animation_panel = self.animation_panel = QFrame()
         animation_panel.setObjectName("DrawTimelinePanel")
         animation_layout = QVBoxLayout(animation_panel)
         animation_layout.setContentsMargins(16, 12, 16, 12)
@@ -225,29 +250,72 @@ class DrawView(QWidget):
         self.clear_frames_button.setEnabled(False)
         send_row.addWidget(self.clear_frames_button)
 
+        self.play_button = QPushButton("Play Animation")
+        self.play_button.clicked.connect(self._play_animation)
+        send_row.addWidget(self.play_button)
         send_row.addStretch(1)
+        animation_layout.addLayout(send_row)
+        body_layout.addWidget(animation_panel)
+        animation_panel.hide()
+
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
+        self.animation_toggle = QPushButton("Animation")
+        self.animation_toggle.setCheckable(True)
+        self.animation_toggle.toggled.connect(animation_panel.setVisible)
+        self.animation_toggle.setAccessibleName("Show saved animation frames and playback controls")
+        actions.addWidget(self.animation_toggle)
+        actions.addStretch(1)
 
         self.send_button = QPushButton("Send to Panel")
         self.send_button.setProperty("role", "primary")
         self.send_button.clicked.connect(self._send_current)
-        send_row.addWidget(self.send_button)
-
-        self.play_button = QPushButton("Play Animation")
-        self.play_button.clicked.connect(self._play_animation)
-        send_row.addWidget(self.play_button)
+        actions.addWidget(self.send_button)
 
         self.stop_button = QPushButton("Stop")
         self.stop_button.clicked.connect(lambda: self._stop_send())
         self.stop_button.setEnabled(False)
-        send_row.addWidget(self.stop_button)
-
-        animation_layout.addLayout(send_row)
-        root.addWidget(animation_panel)
+        actions.addWidget(self.stop_button)
+        root.addLayout(actions)
 
         self.status = QLabel("")
         self.status.setWordWrap(True)
         self.status.setVisible(False)
         root.addWidget(self.status)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        if not hasattr(self, "_workspace_layout"):
+            return
+        compact = self.height() < 680 or self.width() < 900
+        inset = 16 if compact else 28
+        self._root_layout.setContentsMargins(inset, 16 if compact else 24, inset, 16 if compact else 28)
+        self._root_layout.setSpacing(10 if compact else 18)
+        self._intro.setVisible(not compact)
+        self._workspace_layout.setDirection(QBoxLayout.Direction.TopToBottom if compact else QBoxLayout.Direction.LeftToRight)
+        self._tools_panel.setMinimumWidth(0 if compact else 236)
+        self._tools_panel.setMaximumWidth(16777215 if compact else 236)
+        self._tools_panel.setSizePolicy(QSizePolicy.Policy.Expanding if compact else QSizePolicy.Policy.Fixed,
+                                        QSizePolicy.Policy.Maximum if compact else QSizePolicy.Policy.Expanding)
+        self._tools_layout.setContentsMargins(8 if compact else 12, 8 if compact else 12,
+                                              8 if compact else 12, 8 if compact else 12)
+        widgets = [self._target_field, self._size_field, self._brush_field, self.clear_button, self.fill_button]
+        for widget in widgets:
+            self._tools_layout.removeWidget(widget)
+        for row in range(6):
+            self._tools_layout.setRowStretch(row, 0)
+        for column in range(3):
+            self._tools_layout.setColumnStretch(column, 1 if compact else 0)
+        if compact:
+            self._tools_layout.addWidget(self._target_field, 0, 0, 1, 2)
+            self._tools_layout.addWidget(self._size_field, 0, 2)
+            self._tools_layout.addWidget(self._brush_field, 1, 0)
+            self._tools_layout.addWidget(self.clear_button, 1, 1)
+            self._tools_layout.addWidget(self.fill_button, 1, 2)
+        else:
+            for row, widget in enumerate(widgets):
+                self._tools_layout.addWidget(widget, row, 0)
+            self._tools_layout.setRowStretch(5, 1)
 
     # --- helpers ---
     def _connect_device_signals(self) -> None:
@@ -425,6 +493,9 @@ class DrawView(QWidget):
         if self._thread is not None:
             self._set_status("A send is already in progress.")
             return
+        if self.controller.is_device_busy(device):
+            self._set_status("Finish the current output before sending a drawing.", "error")
+            return
 
         self._send_failed = False
         self._stop_requested = False
@@ -436,7 +507,7 @@ class DrawView(QWidget):
             if self._sending_animation
             else "Sending to panel..."
         )
-        self._thread = QThread()
+        self._thread = QThread(self)
         self._worker = _DrawWorker(device, frames, 0.2)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -444,13 +515,12 @@ class DrawView(QWidget):
         self._worker.finished.connect(self._on_send_finished)
         self._worker.finished.connect(self._thread.quit)
         # Clear references only once the thread has actually stopped.
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._thread.finished.connect(self._clear_thread_refs)
+        self._thread.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._clear_thread_refs, Qt.ConnectionType.QueuedConnection)
         self._thread.start()
-        if self._sending_animation:
-            self.controller.mark_device_output(
-                self._send_device, "Pixel animation", active=True
-            )
+        self.controller.mark_device_output(
+            self._send_device, "Pixel animation" if self._sending_animation else "Pixel upload", active=True
+        )
         self._update_action_states()
 
     def _on_send_error(self, message: str) -> None:
@@ -476,9 +546,18 @@ class DrawView(QWidget):
                 )
             self._set_status("Sent to panel.", "active")
 
+    @Slot()
     def _clear_thread_refs(self) -> None:
-        self._thread = None
+        thread = self._thread
+        sender = self.sender()
+        if thread is None or (isinstance(sender, QThread) and sender is not thread):
+            return
+        if not thread.wait(0):
+            QTimer.singleShot(1, self._clear_thread_refs)
+            return
         self._worker = None
+        self._thread = None
+        thread.deleteLater()
         self._send_device = None
         self._update_action_states()
 

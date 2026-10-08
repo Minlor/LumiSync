@@ -134,7 +134,11 @@ def _load_saved_settings(filename: str | os.PathLike[str] = "settings.json") -> 
     copied = dict(data)
     copied["devices"] = [dict(device) for device in devices if isinstance(device, dict)]
     copied["selectedDevice"] = selected
-    copied["time"] = float(data.get("time", 0) or 0)
+    try:
+        copied["time"] = float(data.get("time", 0) or 0)
+    except (ValueError, TypeError):
+        copied["time"] = 0.0
+    copied["selectedDevice"] = _selected_index(copied, len(copied["devices"]))
     return copied
 
 
@@ -146,10 +150,17 @@ def load_settings(filename: str | os.PathLike[str] = "settings.json") -> Dict[st
 def _device_keys(device: Dict[str, Any]) -> List[str]:
     """Return stable match keys, preferring MAC over weaker IP/model fallback."""
     keys: List[str] = []
+    identity = device.get("device_id") or device.get("devId")
+    channel = device.get("tuya_channel")
+    if identity:
+        keys.append(f"id:{str(identity).lower()}" + (f":{channel}" if channel else ""))
     mac = device.get("mac")
     if mac:
         keys.append(f"mac:{str(mac).lower()}")
 
+    # Gangs share an IP and physical ID, but must never merge into one another.
+    if channel:
+        return keys
     ip = device.get("ip")
     model = device.get("model")
     if ip and model:
@@ -199,6 +210,8 @@ def merge_discovered_devices(
         else:
             existing = merged[matching_index]
             for key, value in copied.items():
+                if key == "mac" and str(existing.get("mac", "")).casefold() == str(value).casefold():
+                    continue  # Preserve saved group identities across case changes.
                 if value is not None:
                     existing[key] = value
 
@@ -209,7 +222,7 @@ def merge_discovered_devices(
 
 
 def discover_lan_devices(
-    preserve_existing: bool = True, deep: bool = False
+    preserve_existing: bool = True, deep: bool = False, *, persist: bool = True
 ) -> Dict[str, Any]:
     """Discover LAN devices once, merge with saved devices, and persist safely.
 
@@ -272,7 +285,10 @@ def discover_lan_devices(
         len(discovered_devices),
         len(merged_devices),
     )
-    writeJSON(settings)
+    if persist:
+        writeJSON(settings)
+    else:
+        settings["lastDiscoveryDevices"] = discovered_devices
     return settings
 
 def request() -> socket.socket:
@@ -323,11 +339,17 @@ def writeJSON(settings: Dict[str, Any]) -> None:
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     logger.info("Writing settings to %s", path)
-    write_json(settings, str(path))
+    from .accounts.secrets import protect_device
 
-def get_data() -> Dict[str, Any]:
+    protected = dict(settings)
+    protected["devices"] = [protect_device(device) for device in settings.get("devices", [])]
+    write_json(protected, str(path))
+
+def get_data(*, refresh: bool = True) -> Dict[str, Any]:
     """Get device data from settings file or by requesting new data."""
     path = settings_path()
+    if not refresh:
+        return _load_saved_settings(path)
     try:
         logger.info("Attempting to load device data from %s", path)
         with path.open("r", encoding="utf-8") as f:

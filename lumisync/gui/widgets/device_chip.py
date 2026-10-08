@@ -22,11 +22,12 @@ from PySide6.QtWidgets import (
 from ..resources.icons import IconKey, tinted_icon
 from ..theme.tokens import TOKENS
 from ..utils.flow_layout import FlowLayout
+from ...groups import device_key
 
 
 def device_id(device: Dict[str, Any]) -> str:
     """Return the stable identifier used by sync target selections."""
-    return str(device.get("mac") or device.get("ip") or device.get("model") or "?")
+    return device_key(device) or "?"
 
 
 def group_member_ids(group: Dict[str, Any], valid_ids: Iterable[str]) -> List[str]:
@@ -58,6 +59,7 @@ class DeviceChipStrip(QFrame):
         root.setSpacing(7)
 
         heading = QHBoxLayout()
+        self._heading = heading
         heading.setSpacing(8)
         self._label = QLabel(label)
         self._label.setProperty("role", "sectionLabel")
@@ -89,11 +91,25 @@ class DeviceChipStrip(QFrame):
         root.addWidget(self._group_host)
 
         self._empty_groups = QLabel(
-            "No groups yet — create one from these targets or on Devices."
+            "Create a group from these targets or on Devices."
         )
         self._empty_groups.setProperty("role", "hint")
         self._empty_groups.setWordWrap(True)
         root.addWidget(self._empty_groups)
+
+        self._empty_devices = QLabel("No compatible local lights. Add one in Devices to start syncing.")
+        self._empty_devices.setProperty("role", "warn")
+        self._empty_devices.setWordWrap(True)
+        root.insertWidget(2, self._empty_devices)
+        self._compact = False
+
+    def add_action(self, button: QPushButton) -> None:
+        """Keep target management beside its heading instead of another row."""
+        self._heading.addWidget(button)
+
+    def set_compact(self, compact: bool) -> None:
+        self._compact = compact
+        self._empty_groups.setVisible(bool(self._devices) and self._group_host.isHidden() and not compact)
 
     # ------------------------------------------------------------------ public
 
@@ -172,10 +188,8 @@ class DeviceChipStrip(QFrame):
             )
             self._device_layout.addWidget(button)
 
-        if not self._devices:
-            empty = QLabel("No devices available")
-            empty.setProperty("role", "warn")
-            self._device_layout.addWidget(empty)
+        self._device_host.setVisible(bool(self._devices))
+        self._empty_devices.setVisible(not self._devices)
 
         group_count = 0
         for group in self._groups:
@@ -199,7 +213,7 @@ class DeviceChipStrip(QFrame):
 
         self._group_heading.setVisible(bool(group_count))
         self._group_host.setVisible(bool(group_count))
-        self._empty_groups.setVisible(not group_count)
+        self._empty_groups.setVisible(bool(self._devices) and not group_count and not self._compact)
 
         selected = len(self._selected_ids)
         total = len(self._devices)
@@ -215,6 +229,7 @@ class DeviceChipStrip(QFrame):
         tooltip: str,
     ) -> QPushButton:
         button = QPushButton(text)
+        button.setMinimumHeight(44)
         button.setCheckable(True)
         button.setChecked(enabled)
         button.setProperty("chip", True)

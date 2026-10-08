@@ -6,10 +6,15 @@ test("builds the LumiSync product page as static HTML", async () => {
   const html = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
 
   assert.match(html, /<title>LumiSync — Screen\. Sound\. Light\. In sync\.<\/title>/i);
-  assert.match(html, /Light that follows/);
-  assert.match(html, /No account · No cloud required/);
+  assert.match(html, /Lights and plugs\./);
+  assert.match(html, /optional vendor accounts for cloud control/);
+  assert.match(html, /Download LumiSync 0\.8\.0/);
+  assert.match(html, /vendor-accounts\.md/);
+  assert.match(html, /readings refresh every five seconds/i);
+  assert.match(html, /Example data\./);
+  assert.match(html, /<table class="deviceTable">/);
+  assert.doesNotMatch(html, /No account · No cloud required|Single-file installer/);
   assert.match(html, /Different brands\./);
-  assert.match(html, /Make room react\./);
   assert.match(html, /LumiSync-Windows-x64-onefile\.exe/);
   assert.match(html, /LumiSync-x86_64\.AppImage/);
   assert.match(html, /https:\/\/lumisync\.minlor\.net\/og\.png/);
@@ -26,6 +31,8 @@ test("ships Cloudflare Workers configuration and branded assets", async () => {
     access(new URL("../dist/images/devices.png", import.meta.url)),
     access(new URL("../dist/images/monitor-sync.png", import.meta.url)),
     access(new URL("../dist/images/music-sync.png", import.meta.url)),
+    access(new URL("../dist/images/accounts.png", import.meta.url)),
+    access(new URL("../dist/images/plug-energy.png", import.meta.url)),
   ]);
 
   const [page, config, packageJson] = await Promise.all([

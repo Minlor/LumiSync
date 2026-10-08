@@ -72,7 +72,8 @@ hiddenimports += [
 # device family. bleak's Windows backend lives in the separate winrt.* packages,
 # and tinytuya pulls its own crypto deps — collect_all grabs their submodules,
 # data files, and dynamic libs so nothing is missing at runtime.
-for _pkg in ("bleak", "winrt", "tinytuya"):
+for _pkg in ("bleak", "winrt", "tinytuya", "requests", "certifi", "cryptography",
+             "keyring", "qrcode", "tuya_sharing", "paho.mqtt"):
     _d, _b, _h = safe_collect_all(_pkg)
     datas += _d
     binaries += _b
@@ -112,6 +113,12 @@ _BLOAT_MARKERS = (
     "_avif.",  # PIL AVIF codec (belt and braces with the module exclude)
 )
 _WINDOWS_BLOAT_MARKERS = (
+    # Qt uses Windows' ICU C API. A third-party ICU found on the build PATH
+    # has versioned exports and shadows the system DLL, breaking Qt imports.
+    "icu.dll",
+    "icuuc.dll",
+    "icuin.dll",
+    "icudt.dll",
     # Software-OpenGL fallback; the widgets UI renders with Qt's raster
     # engine and never requests OpenGL.
     "opengl32sw.dll",

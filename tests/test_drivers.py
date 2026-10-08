@@ -337,9 +337,9 @@ class TuyaEncoderTests(unittest.TestCase):
         self.assertEqual(encode_colour(255, 255, 255), "0000000003e8")
 
     def test_colour_data_v1_golden(self):
-        self.assertEqual(encode_colour(255, 0, 0, schema="v1"), "0000ffff")
-        self.assertEqual(encode_colour(0, 255, 0, schema="v1"), "0078ffff")
-        self.assertEqual(encode_colour(255, 255, 255, schema="v1"), "000000ff")
+        self.assertEqual(encode_colour(255, 0, 0, schema="v1"), "ff00000000ffff")
+        self.assertEqual(encode_colour(0, 255, 0, schema="v1"), "00ff000078ffff")
+        self.assertEqual(encode_colour(255, 255, 255, schema="v1"), "ffffff000000ff")
 
     def test_brightness_scaling(self):
         self.assertEqual([encode_brightness(p) for p in (0, 50, 100)], [10, 505, 1000])
@@ -359,7 +359,7 @@ class TuyaEncoderTests(unittest.TestCase):
         )
         self.assertEqual(
             build_color_command({"dp_schema": "v1"}, 0, 255, 0),
-            {2: "colour", 5: "0078ffff"},
+            {2: "colour", 5: "00ff000078ffff"},
         )
 
 

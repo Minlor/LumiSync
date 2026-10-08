@@ -2,7 +2,7 @@ import json
 import os
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -470,7 +470,8 @@ class SegmentCountTests(unittest.TestCase):
                 self.closed = True
 
         controller = SyncController()
-        thread = object()
+        thread = Mock()
+        thread.wait.return_value = True
         server = FakeServer()
         controller.sync_thread = thread
         controller.sync_worker = object()
@@ -495,6 +496,12 @@ class SegmentCountTests(unittest.TestCase):
         class FinishedThread:
             def isRunning(self):
                 return False
+
+            def wait(self, timeout):
+                return True
+
+            def deleteLater(self):
+                pass
 
         controller = SyncController()
         controller.sync_thread = FinishedThread()
@@ -624,6 +631,9 @@ class SegmentCountTests(unittest.TestCase):
             controller.add_ble_device_manually("AA:BB:CC:DD:EE:FF", "iDotMatrix", "16x16")
             self.assertEqual(controller.devices[0]["transport"], "ble")
             controller.set_color_at(0, 10, 20, 30)
+            from PySide6.QtCore import QThreadPool
+            QThreadPool.globalInstance().waitForDone(2000)
+            self.app.processEvents()
             # BLE adapters are pooled and persistent; app shutdown closes them.
             pool.close_all()
 

@@ -34,15 +34,16 @@ class GoveeLanAdapter(TransportAdapter):
 
     @property
     def capabilities(self) -> DeviceCapabilities:
-        sku = self.device.get("model") or self.device.get("sku")
+        sku = self.device.get("sku") or self.device.get("model")
         cap = sku_catalog.capabilities_for(sku)
         return DeviceCapabilities(
             transport="lan",
             segment_count=connection.get_segment_count(self.device, default=10),
             supports_power=True,
             supports_brightness=True,
-            supports_color=True,
+            supports_color=cap.supports_color if cap else True,
             supports_segments=(cap.supports_razer if cap else True),
+            supports_streaming=(cap.supports_razer if cap else True),
             supports_white=bool(cap and cap.color_temp_max > 0),
             color_temp_min=cap.color_temp_min if cap else 0,
             color_temp_max=cap.color_temp_max if cap else 0,

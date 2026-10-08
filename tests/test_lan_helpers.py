@@ -1,6 +1,4 @@
 import base64
-import importlib.util
-from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -79,18 +77,13 @@ class LanHelperTests(unittest.TestCase):
         self.assertIn("LAN Control", message)
         self.assertIn("PID 1234", message)
 
-    def test_cloud_runtime_module_is_not_importable(self):
-        self.assertIsNone(importlib.util.find_spec("lumisync.cloud"))
-
-    def test_runtime_code_has_no_cloud_references(self):
-        root = Path(__file__).resolve().parents[1] / "lumisync"
-        offenders = [
-            path
-            for path in root.rglob("*.py")
-            if "cloud" in path.read_text(encoding="utf-8").lower()
-        ]
-
-        self.assertEqual(offenders, [])
+    def test_local_lan_control_does_not_require_an_account(self):
+        from lumisync.drivers.registry import create_adapter
+        from unittest.mock import Mock
+        socket = Mock()
+        with patch("lumisync.accounts.manager.account_manager.client_for", side_effect=AssertionError("Local control must not authenticate")):
+            create_adapter({"ip": "192.0.2.10"}, socket).set_power(True)
+        socket.sendto.assert_called_once()
 
 
 if __name__ == "__main__":

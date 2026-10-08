@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 def device_key(device: Dict[str, Any]) -> str:
     """Stable identity for a device within a group (MAC preferred)."""
-    return str(device.get("mac") or device.get("ip") or device.get("model") or "")
+    return str(device.get("mac") or device.get("device_id") or device.get("ble_address") or device.get("ip") or device.get("model") or "")
 
 
 def make_group(
