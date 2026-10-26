@@ -71,9 +71,11 @@ hiddenimports += [
 # Device transports are bundled so the frozen app controls every supported
 # device family. bleak's Windows backend lives in the separate winrt.* packages,
 # and tinytuya pulls its own crypto deps — collect_all grabs their submodules,
-# data files, and dynamic libs so nothing is missing at runtime.
+# data files, and dynamic libs so nothing is missing at runtime. soundcard's
+# Linux backend reads pulseaudio.py.h from its package directory at import
+# time, so its data files must ship or music sync fails on Linux AppImages.
 for _pkg in ("bleak", "winrt", "tinytuya", "requests", "certifi", "cryptography",
-             "keyring", "qrcode", "tuya_sharing", "paho.mqtt"):
+             "keyring", "qrcode", "tuya_sharing", "paho.mqtt", "soundcard"):
     _d, _b, _h = safe_collect_all(_pkg)
     datas += _d
     binaries += _b
