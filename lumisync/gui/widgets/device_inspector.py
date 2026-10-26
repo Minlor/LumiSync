@@ -568,6 +568,10 @@ class DeviceInspector(QFrame):
             return "Nearby", "online", "Visible during the latest search"
         if source == "not_seen":
             return "Not visible", "offline", "Not seen in the latest search"
+        if source == "unknown" and state.get("readback_supported", True):
+            # Never-confirmed LAN device: some models never answer status
+            # queries, so an unanswered poll is not proof of absence.
+            return "State unknown", "warning", "No status reply yet; commands may still work"
         if source == "pending" or state.get("stale"):
             return "Refreshing", "warning", "Waiting for status confirmation"
         return "State unknown", "offline", "Live state is not available"

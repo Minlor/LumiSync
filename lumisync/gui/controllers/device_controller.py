@@ -584,6 +584,7 @@ class DeviceController(QObject):
             "stale": not is_ble,
             "status_source": "unknown" if is_ble else "pending",
             "readback_supported": not is_ble,
+            "readback_seen": False,
             "last_seen": None,
             "last_command_at": None,
             "last_output": None,
@@ -622,6 +623,18 @@ class DeviceController(QObject):
         if (updates.get("query_started_at") is not None
                 and updates["query_started_at"] < (state.get("last_command_at") or 0)):
             return  # A read begun before the last write cannot confirm it.
+        updates = dict(updates)
+        if updates.get("status_source") == "confirmed":
+            state["readback_seen"] = True
+        if (updates.get("status_source") == "offline"
+                and updates.get("last_error")
+                and not state.get("readback_seen")):
+            # A failed status poll is not proof of absence: Govee LAN commands
+            # are fire-and-forget, and some models (e.g. the H7020 string
+            # lights) simply never answer status queries. Until one reply has
+            # been confirmed, report "unknown" instead of "offline" so the
+            # card does not flap to Offline after every command (issue #49).
+            updates["status_source"] = "unknown"
         for field, value in updates.items():
             if field == "color" and value is None and state.get("color") is not None:
                 continue

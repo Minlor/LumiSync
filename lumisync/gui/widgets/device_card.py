@@ -464,6 +464,11 @@ class DeviceCard(QFrame):
         elif source == "not_seen":
             status_text, status_state = "Not visible", "offline"
             tooltip = "Not seen in the latest Bluetooth search."
+        elif source == "unknown" and state.get("readback_supported", True):
+            # Never-confirmed LAN device: some models never answer status
+            # queries, so an unanswered poll is not proof of absence.
+            status_text, status_state = "State unknown", "warning"
+            tooltip = "No status reply yet; commands may still work."
         elif source == "pending" or stale:
             status_text, status_state = "Refreshing", "warning"
             tooltip = "Waiting for status confirmation."

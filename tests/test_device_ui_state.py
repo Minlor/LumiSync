@@ -52,6 +52,92 @@ class DeviceUiStateTests(unittest.TestCase):
         self.assertFalse(state["readback_supported"])
         self.assertFalse(state["stale"])
 
+    def test_lan_status_failure_before_any_confirmation_is_unknown(self):
+        # Govee LAN commands are fire-and-forget; some models (H7020, issue
+        # #49) never answer status queries. Until one reply is confirmed, a
+        # failed poll must not paint the device as Offline.
+        controller = self._controller()
+        controller.devices = [
+            {"mac": "CC:DD", "ip": "192.168.1.4", "model": "H7020"}
+        ]
+
+        controller._merge_device_state(
+            0,
+            {
+                "online": False,
+                "stale": True,
+                "status_source": "offline",
+                "readback_supported": True,
+                "last_error": "No status reply",
+            },
+        )
+
+        state = controller.get_device_state_at(0)
+        self.assertEqual(state["status_source"], "unknown")
+        self.assertTrue(state["stale"])
+        self.assertFalse(state["readback_seen"])
+
+    def test_lan_status_failure_after_confirmation_stays_offline(self):
+        controller = self._controller()
+        controller.devices = [
+            {"mac": "CC:DD", "ip": "192.168.1.4", "model": "H619C"}
+        ]
+
+        controller._merge_device_state(
+            0,
+            {
+                "online": True,
+                "stale": False,
+                "status_source": "confirmed",
+                "power_on": True,
+                "readback_supported": True,
+                "last_error": None,
+            },
+        )
+        controller._merge_device_state(
+            0,
+            {
+                "online": False,
+                "stale": True,
+                "status_source": "offline",
+                "readback_supported": True,
+                "last_error": "No status reply",
+            },
+        )
+
+        state = controller.get_device_state_at(0)
+        self.assertTrue(state["readback_seen"])
+        self.assertEqual(state["status_source"], "offline")
+
+    def test_card_shows_unknown_copy_for_unanswered_lan_status(self):
+        card = DeviceCard(0, {"model": "H7020", "ip": "192.168.1.4"})
+
+        card.set_state(
+            {
+                "online": False,
+                "stale": True,
+                "status_source": "unknown",
+                "readback_supported": True,
+                "last_error": "No status reply",
+            }
+        )
+
+        self.assertEqual(card.state_detail_label.text(), "State unknown")
+        self.assertIn("No status reply yet", card.state_detail_label.toolTip())
+
+    def test_inspector_shows_unknown_copy_for_unanswered_lan_status(self):
+        copy = DeviceInspector._status_copy(
+            {
+                "online": False,
+                "stale": True,
+                "status_source": "unknown",
+                "readback_supported": True,
+                "last_error": "No status reply",
+            }
+        )
+
+        self.assertEqual(copy[0], "State unknown")
+
     def test_bluetooth_command_is_last_sent_without_fake_readback(self):
         controller = self._controller()
         controller.devices = [
