@@ -462,6 +462,33 @@ class SegmentCountTests(unittest.TestCase):
         self.assertTrue(server.closed)
         self.assertIsNone(controller.server)
 
+    def test_zone_hint_only_targets_lan_devices_without_catalog_entry(self):
+        controller = SyncController()
+
+        # The catalog knows H7020's zone count, so it stays quiet.
+        self.assertIsNone(
+            controller._zone_hint_for([{"model": "H7020", "transport": "lan"}])
+        )
+
+        hint = controller._zone_hint_for(
+            [
+                {"model": "H0000", "transport": "lan"},
+                {"model": "IDM", "transport": "ble"},
+                {"model": "Account", "transport": "govee_account"},
+            ]
+        )
+        self.assertIn("H0000", hint)
+        self.assertNotIn("IDM", hint)
+        self.assertNotIn("Account", hint)
+        self.assertIn("Adjust Zones", hint)
+
+        # An explicit user override also silences the hint.
+        self.assertIsNone(
+            controller._zone_hint_for(
+                [{"model": "H0000", "segment_count_override": 4}]
+            )
+        )
+
     def test_finished_worker_clears_active_sync_state(self):
         class FakeServer:
             closed = False

@@ -714,6 +714,41 @@ class SyncController(QObject):
             f"{display_mode} sync started with {len(selected)} {device_word} "
             f"at {int(brightness * 100)}% brightness"
         )
+        zone_hint = self._zone_hint_for(selected)
+        if zone_hint:
+            self.status_updated.emit(zone_hint)
+
+    def _zone_hint_for(self, devices: List[Dict[str, Any]]) -> Optional[str]:
+        """Return a tip when a LAN device has no known zone count.
+
+        The Govee LAN segment stream carries its zone count in every frame,
+        and devices silently drop frames whose count they reject — which reads
+        as "sync started but nothing happens" (issue #49). Devices missing
+        from the SKU catalog fall back to the generic 10-zone default, so
+        point users at the per-device zone-count control instead of staying
+        silent.
+        """
+        from ... import sku_catalog
+
+        unknown = sorted(
+            {
+                str(device.get("sku") or device.get("model") or "Unknown")
+                for device in devices
+                if str(device.get("transport", "lan")).lower() in ("", "lan")
+                and sku_catalog.capabilities_for(
+                    device.get("sku") or device.get("model")
+                ) is None
+                and not device.get("segment_count_override")
+                and not device.get("segmentCountOverride")
+            }
+        )
+        if not unknown:
+            return None
+        names = ", ".join(unknown)
+        return (
+            f"No zone count is known for {names}. If the lights stay solid "
+            "during sync, set the correct zone count with Adjust Zones."
+        )
 
     def stop_sync(self, announce: bool = True):
         """Stop any active synchronization."""

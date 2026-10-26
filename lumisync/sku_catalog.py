@@ -69,6 +69,12 @@ BUILTIN: Dict[str, SkuCapabilities] = {
     # 14 is a physical/manual mapping count, not proof of official B0 support.
     # Keep the user override authoritative while this LAN path is experimental.
     "H6672": _cap("H6672", "RGBWIC TV Backlight 2", 14),
+    # H7020 is the S14 bulb string light; its manual lists 15 bulbs, so 15 is
+    # the physical zone count. Govee Desktop support and LAN razer-stream
+    # acceptance are unverified (issue #49: music sync silently does nothing
+    # at the generic 10-zone default), so a per-device override stays
+    # authoritative and this entry only fixes the stream frame size.
+    "H7020": _cap("H7020", "S14 LED Bulb String Lights", 15, ct_min=0, ct_max=0),
 }
 
 # Live catalog = bundled table plus anything imported at runtime. Mutated by

@@ -17,6 +17,11 @@ class BuiltinCatalogTests(unittest.TestCase):
     def test_h6672_reports_mobile_app_color_piece_count(self):
         self.assertEqual(sku_catalog.segment_count_for("H6672"), 14)
 
+    def test_h7020_reports_bulb_string_zone_count(self):
+        # The S14 bulb string has 15 physical bulbs (manual); the generic
+        # 10-zone default rejected its razer frames (issue #49).
+        self.assertEqual(sku_catalog.segment_count_for("H7020"), 15)
+
     def test_lookup_is_case_insensitive(self):
         self.assertEqual(sku_catalog.segment_count_for("h619c"), 10)
 
