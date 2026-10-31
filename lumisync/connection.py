@@ -7,10 +7,9 @@ import subprocess
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from colorama import Fore
-
 from . import sku_catalog
 from .config.options import CONNECTION
+from .device import DeviceLike, as_device
 
 
 STATUS_COMMANDS = ("status", "devStatus")
@@ -55,10 +54,10 @@ def describe_port_conflict(
     owner: Optional[str] = None,
 ) -> str:
     """Build a clear, user-facing LAN socket conflict message."""
-    port = CONNECTION.default.listen_port if port is None else int(port)
-    owner = owner or _windows_udp_port_owner(port)
+    resolved_port = CONNECTION.default.listen_port if port is None else int(port)
+    owner = owner or _windows_udp_port_owner(resolved_port)
     message = (
-        f"UDP port {port} is already in use. Close Govee Desktop or another "
+        f"UDP port {resolved_port} is already in use. Close Govee Desktop or another "
         f"LumiSync instance, then try again. {LAN_REQUIREMENTS_MESSAGE}"
     )
     if owner:
@@ -87,31 +86,26 @@ def create_lan_socket(
     return server
 
 
-def get_device_port(device: Dict[str, Any]) -> int:
+def get_device_port(raw_device: DeviceLike) -> int:
     """Return the UDP control port for a device."""
-    for key in ("Device_Port", "devicePort"):
-        value = device.get(key)
+    device = as_device(raw_device)
+    for value in (device.get("device_port"), device.port):
+        if value is None:
+            continue
         try:
             port = int(value)
         except (TypeError, ValueError):
             continue
         if 0 < port <= 65535:
-            return port
-
-    try:
-        port = int(device.get("port", 0))
-    except (TypeError, ValueError):
-        port = 0
-
-    # Older LumiSync discovery saved the scan port (4001) as the device control
-    # port. Keep manual overrides, but repair stale auto-discovered entries.
-    if 0 < port <= 65535 and (device.get("manual") or port != CONNECTION.default.port):
-        return port
+            # Older LumiSync discovery saved the scan port (4001) as the device
+            # control port. Keep manual overrides, but repair stale entries.
+            if device.manual or port != CONNECTION.default.port:
+                return port
 
     return CONNECTION.default.control_port
 
 
-def get_segment_count(device: Dict[str, Any], default: int = 10) -> int:
+def get_segment_count(raw_device: DeviceLike, default: int = 10) -> int:
     """Return the effective zone count for a device.
 
     Precedence: explicit user override, then the SKU capability catalog
@@ -119,19 +113,12 @@ def get_segment_count(device: Dict[str, Any], default: int = 10) -> int:
     default. The catalog lets known models auto-configure their zone count
     without the Govee app.
     """
+    device = as_device(raw_device)
     fallback = default if isinstance(default, int) and default > 0 else 10
-    for key in ("segment_count_override", "segmentCountOverride"):
-        value = device.get(key)
-        try:
-            count = int(value)
-        except (TypeError, ValueError):
-            continue
-        if 0 < count <= 255:
-            return count
+    if device.segment_count_override is not None:
+        return device.segment_count_override
 
-    catalog_count = sku_catalog.segment_count_for(
-        device.get("sku") or device.get("model")
-    )
+    catalog_count = sku_catalog.segment_count_for(device.catalog_sku)
     if catalog_count and 0 < catalog_count <= 255:
         return catalog_count
 
@@ -142,7 +129,7 @@ def listen(server: socket.socket) -> List[str]:
     """Listens for device response."""
     ready = select.select([server], [], [], server.gettimeout())
     if not ready[0]:
-        print(f"{Fore.RED}Error: No device found!")
+        print("Error: No device found!")
         # Don't exit the program, just return an empty list
         return []
 
@@ -150,7 +137,7 @@ def listen(server: socket.socket) -> List[str]:
     while True:
         try:
             message, address = server.recvfrom(4096)
-            print(f"{Fore.LIGHTGREEN_EX}Received from {address}")
+            print(f"Received from {address}")
             messages.append(message)
         except (BlockingIOError, socket.timeout):
             break
@@ -191,7 +178,7 @@ def connect() -> Tuple[socket.socket, List[Dict[str, Any]]]:
     Tries both multicast addresses (239.255.255.250 and 255.255.255.255)
     for improved compatibility across different network configurations.
     """
-    print(f"{Fore.LIGHTGREEN_EX}Searching for devices...")
+    print("Searching for devices...")
     server = create_lan_socket()
 
     # Try both multicast addresses for better compatibility
@@ -201,9 +188,9 @@ def connect() -> Tuple[socket.socket, List[Dict[str, Any]]]:
     for addr in multicast_addresses:
         try:
             server.sendto(scan_message, (addr, CONNECTION.default.port))
-            print(f"{Fore.LIGHTGREEN_EX}Sent discovery to {addr}")
+            print(f"Sent discovery to {addr}")
         except Exception as e:
-            print(f"{Fore.YELLOW}Failed to send to {addr}: {e}")
+            print(f"Failed to send to {addr}: {e}")
 
     return server, parse(listen(server))
 
@@ -239,7 +226,7 @@ def sweep_scan(timeout: float = 2.5) -> Tuple[socket.socket, List[Dict[str, Any]
     some managed switches), where :func:`connect` finds nothing. Probes each
     host on the scan and control ports, then parses whoever answers as Govee.
     """
-    print(f"{Fore.LIGHTGREEN_EX}Sweeping local subnet for devices...")
+    print("Sweeping local subnet for devices...")
     server = create_lan_socket(timeout=timeout)
     scan_message = b'{"msg":{"cmd":"scan","data":{"account_topic":"reserve"}}}'
 
@@ -261,26 +248,27 @@ def sweep_scan(timeout: float = 2.5) -> Tuple[socket.socket, List[Dict[str, Any]
 
 
 # TODO: Combine the below functions into one (into a complete "send" function?)
-def send(server: socket.socket, device: Dict[str, Any], data: Dict[str, Any]) -> None:
+def send(server: socket.socket, device: DeviceLike, data: Dict[str, Any]) -> None:
     """Sends some data from the server to a device."""
+    typed = as_device(device)
     server.sendto(
         bytes(json.dumps(data), "utf-8"),
-        (device["ip"], get_device_port(device)),
+        (typed.ip, get_device_port(typed)),
     )
 
 
 def send_razer_data(
-    server: socket.socket, device: Dict[str, Any], data: base64
+    server: socket.socket, device: DeviceLike, data: str
 ) -> None:
     send(server, device, {"msg": {"cmd": "razer", "data": {"pt": data}}})
 
 
-def switch(server: socket.socket, device: Dict[str, Any], on: bool = False) -> None:
+def switch(server: socket.socket, device: DeviceLike, on: bool = False) -> None:
     send(server, device, {"msg": {"cmd": "turn", "data": {"value": int(on)}}})
 
 
 def switch_razer(
-    server: socket.socket, device: Dict[str, Any], on: bool = False
+    server: socket.socket, device: DeviceLike, on: bool = False
 ) -> None:
     frame = bytearray([0xBB, 0x00, 0x01, 0xB1, int(on)])
     checksum = 0
@@ -300,7 +288,7 @@ def switch_razer(
 
 
 def set_color(
-    server: socket.socket, device: Dict[str, Any], r: int, g: int, b: int
+    server: socket.socket, device: DeviceLike, r: int, g: int, b: int
 ) -> None:
     """Sets the device color."""
     send(
@@ -309,10 +297,7 @@ def set_color(
         {
             "msg": {
                 "cmd": "colorwc",
-                "data": {
-                    "color": {"r": r, "g": g, "b": b},
-                    "colorTemInKelvin": 0
-                },
+                "data": {"color": {"r": r, "g": g, "b": b}, "colorTemInKelvin": 0},
             }
         },
     )
@@ -320,7 +305,7 @@ def set_color(
 
 def set_color_temp(
     server: socket.socket,
-    device: Dict[str, Any],
+    device: DeviceLike,
     kelvin: int,
     rgb: Optional[Tuple[int, int, int]] = None,
 ) -> None:
@@ -350,7 +335,7 @@ def set_color_temp(
 
 
 def set_brightness(
-    server: socket.socket, device: Dict[str, Any], brightness: int
+    server: socket.socket, device: DeviceLike, brightness: int
 ) -> None:
     """Sets the device brightness.
 
@@ -365,9 +350,332 @@ def set_brightness(
         {
             "msg": {
                 "cmd": "brightness",
-                "data": {
-                    "value": max(0, min(100, brightness))
-                },
+                "data": {"value": max(0, min(100, brightness))},
+            }
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# H6080 protocol support (Phase 1)
+#
+# Govee Desktop 2.40.60 references GetCtroSendJsonOfH6080,
+# BuildH6080LightSwitchCommand, and IsSeedColor in
+# Govee.Application.DeviceService. The H6080 family uses the same JSON-over-UDP
+# envelope as standard Govee LAN devices but carries H6080-specific fields
+# (lightType, timeStamp) alongside the usual color/brightness/onOff payload.
+# ---------------------------------------------------------------------------
+
+
+def is_h6080_sku(sku: Optional[str]) -> bool:
+    """Return True if the SKU belongs to the H6080 device family."""
+    return str(sku or "").strip().upper().startswith("H608")
+
+
+# SKUs that use the 0x0B color command instead of colorwc.
+# Govee Desktop 2.40.60 references GetColorSendJsonOf0X0B in
+# Govee.Application.DeviceService for certain device families. The specific
+# SKU set is not yet confirmed from live traffic — populate this set as
+# devices are identified.
+_0X0B_SKUS: set[str] = set()
+
+
+def is_0x0b_sku(sku: Optional[str]) -> bool:
+    """Return True if the SKU uses the 0x0B color protocol instead of colorwc."""
+    return str(sku or "").strip().upper() in _0X0B_SKUS
+
+
+def register_0x0b_sku(sku: str) -> None:
+    """Register a SKU as using the 0x0B color protocol."""
+    _0X0B_SKUS.add(str(sku).strip().upper())
+
+
+def build_h6080_color_json(
+    device: DeviceLike,
+    r: int,
+    g: int,
+    b: int,
+    kelvin: int = 0,
+) -> Dict[str, Any]:
+    """Build an H6080 color-control JSON payload.
+
+    Mirrors the standard ``colorwc`` command but adds H6080-specific fields
+    (``lightType``, ``timeStamp``) observed in Govee Desktop's
+    ``GetCtroSendJsonOfH6080``.
+    """
+    return {
+        "msg": {
+            "cmd": "colorwc",
+            "data": {
+                "color": {"r": int(r), "g": int(g), "b": int(b)},
+                "colorTemInKelvin": int(kelvin),
+                "lightType": 1,
+                "timeStamp": int(time.time() * 1000),
+            },
+        }
+    }
+
+
+def build_h6080_switch_json(device: DeviceLike, on: bool) -> Dict[str, Any]:
+    """Build an H6080 power-control JSON payload.
+
+    Mirrors the standard ``turn`` command but adds H6080-specific fields
+    (``lightType``, ``timeStamp``).
+    """
+    return {
+        "msg": {
+            "cmd": "turn",
+            "data": {
+                "value": int(on),
+                "lightType": 1,
+                "timeStamp": int(time.time() * 1000),
+            },
+        }
+    }
+
+
+def send_h6080_color(
+    server: socket.socket,
+    device: DeviceLike,
+    r: int,
+    g: int,
+    b: int,
+    kelvin: int = 0,
+) -> None:
+    """Send an H6080 color command over LAN UDP."""
+    send(server, device, build_h6080_color_json(device, r, g, b, kelvin))
+
+
+def send_h6080_switch(server: socket.socket, device: DeviceLike, on: bool) -> None:
+    """Send an H6080 power command over LAN UDP."""
+    send(server, device, build_h6080_switch_json(device, on))
+
+
+# ---------------------------------------------------------------------------
+# 0x0B protocol support (Phase 1)
+#
+# Govee Desktop 2.40.60 references GetColorSendJsonOf0X0B in
+# Govee.Application.DeviceService. The 0x0B protocol uses a distinct command
+# identifier for color control on certain device families.
+# ---------------------------------------------------------------------------
+
+
+def build_0x0b_color_json(
+    device: DeviceLike,
+    r: int,
+    g: int,
+    b: int,
+) -> Dict[str, Any]:
+    """Build a 0x0B color-control JSON payload."""
+    return {
+        "msg": {
+            "cmd": "0x0B",
+            "data": {
+                "color": {"r": int(r), "g": int(g), "b": int(b)},
+                "timeStamp": int(time.time() * 1000),
+            },
+        }
+    }
+
+
+def send_0x0b_color(
+    server: socket.socket, device: DeviceLike, r: int, g: int, b: int
+) -> None:
+    """Send a 0x0B color command over LAN UDP."""
+    send(server, device, build_0x0b_color_json(device, r, g, b))
+
+
+# ---------------------------------------------------------------------------
+# Advanced segment control (Phase 2)
+#
+# Govee Desktop 2.40.60 references ControlColorBarByIot,
+# NewControlColorBarByIot, GetSegmentInfoByBase64, and
+# GetSegmentInfoByBase64New. These use per-segment color data carried either
+# as JSON (skuID + segments) or as a binary base64 frame (pt parameter).
+# The binary frame format mirrors the existing Razer switch frame
+# (0xBB 0x00 0x01 0xB1 <payload...> <xor-checksum>) but carries per-segment
+# RGB values instead of a single on/off byte.
+# ---------------------------------------------------------------------------
+
+
+def build_segment_frame(
+    colors: List[Tuple[int, int, int]],
+    sku_id: Optional[str] = None,
+) -> bytes:
+    """Build a binary segment-control frame for advanced per-zone control.
+
+    Frame layout (Govee proprietary binary protocol):
+      0xBB 0x00 0x01 0xB1 <segment_count:1 byte> <R G B per segment...> <xor-checksum>
+
+    The checksum is the XOR of all preceding bytes.
+    """
+    frame = bytearray([0xBB, 0x00, 0x01, 0xB1])
+    frame.append(len(colors) & 0xFF)
+    for r, g, b in colors:
+        frame.append(max(0, min(255, int(r))))
+        frame.append(max(0, min(255, int(g))))
+        frame.append(max(0, min(255, int(b))))
+    checksum = 0
+    for byte in frame:
+        checksum ^= byte
+    frame.append(checksum)
+    return bytes(frame)
+
+
+def send_segment_frame(
+    server: socket.socket,
+    device: DeviceLike,
+    colors: List[Tuple[int, int, int]],
+) -> None:
+    """Send a binary segment-control frame over LAN UDP (razer transport).
+
+    Encodes the binary frame as base64 in the ``pt`` field, matching the
+    existing Razer switch frame transport.
+    """
+    frame = build_segment_frame(colors)
+    send(
+        server,
+        device,
+        {
+            "msg": {
+                "cmd": "razer",
+                "data": {"pt": base64.b64encode(frame).decode("ascii")},
+            }
+        },
+    )
+
+
+def build_segment_frame_multi_pack(
+    colors: List[Tuple[int, int, int]],
+) -> bytes:
+    """Build a multi-pack (run-length encoded) segment-control frame.
+
+    Groups consecutive segments with identical colors into runs to reduce
+    frame size. Govee Desktop's ``MultiPackControlColorBarByIot`` uses this
+    packing for devices that support it.
+
+    Frame layout:
+      0xBB 0x00 0x01 0xB2 <num_runs>
+      <run>...                                        (repeated per run)
+      <xor-checksum>
+
+    Each run is:
+      type 0 (color run):   0x00 <run_count> <R> <G> <B>
+      type 1 (brightness):  0x01 <run_count> <brightness 0-100>
+
+    The checksum is the XOR of all preceding bytes.
+    """
+    if not colors:
+        return bytes([0xBB, 0x00, 0x01, 0xB2, 0x00, 0xB2])
+
+    # Normalize and cluster consecutive identical colors into runs.
+    normalized = [
+        (max(0, min(255, int(r))), max(0, min(255, int(g))), max(0, min(255, int(b))))
+        for r, g, b in colors
+    ]
+
+    runs: List[Tuple[int, int, int, int, int]] = []  # (type, count, r, g, b)
+    cur_color = normalized[0]
+    cur_count = 1
+    for color in normalized[1:]:
+        if color == cur_color:
+            cur_count += 1
+        else:
+            runs.append((0, cur_count, *cur_color))
+            cur_color = color
+            cur_count = 1
+    runs.append((0, cur_count, *cur_color))
+
+    frame = bytearray([0xBB, 0x00, 0x01, 0xB2])
+    frame.append(len(runs) & 0xFF)
+    for run_type, count, r, g, b in runs:
+        frame.append(run_type & 0xFF)
+        frame.append(min(count, 255) & 0xFF)
+        frame.append(r)
+        frame.append(g)
+        frame.append(b)
+    checksum = 0
+    for byte in frame:
+        checksum ^= byte
+    frame.append(checksum)
+    return bytes(frame)
+
+
+def build_segment_frame_gradient(
+    colors: List[Tuple[int, int, int]],
+) -> bytes:
+    """Build a gradient segment-control frame.
+
+    Sends a start color, end color, and segment count; the device interpolates
+    intermediate colors. Govee Desktop's ``ControlColorGradientGeneratorByIot``
+    uses this for gradient segments.
+
+    Frame layout:
+      0xBB 0x00 0x01 0xB3 <segment_count> <start_R> <start_G> <start_B>
+                          <end_R> <end_G> <end_B> <xor-checksum>
+
+    The checksum is the XOR of all preceding bytes.
+    """
+    if not colors:
+        return bytes(
+            [0xBB, 0x00, 0x01, 0xB3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xB3]
+        )
+
+    start = (
+        max(0, min(255, int(colors[0][0]))),
+        max(0, min(255, int(colors[0][1]))),
+        max(0, min(255, int(colors[0][2]))),
+    )
+    end = (
+        max(0, min(255, int(colors[-1][0]))),
+        max(0, min(255, int(colors[-1][1]))),
+        max(0, min(255, int(colors[-1][2]))),
+    )
+
+    frame = bytearray([0xBB, 0x00, 0x01, 0xB3])
+    frame.append(len(colors) & 0xFF)
+    frame.extend(start)
+    frame.extend(end)
+    checksum = 0
+    for byte in frame:
+        checksum ^= byte
+    frame.append(checksum)
+    return bytes(frame)
+
+
+def send_segment_frame_multi_pack(
+    server: socket.socket,
+    device: DeviceLike,
+    colors: List[Tuple[int, int, int]],
+) -> None:
+    """Send a multi-pack segment-control frame over LAN UDP (razer transport)."""
+    frame = build_segment_frame_multi_pack(colors)
+    send(
+        server,
+        device,
+        {
+            "msg": {
+                "cmd": "razer",
+                "data": {"pt": base64.b64encode(frame).decode("ascii")},
+            }
+        },
+    )
+
+
+def send_segment_frame_gradient(
+    server: socket.socket,
+    device: DeviceLike,
+    colors: List[Tuple[int, int, int]],
+) -> None:
+    """Send a gradient segment-control frame over LAN UDP (razer transport)."""
+    frame = build_segment_frame_gradient(colors)
+    send(
+        server,
+        device,
+        {
+            "msg": {
+                "cmd": "razer",
+                "data": {"pt": base64.b64encode(frame).decode("ascii")},
             }
         },
     )
@@ -398,7 +706,9 @@ def parse_status_payload(payload: Any) -> Optional[Dict[str, Any]]:
         on_off = data.get("onOff")
         return {
             "power_on": None if on_off is None else bool(int(on_off)),
-            "brightness": None if data.get("brightness") is None else int(data["brightness"]),
+            "brightness": None
+            if data.get("brightness") is None
+            else int(data["brightness"]),
             "color": parsed_color,
             "color_temp": data.get("colorTemInKelvin"),
             "raw": data,
@@ -409,7 +719,7 @@ def parse_status_payload(payload: Any) -> Optional[Dict[str, Any]]:
 
 def query_status(
     server: socket.socket,
-    device: Dict[str, Any],
+    device: DeviceLike,
     timeout: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
     """Query a device for its current LAN status.

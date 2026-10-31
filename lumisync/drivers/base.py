@@ -6,6 +6,8 @@ import abc
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..device import DeviceLike
+
 RGB = Tuple[int, int, int]
 
 
@@ -18,22 +20,45 @@ class DeviceCapabilities:
     ``matrix_size`` is set so drivers/UX can lay pixels out in 2D.
     """
 
-    transport: str = "lan"              # "lan" | "ble"
+    transport: str = "lan"  # "lan" | "ble" | "cloud"
     segment_count: int = 10
     supports_power: bool = True
     supports_brightness: bool = True
     supports_color: bool = True
-    supports_segments: bool = True      # per-zone / per-pixel color stream
-    supports_white: bool = False        # tunable color temperature
-    supports_streaming: bool = True     # cloud APIs must not receive sync frames
-    max_update_hz: float = 40.0         # device-specific transport pacing
+    supports_segments: bool = True  # per-zone / per-pixel color stream
+    supports_white: bool = False  # tunable color temperature
+    supports_streaming: bool = True  # cloud APIs must not receive sync frames
+    max_update_hz: float = 40.0  # device-specific transport pacing
     color_temp_min: int = 0
     color_temp_max: int = 0
     matrix_size: Optional[Tuple[int, int]] = None  # (cols, rows) for pixel grids
+    # Appliance capabilities (cloud devices only)
+    supports_fan_speed: bool = False  # fan level (fanLevel)
+    supports_humidity: bool = False  # humidity target (humiditySet)
+    supports_air_purifier: bool = False  # air purifier mode (purifierMode)
+    supported_instances: Tuple[str, ...] = ()  # raw cloud capability instance names
 
     @property
     def is_matrix(self) -> bool:
         return self.matrix_size is not None
+
+    @property
+    def is_appliance(self) -> bool:
+        return bool(
+            self.supports_fan_speed
+            or self.supports_humidity
+            or self.supports_air_purifier
+            or any(
+                i in self.supported_instances
+                for i in (
+                    "fanLevel",
+                    "humiditySet",
+                    "purifierMode",
+                    "airQualitySet",
+                    "waterLevelSet",
+                )
+            )
+        )
 
 
 class TransportAdapter(abc.ABC):
@@ -44,8 +69,12 @@ class TransportAdapter(abc.ABC):
     transport, so new device families slot in without touching sync logic.
     """
 
-    def __init__(self, device: Dict[str, Any]) -> None:
-        self.device = device
+    def __init__(self, device: DeviceLike) -> None:
+        # Keep the caller's descriptor object: discovery and status polling
+        # stamp learned fields (paint DP, zone grid, colour format) onto it and
+        # expect those edits to reach the live controller. A copy would make
+        # that knowledge vanish at the end of the call.
+        self.device: DeviceLike = device
 
     @property
     @abc.abstractmethod
@@ -96,6 +125,9 @@ class TransportAdapter(abc.ABC):
     def query_status(self) -> Optional[Dict[str, Any]]:
         """Return current device status, or None if unsupported/unreachable."""
         return None
+
+    def share_connection(self, other: "TransportAdapter") -> None:
+        """Reuse another adapter's physical connection when the transport allows it."""
 
     def close(self) -> None:
         """Release any transport resources. Safe to call more than once."""

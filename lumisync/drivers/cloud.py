@@ -22,27 +22,52 @@ class CloudLightAdapter(TransportAdapter):
         transport = self.device["transport"]
         if transport == "tuya_cloud":
             return DeviceCapabilities(
-                transport="cloud", segment_count=1, supports_segments=False,
+                transport="cloud",
+                segment_count=1,
+                supports_segments=False,
                 supports_streaming=False,
                 supports_power=bool(code_for(self.device, "power")),
-                supports_brightness=bool(code_for(self.device, "brightness") or code_for(self.device, "colour")),
+                supports_brightness=bool(
+                    code_for(self.device, "brightness")
+                    or code_for(self.device, "colour")
+                ),
                 supports_color=bool(code_for(self.device, "colour")),
                 supports_white=bool(code_for(self.device, "temperature")),
                 color_temp_min=int(self.device.get("color_temp_min", 2700)),
                 color_temp_max=int(self.device.get("color_temp_max", 6500)),
             )
         if transport == "govee_cloud":
-            instances = {c["instance"]: c for c in self.device.get("cloud_capabilities", [])}
-            temperature = instances.get("colorTemperatureK", {}).get("parameters", {}).get("range", {})
+            instances = {
+                c["instance"]: c for c in self.device.get("cloud_capabilities", [])
+            }
+            instance_names = tuple(sorted(instances.keys()))
+            temperature = (
+                instances.get("colorTemperatureK", {})
+                .get("parameters", {})
+                .get("range", {})
+            )
             return DeviceCapabilities(
-                transport="cloud", segment_count=1, supports_segments=False, supports_streaming=False,
-                supports_power="powerSwitch" in instances, supports_brightness="brightness" in instances,
-                supports_color="colorRgb" in instances, supports_white="colorTemperatureK" in instances,
-                color_temp_min=int(temperature.get("min", 0)), color_temp_max=int(temperature.get("max", 0)),
+                transport="cloud",
+                segment_count=1,
+                supports_segments=False,
+                supports_streaming=False,
+                supports_power="powerSwitch" in instances,
+                supports_brightness="brightness" in instances,
+                supports_color="colorRgb" in instances,
+                supports_white="colorTemperatureK" in instances,
+                color_temp_min=int(temperature.get("min", 0)),
+                color_temp_max=int(temperature.get("max", 0)),
+                supports_fan_speed="fanLevel" in instances,
+                supports_humidity="humiditySet" in instances,
+                supports_air_purifier="purifierMode" in instances,
+                supported_instances=instance_names,
             )
         cap = capabilities_for(self.device.get("sku") or self.device.get("model"))
         return DeviceCapabilities(
-            transport="cloud", segment_count=1, supports_segments=False, supports_streaming=False,
+            transport="cloud",
+            segment_count=1,
+            supports_segments=False,
+            supports_streaming=False,
             supports_color=cap.supports_color if cap else True,
             supports_white=bool(cap and cap.color_temp_max > 0),
             color_temp_min=cap.color_temp_min if cap else 0,
@@ -51,10 +76,16 @@ class CloudLightAdapter(TransportAdapter):
 
     def _send(self, role: str, value) -> None:
         cap = self.capabilities
-        flag = {"power": cap.supports_power, "brightness": cap.supports_brightness,
-                "colour": cap.supports_color, "temperature": cap.supports_white}[role]
+        flag = {
+            "power": cap.supports_power,
+            "brightness": cap.supports_brightness,
+            "colour": cap.supports_color,
+            "temperature": cap.supports_white,
+        }[role]
         if not flag:
-            raise AccountError("This control is not supported by this device.", "unsupported")
+            raise AccountError(
+                "This control is not supported by this device.", "unsupported"
+            )
         client = account_manager.client_for(self.device)
         transport = self.device["transport"]
         if transport == "tuya_cloud":
@@ -62,19 +93,38 @@ class CloudLightAdapter(TransportAdapter):
             commands = [{"code": code, "value": value}]
             mode = code_for(self.device, "mode")
             if mode and role in ("colour", "temperature"):
-                commands.insert(0, {"code": mode, "value": "colour" if role == "colour" else "white"})
+                commands.insert(
+                    0,
+                    {"code": mode, "value": "colour" if role == "colour" else "white"},
+                )
             client.send_commands(self.device["device_id"], commands)
         elif transport == "govee_cloud":
-            instance = {"power": "powerSwitch", "brightness": "brightness", "colour": "colorRgb", "temperature": "colorTemperatureK"}[role]
+            instance = {
+                "power": "powerSwitch",
+                "brightness": "brightness",
+                "colour": "colorRgb",
+                "temperature": "colorTemperatureK",
+            }[role]
             client.control(self.device, instance, value)
         else:
-            command = {"power": "turn", "brightness": "brightness", "colour": "colorwc", "temperature": "colorwc"}[role]
+            command = {
+                "power": "turn",
+                "brightness": "brightness",
+                "colour": "colorwc",
+                "temperature": "colorwc",
+            }[role]
             client.control(self.device, command, value)
 
     def set_power(self, on: bool) -> None:
         transport = self.device["transport"]
-        self._send("power", bool(on) if transport == "tuya_cloud" else int(bool(on))
-                   if transport == "govee_cloud" else {"val": int(bool(on))})
+        self._send(
+            "power",
+            bool(on)
+            if transport == "tuya_cloud"
+            else int(bool(on))
+            if transport == "govee_cloud"
+            else {"val": int(bool(on))},
+        )
 
     def set_brightness(self, percent: int) -> None:
         percent = bounded(percent, 0, 100)
@@ -84,20 +134,48 @@ class CloudLightAdapter(TransportAdapter):
             # The white brightness DP does not affect Tuya colour mode. Read
             # the current hue/saturation before changing its HSV value instead.
             status = client.query_raw_status(self.device)
-            hsv = colour_values(self.device, status.get(code_for(self.device, "colour")))
+            hsv = colour_values(
+                self.device, status.get(code_for(self.device, "colour"))
+            )
             mode = status.get(code_for(self.device, "mode"))
             if hsv is not None and mode != "white":
                 h, s, _v = hsv
-                self._send("colour", json.dumps({"h": h, "s": s, "v": round(percent * colour_scale(self.device) / 100)}, separators=(",", ":")))
+                self._send(
+                    "colour",
+                    json.dumps(
+                        {
+                            "h": h,
+                            "s": s,
+                            "v": round(percent * colour_scale(self.device) / 100),
+                        },
+                        separators=(",", ":"),
+                    ),
+                )
                 return
             if not code_for(self.device, "brightness"):
-                raise AccountError("Set a colour before changing this light's brightness.", "unsupported")
-            low, high = value_range(self.device, "brightness", (10, 1000) if self.device.get("dp_schema", "v2") == "v2" else (25, 255))
+                raise AccountError(
+                    "Set a colour before changing this light's brightness.",
+                    "unsupported",
+                )
+            low, high = value_range(
+                self.device,
+                "brightness",
+                (10, 1000) if self.device.get("dp_schema", "v2") == "v2" else (25, 255),
+            )
             value = round(low + (high - low) * percent / 100)
         elif transport == "govee_cloud":
-            capability = next((c for c in self.device.get("cloud_capabilities", []) if c.get("instance") == "brightness"), {})
+            capability = next(
+                (
+                    c
+                    for c in self.device.get("cloud_capabilities", [])
+                    if c.get("instance") == "brightness"
+                ),
+                {},
+            )
             limits = capability.get("parameters", {}).get("range", {})
-            value = bounded(percent, int(limits.get("min", 0)), int(limits.get("max", 100)))
+            value = bounded(
+                percent, int(limits.get("min", 0)), int(limits.get("max", 100))
+            )
         else:
             value = {"val": percent}
         self._send("brightness", value)
@@ -108,7 +186,10 @@ class CloudLightAdapter(TransportAdapter):
         if transport == "tuya_cloud":
             h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
             scale = colour_scale(self.device)
-            value = json.dumps({"h": round(h * 360), "s": round(s * scale), "v": round(v * scale)}, separators=(",", ":"))
+            value = json.dumps(
+                {"h": round(h * 360), "s": round(s * scale), "v": round(v * scale)},
+                separators=(",", ":"),
+            )
         elif transport == "govee_cloud":
             value = (r << 16) | (g << 8) | b
         else:
@@ -120,14 +201,86 @@ class CloudLightAdapter(TransportAdapter):
         kelvin = bounded(kelvin, cap.color_temp_min, cap.color_temp_max)
         transport = self.device["transport"]
         if transport == "tuya_cloud":
-            low, high = value_range(self.device, "temperature", (0, 1000) if self.device.get("dp_schema", "v2") == "v2" else (0, 255))
-            value = round(low + (high - low) * (kelvin - cap.color_temp_min) / max(1, cap.color_temp_max - cap.color_temp_min))
+            low, high = value_range(
+                self.device,
+                "temperature",
+                (0, 1000) if self.device.get("dp_schema", "v2") == "v2" else (0, 255),
+            )
+            value = round(
+                low
+                + (high - low)
+                * (kelvin - cap.color_temp_min)
+                / max(1, cap.color_temp_max - cap.color_temp_min)
+            )
         else:
-            value = kelvin if transport == "govee_cloud" else {"color": {"r": 0, "g": 0, "b": 0}, "colorTemInKelvin": kelvin}
+            value = (
+                kelvin
+                if transport == "govee_cloud"
+                else {"color": {"r": 0, "g": 0, "b": 0}, "colorTemInKelvin": kelvin}
+            )
         self._send("temperature", value)
 
+    # -- appliance controls ---------------------------------------------------
+
+    def set_fan_speed(self, percent: int) -> None:
+        """Set fan speed (0-100) for appliances with a fanLevel capability."""
+        cap = self.capabilities
+        if not cap.supports_fan_speed:
+            raise AccountError("This device has no fan speed control.", "unsupported")
+        percent = bounded(percent, 0, 100)
+        client = account_manager.client_for(self.device)
+        capability = next(
+            (
+                c
+                for c in self.device.get("cloud_capabilities", [])
+                if c.get("instance") == "fanLevel"
+            ),
+            {},
+        )
+        limits = capability.get("parameters", {}).get("range", {})
+        value = bounded(percent, int(limits.get("min", 0)), int(limits.get("max", 100)))
+        client.control(self.device, "fanLevel", value)
+
+    def set_humidity(self, percent: int) -> None:
+        """Set target humidity (0-100) for appliances with a humiditySet capability."""
+        cap = self.capabilities
+        if not cap.supports_humidity:
+            raise AccountError("This device has no humidity control.", "unsupported")
+        percent = bounded(percent, 0, 100)
+        client = account_manager.client_for(self.device)
+        capability = next(
+            (
+                c
+                for c in self.device.get("cloud_capabilities", [])
+                if c.get("instance") == "humiditySet"
+            ),
+            {},
+        )
+        limits = capability.get("parameters", {}).get("range", {})
+        value = bounded(percent, int(limits.get("min", 0)), int(limits.get("max", 100)))
+        client.control(self.device, "humiditySet", value)
+
+    def set_appliance_capability(self, instance: str, value) -> None:
+        """Set any cloud capability instance on this device.
+
+        This is the generic escape hatch for appliance capabilities that don't
+        have a dedicated method (e.g. ``purifierMode``, ``airQualitySet``,
+        ``waterLevelSet``).
+        """
+        cap = self.capabilities
+        if instance not in cap.supported_instances:
+            raise AccountError(
+                f"This device does not support the '{instance}' capability.",
+                "unsupported",
+            )
+        client = account_manager.client_for(self.device)
+        client.control(self.device, instance, value)
+
     def set_segments(self, colors) -> None:
-        raise AccountError("Screen and music sync require local LAN or Bluetooth control. Choose a local connection for this device.", "unsupported")
+        raise AccountError(
+            "Screen and music sync require local LAN or Bluetooth control. Choose a local connection for this device.",
+            "unsupported",
+        )
 
     def begin_stream(self) -> None:
         self.set_segments([])
