@@ -107,7 +107,7 @@ def apply_saturation(colors: Sequence[RGB], factor: float) -> List[RGB]:
     Govee's DreamView presents it.
     """
     if factor == 1.0:
-        return [tuple(int(c) for c in color) for color in colors]
+        return [(int(color[0]), int(color[1]), int(color[2])) for color in colors]
 
     result: List[RGB] = []
     for color in colors:
@@ -136,7 +136,7 @@ def apply_brightness(colors: Sequence[RGB], factor: float) -> List[RGB]:
 
 
 def colors_changed(
-    previous: Sequence[RGB],
+    previous: Optional[Sequence[RGB]],
     current: Sequence[RGB],
     threshold: int,
 ) -> bool:
@@ -186,7 +186,14 @@ class ColorSmoother:
     Each :meth:`update` nudges the held color toward the new target by ``alpha``.
     One call == one frame == one packet, so smoothing happens on the color value
     rather than by flooding the strip with interpolated packets.
+
+    ``dt`` (seconds since the previous update) makes the fade time-based: at
+    the 45 fps reference rate the behaviour is unchanged, but a slower transport
+    (Tuya paint strokes run at only a few fps) gets a correspondingly larger
+    per-frame step, so a fade still completes in the same wall-clock time.
     """
+
+    REFERENCE_INTERVAL = 1.0 / 45.0
 
     def __init__(self, alpha: float = 0.55, count: int = 0) -> None:
         self.alpha = float(max(0.0, min(1.0, alpha)))
@@ -197,14 +204,18 @@ class ColorSmoother:
     def reset(self, count: int = 0) -> None:
         self._state = np.zeros((count, 3), dtype=np.float32) if count else None
 
-    def update(self, target: Sequence[RGB]) -> List[RGB]:
+    def update(self, target: Sequence[RGB], dt: float | None = None) -> List[RGB]:
         target_arr = np.asarray(target, dtype=np.float32).reshape(-1, 3)
+        alpha = self.alpha
+        if dt is not None and dt > 0 and 0.0 < alpha < 1.0:
+            # Same exponential decay per unit time as the reference frame rate.
+            alpha = 1.0 - (1.0 - alpha) ** max(0.0, dt / self.REFERENCE_INTERVAL)
         if self._state is None or self._state.shape[0] != target_arr.shape[0]:
             # Count changed (or first frame): snap to the target so we don't fade
             # in from black on start or on a segment-count change.
             self._state = target_arr.copy()
         else:
-            self._state += (target_arr - self._state) * self.alpha
+            self._state += (target_arr - self._state) * alpha
 
         rounded = np.clip(np.rint(self._state), 0, 255).astype(int)
         return [(int(row[0]), int(row[1]), int(row[2])) for row in rounded]
