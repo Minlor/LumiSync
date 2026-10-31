@@ -1,11 +1,12 @@
-import select
 import base64
 import json
 import platform
+import queue
 import socket
 import subprocess
+import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from . import sku_catalog
 from .config.options import CONNECTION
@@ -65,25 +66,193 @@ def describe_port_conflict(
     return message
 
 
+class _LanSocketCore:
+    """One UDP socket with a reader thread that fans replies out to callers.
+
+    Govee devices answer a status query to UDP 4002, not to the querying
+    socket. Binding 4002 separately for sync, status polling and each ad-hoc
+    adapter meant the kernel delivered each reply to only one of them — often
+    the sync socket, which never reads. Every caller now shares this socket and
+    receives its own copy of every datagram.
+    """
+
+    def __init__(self, port: int, broadcast: bool) -> None:
+        self.port = port
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if broadcast:
+            self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        # On Windows SO_REUSEADDR lets Govee Desktop bind the same port first
+        # and silently steal replies. Exclusive use turns that into a clear
+        # conflict message instead.
+        if platform.system() == "Windows" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self._socket.setsockopt(
+                socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1
+            )
+        try:
+            self._socket.bind(("", port))
+        except OSError as exc:
+            self._socket.close()
+            raise OSError(describe_port_conflict(port)) from exc
+
+        self._socket.settimeout(0.25)
+        self._lock = threading.Lock()
+        self._send_lock = threading.Lock()
+        self._consumers: List["SharedLanSocket"] = []
+        self._closed = False
+        self._thread = threading.Thread(
+            target=self._read_loop, name="lumisync-lan-reader", daemon=True
+        )
+        self._thread.start()
+
+    def register(self, consumer: "SharedLanSocket") -> None:
+        with self._lock:
+            if self._closed:
+                raise OSError("LAN socket is closed")
+            self._consumers.append(consumer)
+
+    def unregister(self, consumer: "SharedLanSocket") -> None:
+        with self._lock:
+            if consumer in self._consumers:
+                self._consumers.remove(consumer)
+            empty = not self._consumers
+            if empty:
+                self._closed = True
+        if not empty:
+            return
+        with _lan_cores_lock:
+            if _lan_cores.get(self.port) is self:
+                _lan_cores.pop(self.port, None)
+        try:
+            self._socket.close()
+        except OSError:
+            pass
+
+    def sendto(self, data, address) -> None:
+        with self._send_lock:
+            if self._closed:
+                raise OSError("LAN socket is closed")
+            self._socket.sendto(data, address)
+
+    def fileno(self) -> int:
+        return self._socket.fileno()
+
+    def getsockname(self):
+        return self._socket.getsockname()
+
+    def _read_loop(self) -> None:
+        while True:
+            with self._lock:
+                if self._closed:
+                    return
+            try:
+                data, address = self._socket.recvfrom(65535)
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            with self._lock:
+                consumers = list(self._consumers)
+            for consumer in consumers:
+                consumer._deliver(data, address)
+
+
+class SharedLanSocket:
+    """A per-caller queue in front of the process-wide :class:`_LanSocketCore`."""
+
+    _MAX_PENDING = 512
+
+    def __init__(self, core: _LanSocketCore, timeout: Optional[float]) -> None:
+        self._core = core
+        self._timeout = timeout
+        self._queue: "queue.Queue[Tuple[bytes, Any]]" = queue.Queue(
+            maxsize=self._MAX_PENDING
+        )
+        self._closed = False
+
+    def _deliver(self, data: bytes, address) -> None:
+        if self._closed:
+            return
+        try:
+            self._queue.put_nowait((data, address))
+        except queue.Full:
+            # A caller that never reads (the sync socket) must not grow without
+            # bound; drop the oldest reply instead.
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._queue.put_nowait((data, address))
+            except queue.Full:
+                pass
+
+    def sendto(self, data, address) -> None:
+        self._core.sendto(data, address)
+
+    def recvfrom(self, bufsize: int):
+        if self._closed:
+            raise OSError("LAN socket is closed")
+        timeout = self._timeout
+        try:
+            data, address = self._queue.get(
+                timeout=timeout if timeout and timeout > 0 else None
+            )
+        except queue.Empty:
+            raise socket.timeout("timed out") from None
+        return data[:bufsize], address
+
+    def settimeout(self, timeout: Optional[float]) -> None:
+        self._timeout = timeout
+
+    def gettimeout(self) -> Optional[float]:
+        return self._timeout
+
+    def fileno(self) -> int:
+        return self._core.fileno()
+
+    def getsockname(self):
+        return self._core.getsockname()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._core.unregister(self)
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+
+LanSocket = Union[socket.socket, SharedLanSocket]
+
+_lan_cores: Dict[int, _LanSocketCore] = {}
+_lan_cores_lock = threading.Lock()
+
+
 def create_lan_socket(
     bind_port: Optional[int] = None,
     timeout: Optional[float] = None,
     *,
     broadcast: bool = True,
-) -> socket.socket:
-    """Create the UDP socket LumiSync uses for Govee LAN traffic."""
+) -> SharedLanSocket:
+    """Return the shared UDP socket used for Govee LAN traffic."""
     port = CONNECTION.default.listen_port if bind_port is None else int(bind_port)
-    server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    if broadcast:
-        server.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        server.bind(("", port))
-    except OSError as exc:
-        server.close()
-        raise OSError(describe_port_conflict(port)) from exc
-    server.settimeout(CONNECTION.default.timeout if timeout is None else timeout)
-    return server
+    effective_timeout = CONNECTION.default.timeout if timeout is None else timeout
+    for _attempt in range(2):
+        with _lan_cores_lock:
+            core = _lan_cores.get(port)
+            if core is None:
+                core = _LanSocketCore(port, broadcast)
+                _lan_cores[port] = core
+        consumer = SharedLanSocket(core, effective_timeout)
+        try:
+            core.register(consumer)
+        except OSError:
+            # The last consumer closed between lookup and registration.
+            continue
+        return consumer
+    raise OSError(describe_port_conflict(port))
 
 
 def get_device_port(raw_device: DeviceLike) -> int:
@@ -125,38 +294,57 @@ def get_segment_count(raw_device: DeviceLike, default: int = 10) -> int:
     return fallback
 
 
-def listen(server: socket.socket) -> List[str]:
-    """Listens for device response."""
-    ready = select.select([server], [], [], server.gettimeout())
-    if not ready[0]:
-        print("Error: No device found!")
-        # Don't exit the program, just return an empty list
-        return []
-
-    messages = []
-    while True:
+def listen(server) -> List[str]:
+    """Listen for device responses until the first quiet period."""
+    previous_timeout = server.gettimeout()
+    try:
+        server.settimeout(previous_timeout or CONNECTION.default.timeout)
         try:
             message, address = server.recvfrom(4096)
+        except (BlockingIOError, socket.timeout):
+            print("Error: No device found!")
+            # Don't exit the program, just return an empty list
+            return []
+
+        messages = [message]
+        print(f"Received from {address}")
+        # Drain replies that arrived together without waiting another full
+        # discovery timeout.
+        server.settimeout(0.2)
+        while True:
+            try:
+                message, address = server.recvfrom(4096)
+            except (BlockingIOError, socket.timeout):
+                break
             print(f"Received from {address}")
             messages.append(message)
-        except (BlockingIOError, socket.timeout):
-            break
-
-    return messages
+        return messages
+    finally:
+        try:
+            server.settimeout(previous_timeout)
+        except OSError:
+            pass
 
 
 def parse(messages: List[str]) -> List[Dict[str, Any]]:
-    """Parses messages from the devices."""
+    """Parses discovery messages from the devices.
+
+    The shared LAN socket also receives status replies, so ignore any datagram
+    that is not a scan response instead of raising on a missing field.
+    """
     devices = CONNECTION.devices
     for message in messages:
-        message = json.loads(message)
-        data = message["msg"]["data"]
-        parsed_device = {
-            "mac": data["device"],
-            "model": data["sku"],
-            "ip": data["ip"],
-            "port": CONNECTION.default.control_port,
-        }
+        try:
+            payload = json.loads(message)
+            data = payload["msg"]["data"]
+            parsed_device = {
+                "mac": data["device"],
+                "model": data["sku"],
+                "ip": data["ip"],
+                "port": CONNECTION.default.control_port,
+            }
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+            continue
         for key in DISCOVERY_METADATA_KEYS:
             if key in data and data[key] is not None:
                 parsed_device[key] = data[key]
@@ -172,7 +360,7 @@ def parse(messages: List[str]) -> List[Dict[str, Any]]:
     return devices
 
 
-def connect() -> Tuple[socket.socket, List[Dict[str, Any]]]:
+def connect() -> Tuple[LanSocket, List[Dict[str, Any]]]:
     """Creates a server listening for devices.
 
     Tries both multicast addresses (239.255.255.250 and 255.255.255.255)
@@ -219,7 +407,7 @@ def subnet_hosts(local_ip: Optional[str]) -> List[str]:
     return [f"{prefix}.{host}" for host in range(1, 255) if host != own]
 
 
-def sweep_scan(timeout: float = 2.5) -> Tuple[socket.socket, List[Dict[str, Any]]]:
+def sweep_scan(timeout: float = 2.5) -> Tuple[LanSocket, List[Dict[str, Any]]]:
     """Discover devices by unicasting the scan probe to every host in the /24.
 
     A fallback for networks that filter UDP multicast (guest/segmented Wi-Fi,
@@ -248,7 +436,7 @@ def sweep_scan(timeout: float = 2.5) -> Tuple[socket.socket, List[Dict[str, Any]
 
 
 # TODO: Combine the below functions into one (into a complete "send" function?)
-def send(server: socket.socket, device: DeviceLike, data: Dict[str, Any]) -> None:
+def send(server: LanSocket, device: DeviceLike, data: Dict[str, Any]) -> None:
     """Sends some data from the server to a device."""
     typed = as_device(device)
     server.sendto(
@@ -258,17 +446,17 @@ def send(server: socket.socket, device: DeviceLike, data: Dict[str, Any]) -> Non
 
 
 def send_razer_data(
-    server: socket.socket, device: DeviceLike, data: str
+    server: LanSocket, device: DeviceLike, data: str
 ) -> None:
     send(server, device, {"msg": {"cmd": "razer", "data": {"pt": data}}})
 
 
-def switch(server: socket.socket, device: DeviceLike, on: bool = False) -> None:
+def switch(server: LanSocket, device: DeviceLike, on: bool = False) -> None:
     send(server, device, {"msg": {"cmd": "turn", "data": {"value": int(on)}}})
 
 
 def switch_razer(
-    server: socket.socket, device: DeviceLike, on: bool = False
+    server: LanSocket, device: DeviceLike, on: bool = False
 ) -> None:
     frame = bytearray([0xBB, 0x00, 0x01, 0xB1, int(on)])
     checksum = 0
@@ -288,7 +476,7 @@ def switch_razer(
 
 
 def set_color(
-    server: socket.socket, device: DeviceLike, r: int, g: int, b: int
+    server: LanSocket, device: DeviceLike, r: int, g: int, b: int
 ) -> None:
     """Sets the device color."""
     send(
@@ -304,7 +492,7 @@ def set_color(
 
 
 def set_color_temp(
-    server: socket.socket,
+    server: LanSocket,
     device: DeviceLike,
     kelvin: int,
     rgb: Optional[Tuple[int, int, int]] = None,
@@ -335,7 +523,7 @@ def set_color_temp(
 
 
 def set_brightness(
-    server: socket.socket, device: DeviceLike, brightness: int
+    server: LanSocket, device: DeviceLike, brightness: int
 ) -> None:
     """Sets the device brightness.
 
@@ -435,7 +623,7 @@ def build_h6080_switch_json(device: DeviceLike, on: bool) -> Dict[str, Any]:
 
 
 def send_h6080_color(
-    server: socket.socket,
+    server: LanSocket,
     device: DeviceLike,
     r: int,
     g: int,
@@ -446,7 +634,7 @@ def send_h6080_color(
     send(server, device, build_h6080_color_json(device, r, g, b, kelvin))
 
 
-def send_h6080_switch(server: socket.socket, device: DeviceLike, on: bool) -> None:
+def send_h6080_switch(server: LanSocket, device: DeviceLike, on: bool) -> None:
     """Send an H6080 power command over LAN UDP."""
     send(server, device, build_h6080_switch_json(device, on))
 
@@ -479,7 +667,7 @@ def build_0x0b_color_json(
 
 
 def send_0x0b_color(
-    server: socket.socket, device: DeviceLike, r: int, g: int, b: int
+    server: LanSocket, device: DeviceLike, r: int, g: int, b: int
 ) -> None:
     """Send a 0x0B color command over LAN UDP."""
     send(server, device, build_0x0b_color_json(device, r, g, b))
@@ -496,6 +684,13 @@ def send_0x0b_color(
 # (0xBB 0x00 0x01 0xB1 <payload...> <xor-checksum>) but carries per-segment
 # RGB values instead of a single on/off byte.
 # ---------------------------------------------------------------------------
+
+
+def _xor_checksum(frame: bytes | bytearray) -> int:
+    checksum = 0
+    for byte in frame:
+        checksum ^= byte
+    return checksum
 
 
 def build_segment_frame(
@@ -523,7 +718,7 @@ def build_segment_frame(
 
 
 def send_segment_frame(
-    server: socket.socket,
+    server: LanSocket,
     device: DeviceLike,
     colors: List[Tuple[int, int, int]],
 ) -> None:
@@ -566,7 +761,9 @@ def build_segment_frame_multi_pack(
     The checksum is the XOR of all preceding bytes.
     """
     if not colors:
-        return bytes([0xBB, 0x00, 0x01, 0xB2, 0x00, 0xB2])
+        frame = bytearray([0xBB, 0x00, 0x01, 0xB2, 0x00])
+        frame.append(_xor_checksum(frame))
+        return bytes(frame)
 
     # Normalize and cluster consecutive identical colors into runs.
     normalized = [
@@ -617,9 +814,10 @@ def build_segment_frame_gradient(
     The checksum is the XOR of all preceding bytes.
     """
     if not colors:
-        return bytes(
-            [0xBB, 0x00, 0x01, 0xB3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xB3]
-        )
+        frame = bytearray([0xBB, 0x00, 0x01, 0xB3, 0x00])
+        frame.extend(b"\x00" * 6)
+        frame.append(_xor_checksum(frame))
+        return bytes(frame)
 
     start = (
         max(0, min(255, int(colors[0][0]))),
@@ -644,7 +842,7 @@ def build_segment_frame_gradient(
 
 
 def send_segment_frame_multi_pack(
-    server: socket.socket,
+    server: LanSocket,
     device: DeviceLike,
     colors: List[Tuple[int, int, int]],
 ) -> None:
@@ -663,7 +861,7 @@ def send_segment_frame_multi_pack(
 
 
 def send_segment_frame_gradient(
-    server: socket.socket,
+    server: LanSocket,
     device: DeviceLike,
     colors: List[Tuple[int, int, int]],
 ) -> None:
@@ -718,7 +916,7 @@ def parse_status_payload(payload: Any) -> Optional[Dict[str, Any]]:
 
 
 def query_status(
-    server: socket.socket,
+    server: LanSocket,
     device: DeviceLike,
     timeout: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
