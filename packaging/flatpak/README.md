@@ -12,7 +12,7 @@ machine with `flatpak` and `flatpak-builder`.
 ## Remaining work
 
 1. **Vendor the Python dependencies.** Flatpak builds are offline, so the pip
-   deps (PySide6, numpy, pillow, bleak, tinytuya, soundcard, mss, …) must be
+   deps (PySide6-Essentials, numpy, pillow, bleak, tinytuya, soundcard, mss, …) must be
    pre-declared. Use the official helper:
 
    ```sh
@@ -20,8 +20,8 @@ machine with `flatpak` and `flatpak-builder`.
    pip install requirements-parser  # helper dep
    python flatpak-pip-generator \
      --runtime org.freedesktop.Sdk//24.08 \
-     bleak tinytuya numpy pillow soundcard mss webcolors colorama \
-     packaging PySide6 requests keyring qrcode tuya-device-sharing-sdk \
+     bleak tinytuya numpy pillow soundcard mss webcolors \
+     packaging PySide6-Essentials requests keyring qrcode tuya-device-sharing-sdk \
      paho-mqtt cryptography \
      --output packaging/flatpak/python3-deps
    ```

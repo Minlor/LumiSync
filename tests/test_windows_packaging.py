@@ -51,20 +51,20 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Main window rendered and closed with isolated settings", result.stdout)
 
-    def test_windows_capture_dependencies_include_cv2_provider(self):
+    def test_windows_capture_dependencies_include_dxcam_only(self):
         pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
         dependencies = pyproject["project"]["dependencies"]
 
-        # dxcam and its cv2 colour-conversion helper only ship Windows wheels,
-        # so both must stay behind a win32 marker or installs break elsewhere.
-        for name in ("dxcam", "opencv-python-headless"):
-            with self.subTest(dependency=name):
-                requirement = _requirement(dependencies, name)
-                self.assertIsNotNone(requirement)
-                self.assertEqual(
-                    str(Requirement(requirement).marker),
-                    'sys_platform == "win32"',
-                )
+        # dxcam only ships Windows wheels, so it stays behind a win32 marker.
+        # Its NumPy processor backend is used directly; OpenCV is no longer a
+        # dependency and must not creep back in.
+        requirement = _requirement(dependencies, "dxcam")
+        self.assertIsNotNone(requirement)
+        self.assertEqual(
+            str(Requirement(requirement).marker),
+            'sys_platform == "win32"',
+        )
+        self.assertIsNone(_requirement(dependencies, "opencv-python-headless"))
 
         # The non-Windows capture backend is the complement of that marker.
         mss = _requirement(dependencies, "mss")
@@ -72,17 +72,6 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertEqual(
             str(Requirement(mss).marker), 'sys_platform != "win32"'
         )
-
-    def test_pyinstaller_specs_bundle_cv2_lazy_import(self):
-        for spec_name in ("lumisync_onedir.spec", "lumisync_onefile.spec"):
-            with self.subTest(spec=spec_name):
-                spec = (
-                    ROOT / "packaging" / "pyinstaller" / spec_name
-                ).read_text()
-
-                self.assertIn('safe_collect_dynamic_libs("cv2")', spec)
-                self.assertIn('safe_collect_submodules("cv2")', spec)
-                self.assertIn('"cv2"', spec)
 
     def test_pyinstaller_specs_bundle_account_and_tls_dependencies(self):
         for spec_name in ("lumisync_onedir.spec", "lumisync_onefile.spec"):
@@ -135,20 +124,6 @@ class WindowsPackagingTests(unittest.TestCase):
             frame = screen_grab.capture_array()
 
         self.assertEqual(frame.tolist(), [[[20, 10, 5]]])
-
-    def test_missing_cv2_raises_clear_capture_error(self):
-        screen_grab = monitor.ScreenGrab.__new__(monitor.ScreenGrab)
-
-        def missing_cv2():
-            raise ModuleNotFoundError("No module named 'cv2'", name="cv2")
-
-        screen_grab.capture_method = missing_cv2
-
-        with self.assertRaisesRegex(
-            monitor.ScreenCaptureDependencyError,
-            "opencv-python-headless",
-        ):
-            screen_grab.capture()
 
 
 if __name__ == "__main__":

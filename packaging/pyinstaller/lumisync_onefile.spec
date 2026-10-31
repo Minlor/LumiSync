@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import (
-    collect_all,
+    collect_data_files,
     collect_dynamic_libs,
     collect_submodules,
 )
@@ -28,9 +28,18 @@ def safe_collect_dynamic_libs(package_name):
 
 
 def safe_collect_all(package_name):
-    """Return (datas, binaries, hiddenimports) for a package, or empty lists."""
+    """Return (datas, binaries, hiddenimports) for a package, or empty lists.
+
+    ``on_error="ignore"`` keeps platform-specific submodules — for example
+    bleak's macOS backend on a Windows build — from emitting collection
+    warnings; the exclusions below still remove them from the bundle.
+    """
     try:
-        return collect_all(package_name)
+        return (
+            collect_data_files(package_name),
+            collect_dynamic_libs(package_name),
+            collect_submodules(package_name, on_error="ignore"),
+        )
     except Exception:
         return [], [], []
 
@@ -46,16 +55,13 @@ datas = [
 ]
 
 binaries = []
-binaries += safe_collect_dynamic_libs("cv2")
 binaries += safe_collect_dynamic_libs("dxcam")
 binaries += safe_collect_dynamic_libs("soundcard")
 
 hiddenimports = []
-hiddenimports += safe_collect_submodules("cv2")
 hiddenimports += safe_collect_submodules("lumisync")
 hiddenimports += safe_collect_submodules("dxcam")
 hiddenimports += [
-    "cv2",
     "PySide6.QtCore",
     "PySide6.QtGui",
     "PySide6.QtNetwork",
@@ -90,6 +96,8 @@ excludes = [
     "PIL.ImageTk",
     "PIL.AvifImagePlugin",
     "PIL._avif",
+    # macOS-only BLE backend; importing it on Windows raises (missing objc).
+    "bleak.backends.corebluetooth",
 ]
 
 a = Analysis(
@@ -124,8 +132,6 @@ _WINDOWS_BLOAT_MARKERS = (
     # Software-OpenGL fallback; the widgets UI renders with Qt's raster
     # engine and never requests OpenGL.
     "opengl32sw.dll",
-    # cv2's video-file codecs; cv2 only processes in-memory screen captures.
-    "opencv_videoio_ffmpeg",
     # Qt Quick/QML stack, pulled in only by the virtual-keyboard input
     # plugin — a desktop widgets app uses neither.
     "qt6qml",
