@@ -7,6 +7,7 @@ import copy
 import threading
 from typing import Any
 
+from ..device import as_device
 from .errors import AccountError
 
 
@@ -85,7 +86,8 @@ vault = CredentialVault()
 
 def local_key_for(device: dict[str, Any]) -> str:
     # Legacy plaintext descriptors still work; the next settings write migrates them.
-    key = device.get("local_key") or device.get("localKey")
+    device = as_device(device)
+    key = device.get("local_key")
     if key:
         return str(key)
     reference = device.get("local_key_ref")
@@ -93,11 +95,10 @@ def local_key_for(device: dict[str, Any]) -> str:
 
 
 def protect_device(device: dict[str, Any], *, remember: bool = True) -> dict[str, Any]:
-    result = dict(device)
-    key = result.pop("local_key", None) or result.pop("localKey", None)
-    result.pop("localKey", None)
+    result = as_device(device).to_dict()
+    key = result.pop("local_key", None)
     if key:
-        identity = result.get("device_id") or result.get("devId")
+        identity = result.get("device_id")
         if not identity:
             raise AccountError("A device ID is required before saving a local key.", "validation")
         reference = f"tuya-local/{identity}"

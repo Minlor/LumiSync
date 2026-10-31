@@ -11,13 +11,12 @@ import shutil
 import socket
 import sys
 import time
-from typing import Dict, List, Any
-
-from colorama import Fore
+from typing import Any, Dict, List, Sequence
 
 from . import connection
 from .connection import connect, listen as connection_listen, parse
 from .config.options import CONNECTION
+from .device import Device, DeviceLike, as_device
 from .utils import write_json, get_logger
 
 # Set up logger for devices module
@@ -132,7 +131,11 @@ def _load_saved_settings(filename: str | os.PathLike[str] = "settings.json") -> 
         selected = 0
 
     copied = dict(data)
-    copied["devices"] = [dict(device) for device in devices if isinstance(device, dict)]
+    copied["devices"] = [
+        as_device(device)
+        for device in devices
+        if isinstance(device, (dict, Device))
+    ]
     copied["selectedDevice"] = selected
     try:
         copied["time"] = float(data.get("time", 0) or 0)
@@ -147,28 +150,42 @@ def load_settings(filename: str | os.PathLike[str] = "settings.json") -> Dict[st
     return _load_saved_settings(filename)
 
 
-def _device_keys(device: Dict[str, Any]) -> List[str]:
+def _device_keys(raw_device: DeviceLike) -> List[str]:
     """Return stable match keys, preferring MAC over weaker IP/model fallback."""
+    device = as_device(raw_device)
     keys: List[str] = []
-    identity = device.get("device_id") or device.get("devId")
     channel = device.get("tuya_channel")
-    if identity:
-        keys.append(f"id:{str(identity).lower()}" + (f":{channel}" if channel else ""))
-    mac = device.get("mac")
-    if mac:
-        keys.append(f"mac:{str(mac).lower()}")
+    if device.device_id:
+        keys.append(
+            f"id:{device.device_id.lower()}" + (f":{channel}" if channel else "")
+        )
+    if device.mac:
+        keys.append(f"mac:{device.mac.lower()}")
 
     # Gangs share an IP and physical ID, but must never merge into one another.
     if channel:
         return keys
-    ip = device.get("ip")
-    model = device.get("model")
-    if ip and model:
-        keys.append(f"ip-model:{str(ip).lower()}|{str(model).lower()}")
-    elif ip:
-        keys.append(f"ip:{str(ip).lower()}")
+    if device.ip and device.model:
+        keys.append(f"ip-model:{device.ip.lower()}|{device.model.lower()}")
+    elif device.ip:
+        keys.append(f"ip:{device.ip.lower()}")
 
     return keys
+
+
+def _normalize_settings(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize every device once, at the settings boundary."""
+    copied = dict(data)
+    devices = copied.get("devices")
+    if not isinstance(devices, list):
+        devices = []
+    copied["devices"] = [
+        as_device(device)
+        for device in devices
+        if isinstance(device, (dict, Device))
+    ]
+    copied["selectedDevice"] = _selected_index(copied, len(copied["devices"]))
+    return copied
 
 
 def _selected_index(settings: Dict[str, Any], device_count: int) -> int:
@@ -182,19 +199,19 @@ def _selected_index(settings: Dict[str, Any], device_count: int) -> int:
 
 
 def merge_discovered_devices(
-    existing_devices: List[Dict[str, Any]],
-    discovered_devices: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    existing_devices: Sequence[DeviceLike],
+    discovered_devices: Sequence[DeviceLike],
+) -> List[Device]:
     """Merge LAN scan results into saved devices without dropping stale ones."""
-    merged = [dict(device) for device in existing_devices]
+    merged = [as_device(device).copy() for device in existing_devices]
     index_by_key: Dict[str, int] = {}
 
     for index, device in enumerate(merged):
         for key in _device_keys(device):
             index_by_key.setdefault(key, index)
 
-    for discovered in discovered_devices:
-        copied = dict(discovered)
+    for raw_discovered in discovered_devices:
+        copied = as_device(raw_discovered).copy()
         matching_index = next(
             (
                 index_by_key[key]
@@ -209,7 +226,7 @@ def merge_discovered_devices(
             merged.append(copied)
         else:
             existing = merged[matching_index]
-            for key, value in copied.items():
+            for key, value in copied.to_dict().items():
                 if key == "mac" and str(existing.get("mac", "")).casefold() == str(value).casefold():
                     continue  # Preserve saved group identities across case changes.
                 if value is not None:
@@ -269,7 +286,7 @@ def discover_lan_devices(
                     pass
 
     merged_devices = merge_discovered_devices(
-        [dict(device) for device in existing_devices if isinstance(device, dict)],
+        [device for device in existing_devices if isinstance(device, (dict, Device))],
         discovered_devices,
     )
     settings = copy.deepcopy(saved_settings)
@@ -278,7 +295,7 @@ def discover_lan_devices(
     settings["time"] = time.time()
     settings["lastDiscoveryCount"] = len(discovered_devices)
 
-    CONNECTION.devices = [dict(device) for device in merged_devices]
+    CONNECTION.devices = [as_device(device) for device in merged_devices]
 
     logger.info(
         "Discovery found %s responding device(s); keeping %s total device(s)",
@@ -316,7 +333,6 @@ def listen(server: socket.socket) -> List[str]:
         return messages
     except Exception as e:
         error_msg = f"Error listening for devices: {str(e)}"
-        print(f"{Fore.RED}{error_msg}")
         logger.error(error_msg, exc_info=True)
         return []
 
@@ -326,7 +342,7 @@ def parseMessages(messages: List[str]) -> Dict[str, Any]:
     devices = parse(messages)
 
     settings = {
-        "devices": devices,
+        "devices": [as_device(device) for device in devices],
         "selectedDevice": 0,
         "time": time.time()
     }
@@ -342,8 +358,22 @@ def writeJSON(settings: Dict[str, Any]) -> None:
     from .accounts.secrets import protect_device
 
     protected = dict(settings)
-    protected["devices"] = [protect_device(device) for device in settings.get("devices", [])]
+    protected["devices"] = [
+        protect_device(as_device(device).to_dict())
+        for device in settings.get("devices", [])
+    ]
     write_json(protected, str(path))
+
+def update_settings(
+    updates: Dict[str, Any],
+    filename: str | os.PathLike[str] = "settings.json",
+) -> Dict[str, Any]:
+    """Merge *updates* into the saved settings and persist them atomically."""
+    settings = _load_saved_settings(filename)
+    settings.update(updates)
+    writeJSON(settings)
+    return settings
+
 
 def get_data(*, refresh: bool = True) -> Dict[str, Any]:
     """Get device data from settings file or by requesting new data."""
@@ -362,13 +392,14 @@ def get_data(*, refresh: bool = True) -> Dict[str, Any]:
                 return discover_lan_devices(preserve_existing=True)
             except Exception as e:
                 logger.error(f"Discovery refresh failed: {str(e)}", exc_info=True)
-                return data
+                return _normalize_settings(data)
+        normalized = _normalize_settings(data)
         logger.info(
             "Loaded data with %s device(s) from %s",
-            len(data.get("devices", [])),
+            len(normalized["devices"]),
             path,
         )
-        return data
+        return normalized
 
     except (FileNotFoundError, json.JSONDecodeError) as e:
         error_msg = f"Settings.json not found or invalid, requesting new data... ({str(e)})"
@@ -381,7 +412,6 @@ def get_data(*, refresh: bool = True) -> Dict[str, Any]:
             return _empty_settings()
     except Exception as e:
         error_msg = f"Error getting device data: {str(e)}"
-        print(f"{Fore.RED}{error_msg}")
         logger.error(error_msg, exc_info=True)
         # Return empty data as fallback
         return {"devices": [], "selectedDevice": 0, "time": time.time()}

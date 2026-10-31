@@ -25,6 +25,7 @@ import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..device import DeviceLike
 from .base import RGB, DeviceCapabilities, TransportAdapter
 
 # --- Confirmed from the app (com.tech.idotmatrix 2.1.6) ---
@@ -272,7 +273,7 @@ class IDotMatrixBleAdapter(TransportAdapter):
     use and reused for subsequent frames.
     """
 
-    def __init__(self, device: Dict[str, Any]) -> None:
+    def __init__(self, device: DeviceLike) -> None:
         super().__init__(device)
         size_key = str(device.get("matrix_size", "")).lower()
         self._size = KNOWN_SIZES.get(size_key, DEFAULT_SIZE)
@@ -301,11 +302,12 @@ class IDotMatrixBleAdapter(TransportAdapter):
         if self._client is not None and self._client.is_connected:
             return self._client
         bleak = _require_bleak()
-        if not self._address:
+        address = self._address
+        if not address:
             raise RuntimeError("iDotMatrix device has no BLE address to connect to.")
 
         async def _connect():
-            client = bleak.BleakClient(self._address)
+            client = bleak.BleakClient(str(address))
             try:
                 await client.connect()
                 # Firmware variants can omit the optional notification handle.
@@ -321,7 +323,7 @@ class IDotMatrixBleAdapter(TransportAdapter):
         self._client = _BleLoop.instance().run(_connect(), timeout=20.0)
         return self._client
 
-    def _on_notify(self, _sender, data: bytes) -> None:
+    def _on_notify(self, _sender, data: bytearray) -> None:
         # Responses are logged for debugging / future status parsing.
         self._last_response = bytes(data)
 

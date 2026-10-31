@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
-
+from ..device import DeviceLike
 from .base import TransportAdapter
 from .govee_lan import GoveeLanAdapter
 from .idotmatrix_ble import IDotMatrixBleAdapter
 
 
-def create_adapter(device: Dict[str, Any], server=None) -> TransportAdapter:
+def create_adapter(device: DeviceLike, server=None) -> TransportAdapter:
     """Build a :class:`TransportAdapter` for ``device``.
 
     Selection is by explicit ``transport``/``type`` hints on the descriptor,
@@ -32,10 +31,19 @@ def create_adapter(device: Dict[str, Any], server=None) -> TransportAdapter:
     return GoveeLanAdapter(device, server)
 
 
-def capabilities_for_device(device: Dict[str, Any]):
+def capabilities_for_device(device: DeviceLike):
     """Read descriptor capabilities without opening any network connection."""
-    return create_adapter(device, server=object()).capabilities
+    transport = str(device.get("transport", "")).lower()
+    kind = str(device.get("type", "")).lower()
+    if transport in ("", "lan", "govee", "govee_lan") and kind not in (
+        "idotmatrix",
+        "idotmatrix_ble",
+        "tuya",
+        "lsc",
+    ):
+        return GoveeLanAdapter.capabilities_for(device)
+    return create_adapter(device).capabilities
 
 
-def is_cloud(device: Dict[str, Any]) -> bool:
+def is_cloud(device: DeviceLike) -> bool:
     return str(device.get("transport", "")).lower() in ("govee_cloud", "govee_account", "tuya_cloud")
