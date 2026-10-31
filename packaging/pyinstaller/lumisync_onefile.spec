@@ -169,7 +169,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="LumiSync-Windows-x64-onefile",
+    name="LumiSync",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

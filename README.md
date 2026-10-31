@@ -145,7 +145,7 @@ dependency versions.
 
 ### Prebuilt downloads
 
-- **Windows** — a portable `.zip` and a single-file `.exe` are attached to each
+- **Windows** — a single-file **`LumiSync.exe`** is attached to each
   [GitHub release](https://github.com/Minlor/LumiSync/releases).
 - **Linux** — an `x86_64` **AppImage** is attached to each release; `chmod +x`
   it and run. Build it yourself with `tools/build_linux.sh` (needs Python 3.12+,

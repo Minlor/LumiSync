@@ -2,11 +2,10 @@ import * as lucideIcons from "lucide-react";
 import { FaGithub, FaLinux, FaPython, FaWindows } from "react-icons/fa";
 
 const lucideSource = (lucideIcons as typeof lucideIcons & { default?: typeof lucideIcons }).default ?? lucideIcons;
-const { ArrowDownToLine, ArrowRight, Monitor, Music2, PackageOpen, SlidersHorizontal } = lucideSource;
+const { ArrowDownToLine, ArrowRight, Monitor, Music2, SlidersHorizontal } = lucideSource;
 
 const downloads = {
-  windows: "https://github.com/Minlor/LumiSync/releases/latest/download/LumiSync-Windows-x64-onefile.exe",
-  portable: "https://github.com/Minlor/LumiSync/releases/latest/download/LumiSync-Windows-x64-portable.zip",
+  windows: "https://github.com/Minlor/LumiSync/releases/latest/download/LumiSync.exe",
   linux: "https://github.com/Minlor/LumiSync/releases/latest/download/LumiSync-x86_64.AppImage",
   pypi: "https://pypi.org/project/lumisync/",
 };
@@ -153,7 +152,6 @@ export default function Home() {
         <p>Discover local devices or connect your vendor account. Prebuilt downloads include the runtime; Python is only needed for pip or source installs.</p>
         <div className="downloadGrid">
           <a className="downloadOption featured" href={downloads.windows}><FaWindows aria-hidden="true" /><span><strong>Windows</strong><small>Single-file app · x64</small></span><ArrowDownToLine aria-hidden="true" /></a>
-          <a className="downloadOption" href={downloads.portable}><PackageOpen aria-hidden="true" /><span><strong>Windows portable</strong><small>Extract and run · x64</small></span><ArrowDownToLine aria-hidden="true" /></a>
           <a className="downloadOption" href={downloads.linux}><FaLinux aria-hidden="true" /><span><strong>Linux</strong><small>AppImage · x86_64</small></span><ArrowDownToLine aria-hidden="true" /></a>
           <a className="downloadOption" href={downloads.pypi}><FaPython aria-hidden="true" /><span><strong>Install with pip</strong><small>Python 3.11+ · advanced</small></span><ArrowRight aria-hidden="true" /></a>
         </div>

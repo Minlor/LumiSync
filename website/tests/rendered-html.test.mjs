@@ -17,7 +17,7 @@ test("builds the LumiSync product page as static HTML", async () => {
   assert.match(html, /<table class="deviceTable">/);
   assert.doesNotMatch(html, /No account · No cloud required|Single-file installer/);
   assert.match(html, /Different brands\./);
-  assert.match(html, /LumiSync-Windows-x64-onefile\.exe/);
+  assert.match(html, /LumiSync\.exe/);
   assert.match(html, /LumiSync-x86_64\.AppImage/);
   assert.match(html, /https:\/\/lumisync\.minlor\.net\/og\.png/);
   assert.doesNotMatch(html, /codex-preview|chatgpt\.site|react-loading-skeleton/i);

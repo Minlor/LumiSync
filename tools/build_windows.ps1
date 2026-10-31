@@ -19,8 +19,7 @@ $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 $DistDir = Join-Path $Root "dist"
 $OnedirPath = Join-Path $DistDir "LumiSync"
 $OnedirExe = Join-Path $OnedirPath "LumiSync.exe"
-$PortableZip = Join-Path $DistDir "LumiSync-Windows-x64-portable.zip"
-$OnefileExe = Join-Path $DistDir "LumiSync-Windows-x64-onefile.exe"
+$OnefileExe = Join-Path $DistDir "LumiSync.exe"
 
 function Write-Step {
     param([string]$Message)
@@ -99,7 +98,6 @@ if ($Clean) {
     Remove-RepoPath $BuildRoot
     Remove-RepoPath $PyInstallerBuildRoot
     Remove-RepoPath $OnedirPath
-    Remove-RepoPath $PortableZip
     Remove-RepoPath $OnefileExe
 }
 
@@ -131,7 +129,7 @@ if ($RunTests) {
     Invoke-Checked $VenvPython @("-m", "unittest", "discover", "-s", (Join-Path $Root "tests"))
 }
 
-Write-Step "Building portable app folder"
+Write-Step "Building onedir bundle (packaging smoke check)"
 Invoke-Checked $VenvPython @(
     "-m", "PyInstaller",
     "--noconfirm",
@@ -151,17 +149,12 @@ Invoke-Checked $VenvPython @(
     (Join-Path $Root "packaging\pyinstaller\lumisync_onefile.spec")
 )
 
-Write-Step "Creating portable zip"
-Remove-RepoPath $PortableZip
-Compress-Archive -Path $OnedirPath -DestinationPath $PortableZip -CompressionLevel Optimal
-
 Write-Step "Running executable smoke checks"
 Invoke-SmokeCheck $OnedirExe
 Invoke-SmokeCheck $OnefileExe
 
 Write-Step "Build complete"
-Write-Host "Portable zip: $PortableZip"
-Write-Host "Onefile exe:  $OnefileExe"
+Write-Host "Single-file exe: $OnefileExe"
 }
 finally {
     Set-Location $OriginalLocation

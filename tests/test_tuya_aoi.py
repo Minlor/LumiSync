@@ -59,7 +59,7 @@ class IdentityTests(unittest.TestCase):
 
     def test_mate_ids_pad_device_ids_to_26_bytes(self):
         mate = main_mate()
-        device_id = "fixturedevice000000006"
+        device_id = "fixturedevice000000005"
         child = child_mate_id(device_id, mate)
         self.assertEqual(len(mate), 4)
         self.assertEqual(len(child), 4)

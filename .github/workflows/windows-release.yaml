@@ -32,13 +32,11 @@ jobs:
         with:
           name: LumiSync-Windows-x64
           path: |
-            dist/LumiSync-Windows-x64-portable.zip
-            dist/LumiSync-Windows-x64-onefile.exe
+            dist/LumiSync.exe
 
       - name: Attach artifacts to GitHub Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            dist/LumiSync-Windows-x64-portable.zip
-            dist/LumiSync-Windows-x64-onefile.exe
+            dist/LumiSync.exe
