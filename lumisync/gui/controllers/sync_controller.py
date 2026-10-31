@@ -3,16 +3,15 @@ Sync controller for the LumiSync GUI.
 This module handles synchronization functionality with PySide6 signals.
 """
 
-import socket
 import threading
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from PySide6.QtCore import QObject, Signal, QThread, QSettings, QTimer, Qt, Slot
 
 from ... import connection, devices, led_mapping
 from ...config.options import BRIGHTNESS, SYNC
 from ...config.sync_settings import SYNC_SETTINGS_KEYS, SyncSettings
-from ...device import Device, as_device
+from ...device import Device, DeviceLike, as_device
 from ...sync import audio
 from ...sync.session import SyncSession
 
@@ -206,9 +205,13 @@ class SyncController(QObject):
         self.sync_worker: Optional[QObject] = None
         self.stop_event = threading.Event()
         self.current_sync_mode: Optional[str] = None
-        self.server: Optional[socket.socket] = None
+        self.server: Optional[connection.LanSocket] = None
         self.selected_devices: List[Device] = []
         self.active_devices: List[Device] = []
+        self._pending_start: Optional[Tuple[str, List[Device]]] = None
+        self._stop_announce = True
+        self._stop_poll_active = False
+        self._closing = False
 
         # Keep mode-specific brightness stable across launches. The dataclass is
         # the one object workers receive; the legacy option namespaces are only
@@ -359,9 +362,15 @@ class SyncController(QObject):
     def start_sync(
         self,
         mode: str,
-        devices: Optional[List[Device | Dict[str, Any]]] = None,
+        devices: Optional[Sequence[Device | Dict[str, Any]]] = None,
     ):
         """Start one active sync mode and fan its output to all devices."""
+        if mode not in ("monitor", "music"):
+            self.status_updated.emit(f"Unknown sync mode: {mode}")
+            return
+        if self._closing:
+            return
+
         source_devices = self.selected_devices if devices is None else devices
         selected = [as_device(device).copy() for device in source_devices if device]
         from ...drivers.registry import capabilities_for_device
@@ -372,30 +381,39 @@ class SyncController(QObject):
             self.status_updated.emit("No devices selected. Please select at least one device first.")
             return
 
-        if self.sync_thread and self.sync_thread.isRunning():
+        if self.sync_thread is not None:
+            # Never block the GUI waiting for a Bluetooth/Tuya connect to time
+            # out. Remember what the user asked for and start it as soon as the
+            # previous worker has really exited.
+            self._pending_start = (mode, selected)
+            self.status_updated.emit(
+                "Stopping the current sync before starting the new one…"
+            )
             self.stop_sync(announce=False)
-            if self.is_syncing():
-                self.status_updated.emit("The previous output is still stopping. Try again when it has finished.")
-                return
+            return
 
         if mode == "monitor":
             worker_cls = MonitorSyncWorker
             brightness = self.sync_settings.monitor_brightness
             display_mode = "Monitor"
-        elif mode == "music":
+        else:
             worker_cls = MusicSyncWorker
             brightness = self.sync_settings.music_brightness
             display_mode = "Music"
-        else:
-            self.status_updated.emit(f"Unknown sync mode: {mode}")
-            return
 
         # The CLI reads settings.json, so publish the current live values
         # before a session starts. Tests with a temporary QSettings file are
         # still isolated by the explicit shutdown flush below.
         self.flush_sync_settings()
         if any(device.transport in ("", "lan") for device in selected):
-            self._ensure_server()
+            try:
+                self._ensure_server()
+            except OSError as exc:
+                # A port conflict must read as a normal sync error, not a
+                # top-level "Unexpected Error" dialog from an uncaught slot.
+                self.sync_error.emit(str(exc))
+                self.status_updated.emit(str(exc))
+                return
         self.stop_event.clear()
         self.current_sync_mode = mode
         self.active_devices = selected
@@ -430,7 +448,7 @@ class SyncController(QObject):
         if zone_hint:
             self.status_updated.emit(zone_hint)
 
-    def _zone_hint_for(self, devices: List[Device | Dict[str, Any]]) -> Optional[str]:
+    def _zone_hint_for(self, devices: Sequence[DeviceLike]) -> Optional[str]:
         """Return a tip when a LAN device has no known zone count.
 
         The Govee LAN segment stream carries its zone count in every frame,
@@ -460,60 +478,77 @@ class SyncController(QObject):
             "during sync, set the correct zone count with Adjust Zones."
         )
 
-    def stop_sync(self, announce: bool = True):
-        """Stop any active synchronization."""
-        if self.sync_thread is None:
-            self.close_server()
+    def _finalize_sync_thread(self, thread: QThread, *, announce: bool) -> None:
+        """Drop refs after the native thread has actually joined."""
+        if thread is not self.sync_thread:
             return
-
         had_active_mode = self.current_sync_mode is not None
+        self.sync_thread = None
+        self.sync_worker = None
         try:
-            is_running = self.sync_thread.isRunning()
+            thread.deleteLater()
         except RuntimeError:
-            # Thread was already deleted
-            self.sync_thread = None
-            self.sync_worker = None
-            self.current_sync_mode = None
-            self.active_devices = []
-            self.close_server()
-            if had_active_mode:
-                self.sync_stopped.emit()
-                if announce:
-                    self.status_updated.emit("Sync stopped")
-            return
-
-        if is_running or not self.sync_thread.wait(0):
-            self.stop_event.set()
-            mode = self.current_sync_mode or "sync"
-
-            # Wait for thread to finish
-            self.sync_thread.quit()
-            joined = self.sync_thread.wait(2000)  # Wait up to 2 seconds
-
-            # If thread is still running after timeout
-            try:
-                if not joined or self.sync_thread.isRunning():
-                    self.status_updated.emit(
-                        f"Waiting for the current {mode} operation to finish…"
-                    )
-                    return  # Retain the QThread/worker and socket until finished.
-            except RuntimeError:
-                pass
-
+            pass
         self.current_sync_mode = None
         self.active_devices = []
+        self._stop_poll_active = False
+        self.close_server()
         if had_active_mode:
             self.sync_stopped.emit()
             if announce:
                 self.status_updated.emit("Sync stopped")
 
-        # Clear the reference to allow garbage collection
+        pending = self._pending_start
+        self._pending_start = None
+        if pending is not None and not self._closing:
+            mode, devices = pending
+            QTimer.singleShot(0, lambda: self.start_sync(mode, devices))
+
+    def _poll_stop_thread(self) -> None:
+        """Wait for a stopping worker without blocking the GUI thread."""
         thread = self.sync_thread
-        self.sync_thread = None
-        self.sync_worker = None
-        if thread is not None:
-            thread.deleteLater()
-        self.close_server()
+        if thread is None:
+            self._stop_poll_active = False
+            return
+        try:
+            done = thread.wait(0) is True
+        except RuntimeError:
+            done = True
+        if not done:
+            QTimer.singleShot(25, self._poll_stop_thread)
+            return
+        self._finalize_sync_thread(thread, announce=self._stop_announce)
+
+    def stop_sync(self, announce: bool = True):
+        """Request a stop and return immediately.
+
+        The worker keeps owning its QThread and sockets until it really exits;
+        a timer finalizes them so a slow Bluetooth/Tuya connect can no longer
+        freeze the window for two seconds.
+        """
+        if self.sync_thread is None:
+            self.close_server()
+            return
+
+        thread = self.sync_thread
+        self.stop_event.set()
+        try:
+            thread.quit()
+        except (AttributeError, RuntimeError):
+            pass
+
+        try:
+            done = thread.wait(0) is True
+        except (AttributeError, RuntimeError):
+            done = True
+        if done:
+            self._finalize_sync_thread(thread, announce=announce)
+            return
+
+        self._stop_announce = announce
+        if not self._stop_poll_active:
+            self._stop_poll_active = True
+            QTimer.singleShot(25, self._poll_stop_thread)
 
     @Slot()
     def _on_sync_thread_finished(self) -> None:
@@ -522,19 +557,21 @@ class SyncController(QObject):
         sender = self.sender()
         if thread is None or (isinstance(sender, QThread) and sender is not thread):
             return
-        if not thread.wait(0):
+        try:
+            done = thread.wait(0) is True
+        except RuntimeError:
+            done = True
+        if not done:
             QTimer.singleShot(1, self._on_sync_thread_finished)
             return
+        self._finalize_sync_thread(thread, announce=False)
 
-        had_active_mode = self.current_sync_mode is not None
-        self.sync_thread = None
-        self.sync_worker = None
-        thread.deleteLater()
-        self.current_sync_mode = None
-        self.active_devices = []
-        self.close_server()
-        if had_active_mode:
-            self.sync_stopped.emit()
+    def shutdown(self) -> None:
+        """Stop sync for application shutdown without a blocking wait."""
+        self._closing = True
+        self._pending_start = None
+        self.stop_sync(announce=False)
+        self.flush_sync_settings()
 
     def get_current_sync_mode(self) -> Optional[str]:
         """Get the current synchronization mode.
@@ -572,8 +609,3 @@ class SyncController(QObject):
                 self.server.close()
             finally:
                 self.server = None
-
-    def __del__(self):
-        """Clean up resources when the controller is deleted."""
-        self.stop_sync()
-        self.close_server()
