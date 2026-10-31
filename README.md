@@ -45,7 +45,7 @@ support depends on its firmware, capabilities, and the account's authorization.
 |--------|-----------|-------|
 | Govee strips/bulbs | LAN (UDP), account MQTT, Platform API | LAN for sync; account/API connections for manual controls |
 | iDotMatrix panels | Bluetooth LE | Drawing, animations, clock, rotation, countdown, scoreboard; sync uses an ambient colour |
-| LSC / Tuya WiFi lights, switches and plugs | Tuya LAN, personal account or Smart Life QR | LSC/Tuya Smart email/password; authorized local-key import; controls follow the device schema; supported plug metering |
+| LSC / Tuya WiFi lights, switches and plugs | Tuya LAN, personal account or Smart Life QR | LSC/Tuya Smart email/password; authorized local-key import; controls follow the device schema; RGBIC strips (Battletron, wall washers) sync up to 20 colour zones, see below; supported plug metering |
 
 See [account setup](#account-setup). LSC and Tuya Smart password login
 use built-in client configuration; no Android package, installation or developer
@@ -58,6 +58,17 @@ Cloud connections provide manual controls. Screen and music sync use supported
 local connections. Meter readings and history depend on the device schema,
 firmware and account service; missing measurements are shown as not reported.
 Voltage and current are live readings; historical energy is measured in kWh.
+
+RGBIC strips sync per zone where the hardware allows it: the LSC Battletron and
+wall-washer strips, and newer LSC RGB/IC strips, accept one colour per zone.
+LumiSync streams them through the LSC app's own UDP fast channel where the
+strip supports it (falling back to the paint data point over TCP otherwise),
+so screen and music sync run at the vendor's own refresh cadence. The paint
+data point varies per product and is often absent from the cloud schema, so
+LumiSync probes for it on the first sync and remembers it for later runs; use
+Adjust Zones on a card or Adjust Zone Count in the sync views to pick a number
+below the 20-zone maximum. Strips without the data point follow sync as one
+averaged ambient colour, like LSC bulbs.
 
 ## Screenshots
 

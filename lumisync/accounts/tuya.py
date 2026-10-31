@@ -39,6 +39,13 @@ ROLES = {
     "colour": ("colour_data_v2", "colour_data"),
 }
 
+# Per-zone RGBIC paint ("涂抹"/smear) codes on Dreamlight-class strips. The DP
+# id is not fixed across products — the Battletron / LSC wall-washer family
+# paints on DP 61 while the newer LSC RGB/IC strips expose DP 103
+# (paint_colour_1) with the same payload format — so the driver probes at
+# runtime when the cloud spec does not name the code (see drivers/tuya_lan.py).
+PAINT_CODES = ("paint_colour_data", "paint_colour_1", "paint_data")
+
 
 def functions_for(device: dict) -> dict:
     return device.get("tuya_functions", {})
@@ -49,6 +56,77 @@ def code_for(device: dict, role: str) -> str | None:
     if role == "power" and device.get("tuya_power_code") in functions:
         return device["tuya_power_code"]
     return next((code for code in ROLES[role] if code in functions), None)
+
+
+def paint_dp(device: dict) -> int | None:
+    """Numeric DP id of the per-zone RGBIC paint control, when known."""
+    functions = functions_for(device)
+    for code in PAINT_CODES:
+        spec = functions.get(code)
+        if spec and "dp_id" in spec:
+            try:
+                return int(spec["dp_id"])
+            except (TypeError, ValueError):
+                continue
+    mapped = device.get("tuya_paint_dp")
+    try:
+        return int(mapped) if mapped else None
+    except (TypeError, ValueError):
+        return None
+
+
+def dp_layout(device: dict, default: str = "v2") -> str:
+    """('v1' | 'v2') data-point layout of a device descriptor.
+
+    Tuya renumbered the lighting DPs when it introduced the modern schema:
+    legacy bulbs use ids 1-8 while modern bulbs *and* the LSC "dd"-family
+    dreamlight strips use ids from 18 up (typically 20-27). The id range is
+    therefore the strongest layout signal — LSC strips keep the legacy code
+    names (``colour_data``, ``bright_value`` …) but are wired like modern
+    devices, so keying the layout off the code names alone (as LumiSync before
+    0.9 did) mislabeled them and made them reject colour commands.
+
+    DP ids also outrank an explicit ``dp_schema``: saved descriptors from
+    0.8.x carry the mislabeled value, and status discovery may know the ids
+    the firmware owns. The explicit value still breaks ties when no ids are
+    stored, and callers without any information fall back to the layout most
+    devices use today (modern).
+    """
+    functions = functions_for(device)
+    ids = []
+    for role_codes in ROLES.values():
+        for code in role_codes:
+            spec = functions.get(code)
+            if spec and "dp_id" in spec:
+                try:
+                    ids.append(int(spec["dp_id"]))
+                    continue
+                except (TypeError, ValueError):
+                    pass
+            for dp, mapped in (device.get("dp_codes") or {}).items():
+                if mapped == code and str(dp).isdigit():
+                    ids.append(int(dp))
+    if any(dp_id >= 18 for dp_id in ids):
+        return "v2"
+    if any(0 < dp_id <= 8 for dp_id in ids):
+        return "v1"
+    explicit = str(device.get("dp_schema", "")).strip().lower()
+    if explicit in ("v1", "v2"):
+        return explicit
+    if any(str(code).endswith("_v2") for code in functions):
+        return "v2"
+    return default if default in ("v1", "v2") else "v2"
+
+
+def colour_format(device: dict) -> str:
+    """Encoding of the colour DP: 'hsv' (``HHHHSSSSVVVV``, S/V 0-1000) or
+    'legacy' (``RRGGBBHHHHSSVV``, S/V 0-255)."""
+    value = str(device.get("colour_format", "")).strip().lower()
+    if value in ("hsv", "legacy"):
+        return value
+    if code_for(device, "colour") == "colour_data_v2":
+        return "hsv"
+    return "hsv" if dp_layout(device) == "v2" else "legacy"
 
 
 def value_range(device: dict, role: str, default: tuple[int, int]) -> tuple[int, int]:
@@ -69,22 +147,40 @@ def value_range(device: dict, role: str, default: tuple[int, int]) -> tuple[int,
 
 
 def colour_scale(device: dict) -> int:
-    return 1000 if code_for(device, "colour") == "colour_data_v2" else 255
+    return 1000 if colour_format(device) == "hsv" else 255
+
+
+def colour_hsv_from_hex(value, fmt: str) -> tuple[int, int, int] | None:
+    """Decode a local ``colour_data`` hex string to (h, s, v) in device units.
+
+    ``hsv`` strings are ``HHHHSSSSVVVV`` (12 hex chars, h 0-360, s/v 0-1000);
+    ``legacy`` strings are ``RRGGBBHHHHSSVV`` (14 hex chars, s/v 0-255).
+    """
+    text = str(value).strip().lower()
+    if fmt == "hsv" and re.fullmatch(r"[0-9a-f]{12}", text):
+        return tuple(int(text[i:i + 4], 16) for i in (0, 4, 8))  # type: ignore[return-value]
+    if fmt == "legacy" and re.fullmatch(r"[0-9a-f]{14}", text):
+        return (int(text[6:10], 16), int(text[10:12], 16), int(text[12:14], 16))
+    return None
 
 
 def colour_values(device: dict, value) -> tuple[int, int, int] | None:
-    """Decode the cloud's HSV JSON without confusing it with local hex DPs."""
-    try:
-        if isinstance(value, str):
+    """Decode the cloud's HSV JSON — or a local hex DP string — to HSV units."""
+    hsv = None
+    if isinstance(value, str):
+        try:
             value = json.loads(value)
-        if not isinstance(value, dict):
-            return None
+        except ValueError:
+            hsv = colour_hsv_from_hex(value, colour_format(device))
+    if isinstance(value, dict):
         scale = colour_scale(device)
-        return (max(0, min(360, int(value["h"]))),
-                max(0, min(scale, int(value["s"]))),
-                max(0, min(scale, int(value["v"]))))
-    except (ValueError, TypeError, KeyError):
-        return None
+        try:
+            hsv = (max(0, min(360, int(value["h"]))),
+                   max(0, min(scale, int(value["s"]))),
+                   max(0, min(scale, int(value["v"]))))
+        except (ValueError, TypeError, KeyError):
+            return None
+    return hsv
 
 
 def normalize_devices(raw: dict, functions: dict, dp_codes: dict | None = None,
@@ -106,12 +202,20 @@ def normalize_devices(raw: dict, functions: dict, dp_codes: dict | None = None,
     if not identity:
         return []
     fallback = "Tuya light" if lighting else "Tuya smart plug" if socket else "Tuya light switch"
+    # The layout must be derived from DP ids (modern ids run from 18 up), not
+    # from the code names: LSC "dd"-family strips keep the legacy code names
+    # (colour_data etc.) while speaking the modern HSV colour format.
+    dp_map_codes = {str(dp): code for dp, code in (dp_codes or {}).items()}
+    dp_map_codes.update({str(spec["dp_id"]): code for code, spec in functions.items()
+                         if "dp_id" in spec})
+    layout = dp_layout({"tuya_functions": functions, "dp_codes": dp_map_codes})
     result = {"device_id": identity, "mac": f"tuya:{identity}",
               "model": raw.get("name") or fallback,
               "name": raw.get("name") or fallback,
               "transport": "tuya_cloud", "tuya_functions": functions,
               "tuya_category": category,
-              "dp_schema": "v2" if any(c.endswith("_v2") for c in functions) else "v1",
+              "dp_schema": layout,
+              "colour_format": colour_format({"tuya_functions": functions, "dp_schema": layout}),
               "color_temp_min": 2700, "color_temp_max": 6500}
     if status_functions is not None:
         result["tuya_status_functions"] = status_functions
@@ -122,6 +226,12 @@ def normalize_devices(raw: dict, functions: dict, dp_codes: dict | None = None,
     result["local_supported"] = raw.get("support_local", True)
     codes = {str(dp): code for dp, code in (dp_codes or {}).items()}
     codes.update({str(spec["dp_id"]): code for code, spec in functions.items() if "dp_id" in spec})
+    if lighting:
+        paint = next((int(spec["dp_id"]) for code in PAINT_CODES
+                      if (spec := functions.get(code)) and "dp_id" in spec and str(spec["dp_id"]).isdigit()
+                      ), None)
+        if paint:
+            result["tuya_paint_dp"] = paint
     if codes:
         result["dp_map"] = {role: int(dp_id) for dp_id, code in codes.items() for role in ROLES
                             if dp_id.isdigit() and code == code_for(result, role)}

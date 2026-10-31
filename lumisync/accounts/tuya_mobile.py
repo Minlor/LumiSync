@@ -19,7 +19,7 @@ import requests
 from .errors import AccountError
 from .http import request_json
 from .mobile_profile import PACKAGES, profile_for
-from .tuya import decode_status, normalize_devices
+from .tuya import colour_format, colour_hsv_from_hex, decode_status, normalize_devices
 
 MOBILE_REGIONS = {"eu": "https://a1.tuyaeu.com/api.json", "us": "https://a1.tuyaus.com/api.json",
                   "cn": "https://a1.tuyacn.com/api.json", "in": "https://a1.tuyain.com/api.json"}
@@ -84,31 +84,31 @@ def _schema_functions(raw, *, writable_only: bool = True) -> tuple[dict, dict]:
     return functions, codes
 
 
-def _colour_to_dp(code, value):
+def _colour_to_dp(fmt, code, value):
     if code not in ("colour_data", "colour_data_v2"):
         return value
     hsv = _json_value(value)
     if not isinstance(hsv, dict):
         return value
-    scale = 1000 if code.endswith("_v2") else 255
+    fmt = fmt if fmt in ("hsv", "legacy") else ("hsv" if code.endswith("_v2") else "legacy")
+    scale = 1000 if fmt == "hsv" else 255
     h, s, v = (int(hsv[k]) for k in ("h", "s", "v"))
     if not 0 <= h <= 360 or not 0 <= s <= scale or not 0 <= v <= scale:
         raise AccountError("Invalid light colour.", "validation")
-    if scale == 1000:
+    if fmt == "hsv":
         return f"{h:04x}{s:04x}{v:04x}"
     rgb = tuple(round(x * 255) for x in colorsys.hsv_to_rgb(h / 360, s / scale, v / scale))
     return "".join(f"{x:02x}" for x in rgb) + f"{h:04x}{s:02x}{v:02x}"
 
 
-def _colour_from_dp(code, value):
-    if not isinstance(value, str):
+def _colour_from_dp(fmt, code, value):
+    if not isinstance(value, str) or code not in ("colour_data", "colour_data_v2"):
         return value
-    if code == "colour_data_v2" and re.fullmatch(r"[a-fA-F0-9]{12}", value):
-        h, s, v = (int(value[i:i + 4], 16) for i in (0, 4, 8))
-    elif code == "colour_data" and re.fullmatch(r"[a-fA-F0-9]{14}", value):
-        h, s, v = int(value[6:10], 16), int(value[10:12], 16), int(value[12:14], 16)
-    else:
+    hsv = colour_hsv_from_hex(value, fmt if fmt in ("hsv", "legacy")
+                              else ("hsv" if code.endswith("_v2") else "legacy"))
+    if hsv is None:
         return value
+    h, s, v = hsv
     return json.dumps({"h": h, "s": s, "v": v}, separators=(",", ":"))
 
 
@@ -254,6 +254,37 @@ class TuyaMobileClient:
             self.credentials.update(sid=result["sid"], endpoint=endpoint, email=email, country_code=country_code)
             self._changed()
 
+    def firmware_info(self, device):
+        """Current firmware per module and whether an update is available.
+
+        Uses the same OTA query the LSC app's update screen calls; it works
+        while the stored account session is valid.
+        """
+        device_id = str(device.get("device_id") or "")
+        if not device_id:
+            raise AccountError("A device ID is required to read firmware details.", "validation")
+        gid = device.get("tuya_gateway_id") or device_id
+        with self._lock:
+            reply = self._request(
+                "m.thing.firmware.upgrade.info.get",
+                "2.0",
+                {"devId": device_id},
+                gid=gid,
+            )
+        modules = reply.get("upgradeList") if isinstance(reply, dict) else reply
+        result = []
+        for item in modules or []:
+            if not isinstance(item, dict):
+                continue
+            result.append(
+                {
+                    "module": str(item.get("typeDesc") or "Firmware"),
+                    "version": str(item.get("currentVersion") or "unknown"),
+                    "upgrade_available": int(item.get("upgradeStatus") or 0) != 0,
+                }
+            )
+        return result
+
     def list_devices(self):
         with self._lock:
             homes = self._request("m.life.home.space.list")
@@ -292,7 +323,10 @@ class TuyaMobileClient:
                         device["tuya_home_id"] = gid
                         device["tuya_gateway_id"] = gateway
                         devices[device["mac"]] = device
-                        mappings[identity] = {"dp_codes": {code: dp for dp, code in codes.items()}, "writable_codes": set(functions), "gw_id": gateway, "home_id": gid}
+                        mappings[identity] = {"dp_codes": {code: dp for dp, code in codes.items()}, "writable_codes": set(functions),
+                                              "gw_id": gateway, "home_id": gid,
+                                              "colour_format": colour_format({"tuya_functions": all_functions,
+                                                                              "dp_schema": device["dp_schema"]})}
             self._devices = mappings
             return list(devices.values())
 
@@ -303,6 +337,7 @@ class TuyaMobileClient:
             self._devices[device["device_id"]] = {
                 "dp_codes": {code: str(f["dp_id"]) for code, f in status_functions(device).items() if "dp_id" in f},
                 "writable_codes": set(device.get("tuya_functions", {})),
+                "colour_format": colour_format(device),
                 "gw_id": device.get("tuya_gateway_id", device["device_id"]), "home_id": device.get("tuya_home_id")}
 
     def send_commands(self, identity, commands):
@@ -312,7 +347,8 @@ class TuyaMobileClient:
             writable = mapping.get("writable_codes", set())
             if not commands or any(command.get("code") not in codes or command.get("code") not in writable for command in commands):
                 raise AccountError("Refresh this account's devices before using this control.", "unsupported")
-            dps = {str(codes[c["code"]]): _colour_to_dp(c["code"], c["value"]) for c in commands}
+            fmt = mapping.get("colour_format")
+            dps = {str(codes[c["code"]]): _colour_to_dp(fmt, c["code"], c["value"]) for c in commands}
             result = self._request("thing.m.device.dp.publish", "1.0",
                                    {"devId": identity, "gwId": mapping.get("gw_id", identity), "dps": json.dumps(dps, separators=(",", ":"))},
                                    gid=mapping.get("home_id"))
@@ -332,7 +368,8 @@ class TuyaMobileClient:
         if not isinstance(dps, dict):
             raise AccountError("The vendor returned invalid device state.", "response")
         codes = mapping.get("dp_codes", {}) or {code: str(f["dp_id"]) for code, f in device.get("tuya_functions", {}).items() if "dp_id" in f}
-        state = {code: _colour_from_dp(code, dps[str(dp)]) for code, dp in codes.items() if str(dp) in dps}
+        fmt = mapping.get("colour_format") or colour_format(device)
+        state = {code: _colour_from_dp(fmt, code, dps[str(dp)]) for code, dp in codes.items() if str(dp) in dps}
         online = raw.get("isOnline", raw.get("online", raw.get("cloudOnline")))
         return state, online if isinstance(online, bool) else None
 

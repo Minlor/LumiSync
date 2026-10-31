@@ -422,6 +422,37 @@ def fake_bmp():
     return bytes(header + pixels)
 
 
+class FirmwareInfoTests(unittest.TestCase):
+    def test_firmware_info_parses_ota_modules(self):
+        client = TuyaMobileClient("lsc", {"sid": "session"}, profile=profile("lsc"))
+        calls = {}
+
+        def fake_request(action, version="1.0", body=None, **kwargs):
+            calls["action"] = action
+            calls["version"] = version
+            calls["body"] = body
+            return {
+                "upgradeList": [
+                    {"typeDesc": "Main Module", "currentVersion": "1.3.1", "upgradeStatus": 0},
+                    {"typeDesc": "MCU Module", "currentVersion": "1.3.1", "upgradeStatus": 2},
+                ]
+            }
+
+        client._request = fake_request
+        info = client.firmware_info({"device_id": "dev1", "tuya_gateway_id": "gw1"})
+        self.assertEqual(calls["action"], "m.thing.firmware.upgrade.info.get")
+        self.assertEqual(calls["version"], "2.0")
+        self.assertEqual(calls["body"], {"devId": "dev1"})
+        self.assertEqual([module["module"] for module in info], ["Main Module", "MCU Module"])
+        self.assertFalse(info[0]["upgrade_available"])
+        self.assertTrue(info[1]["upgrade_available"])
+
+    def test_firmware_info_requires_a_device_id(self):
+        client = TuyaMobileClient("lsc", {"sid": "session"}, profile=profile("lsc"))
+        with self.assertRaises(AccountError):
+            client.firmware_info({})
+
+
 class AppProfileTests(unittest.TestCase):
     def test_manifest_dex_and_bitmap_are_read_without_android_execution(self):
         self.assertEqual(_manifest(fake_manifest())["package"], "com.lscsmartconnection.smart")

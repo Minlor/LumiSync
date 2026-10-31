@@ -15,7 +15,15 @@ from lumisync.accounts.http import request_json
 from lumisync.accounts.manager import AccountManager
 from lumisync.accounts.privacy import mask_account_label, mask_email
 from lumisync.accounts.secrets import CredentialVault, local_key_for, protect_device
-from lumisync.accounts.tuya import TuyaOpenApiClient, TuyaSharingClient, decode_status, normalize_device, normalize_devices
+from lumisync.accounts.tuya import (
+    TuyaOpenApiClient,
+    TuyaSharingClient,
+    colour_scale,
+    decode_status,
+    dp_layout,
+    normalize_device,
+    normalize_devices,
+)
 from lumisync.drivers.cloud import CloudLightAdapter
 
 
@@ -23,6 +31,15 @@ FUNCTIONS = {code: {"code": code, "values": json.dumps(values)} for code, values
     ("switch_led", {}), ("work_mode", {"range": ["white", "colour"]}),
     ("bright_value_v2", {"min": 10, "max": 1000}),
     ("temp_value_v2", {"min": 0, "max": 1000}), ("colour_data_v2", {}),
+)}
+
+# LSC "dd"-family strips (Battletron, Smart Wall Washer): legacy code names on
+# modern DP ids with the HSV colour format (h 0-360, s/v 0-1000).
+LSC_STRIP_FUNCTIONS = {code: {"code": code, "dp_id": dp, "type": "String",
+                              "values": json.dumps(values)} for code, dp, values in (
+    ("switch_led", 20, {}), ("work_mode", 21, {"range": ["white", "colour", "scene", "music"]}),
+    ("bright_value", 22, {"min": 10, "max": 1000}), ("temp_value", 23, {"min": 0, "max": 1000}),
+    ("colour_data", 24, {"maxlen": 255}),
 )}
 
 
@@ -333,6 +350,50 @@ class TuyaTests(unittest.TestCase):
         self.assertTrue(adapter.capabilities.supports_white)
         with self.assertRaises(AccountError):
             adapter.begin_stream()
+
+    def test_lsc_dd_strip_normalizes_to_modern_layout_with_hsv_colour(self):
+        # The wall washer / Battletron family keeps the legacy code names but
+        # uses modern DP ids and the HHHHSSSSVVVV colour format: LumiSync < 0.9
+        # labeled these "v1" and encoded 0-255 S/V, which the device rejected.
+        device = normalize_device({"id": "washer", "name": "Wall Washer", "category": "djdd"},
+                                  LSC_STRIP_FUNCTIONS)
+        self.assertEqual(device["dp_schema"], "v2")
+        self.assertEqual(device["colour_format"], "hsv")
+        self.assertEqual(device["dp_map"], {"power": 20, "mode": 21, "brightness": 22,
+                                            "temperature": 23, "colour": 24})
+        self.assertEqual(colour_scale(device), 1000)
+
+    def test_legacy_bulb_layout_stays_v1(self):
+        functions = {code: {"code": code, "dp_id": dp} for code, dp in (
+            ("switch", 1), ("mode", 2), ("bright_value", 3), ("colour_data", 5))}
+        device = normalize_device({"id": "bulb", "category": "dj"}, functions)
+        self.assertEqual(device["dp_schema"], "v1")
+        self.assertEqual(device["colour_format"], "legacy")
+        self.assertEqual(colour_scale(device), 255)
+
+    def test_stale_saved_schema_cannot_shadow_modern_dp_ids(self):
+        # 0.8.x saved the mislabeled dp_schema for dd-family strips; the DP ids
+        # in the stored functions remain authoritative, so those devices are
+        # fixed without a re-link of the account.
+        device = normalize_device({"id": "washer", "category": "djdd"}, LSC_STRIP_FUNCTIONS)
+        device["dp_schema"] = "v1"  # as older releases saved it
+        self.assertEqual(dp_layout(device), "v2")
+        self.assertEqual(colour_scale(device), 1000)
+
+    def test_lsc_strip_cloud_commands_send_hsv_units(self):
+        client = Mock()
+        with patch("lumisync.drivers.cloud.account_manager.client_for", return_value=client):
+            CloudLightAdapter(normalize_device({"id": "washer", "category": "djdd"},
+                                               LSC_STRIP_FUNCTIONS)).set_color(255, 0, 0)
+        commands = client.send_commands.call_args.args[1]
+        self.assertEqual(commands[0], {"code": "work_mode", "value": "colour"})
+        self.assertEqual(json.loads(commands[1]["value"]), {"h": 0, "s": 1000, "v": 1000})
+
+    def test_lsc_strip_cloud_readback_accepts_local_hex_strings(self):
+        device = normalize_device({"id": "washer", "category": "djdd"}, LSC_STRIP_FUNCTIONS)
+        colour = decode_status(device, {"work_mode": "colour", "colour_data": "007803e801f4"}, True)
+        self.assertEqual(colour["color"], (0, 128, 0))
+        self.assertEqual(colour["brightness"], 50)
 
     def test_official_qr_authorization_stores_only_the_issued_session(self):
         client = TuyaSharingClient()

@@ -11,33 +11,56 @@ own short-lived sockets there, exactly as before.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Dict
 import threading
 
+from ..device import DeviceLike, as_device
 from .base import TransportAdapter
 from .registry import create_adapter
 
 
-def _is_ble(device: Dict[str, Any]) -> bool:
-    return str(device.get("transport", "")).lower() == "ble"
+def _is_ble(device: DeviceLike) -> bool:
+    return as_device(device).is_ble
 
 
-def _ble_key(device: Dict[str, Any]) -> str:
-    if str(device.get("transport", "")).lower() == "tuya":
-        return "tuya:" + str(device.get("device_id") or device.get("devId")) + ":" + str(device.get("tuya_channel", ""))
-    return str(device.get("ble_address") or device.get("mac") or id(device))
+def _ble_key(device: DeviceLike) -> str:
+    typed = as_device(device)
+    if typed.transport == "tuya":
+        return f"tuya:{typed.device_id}:{typed.get('tuya_channel', '')}"
+    return str(typed.ble_address or typed.mac or id(device))
 
 
 # Persistent BLE and Tuya adapters keyed by address or device ID.
-_ble_adapters: Dict[str, TransportAdapter] = {}
+_pooled_adapters: Dict[str, TransportAdapter] = {}
+# Backwards-compatible alias for integrations that inspected the old name.
+_ble_adapters = _pooled_adapters
 _pool_lock = threading.RLock()
 
 
-def _tuya_connection_key(device):
-    return tuple(device.get(key) for key in ("device_id", "devId", "ip", "protocol_version", "local_key_ref", "local_key", "localKey"))
+def _tuya_connection_key(raw_device):
+    device = as_device(raw_device)
+    return (
+        device.device_id,
+        device.ip,
+        device.protocol_version,
+        device.get("local_key_ref"),
+        device.get("local_key"),
+    )
 
 
-def acquire(device: Dict[str, Any], server=None) -> TransportAdapter:
+def _same_connection_target(stored, incoming) -> bool:
+    """Whether a pooled adapter still targets the same physical connection.
+
+    Comparing whole device dicts made every discovery stamp (paint DP, colour
+    format, zone grid) recycle the adapter — reopening the Tuya session on the
+    next slider tick. Only connection-relevant fields matter for reuse.
+    """
+    if str(incoming.get("transport", "")).lower() == "tuya":
+        return _tuya_connection_key(stored) == _tuya_connection_key(incoming)
+    return stored == incoming
+
+
+def acquire(device: DeviceLike, server=None) -> TransportAdapter:
     """Return a shared adapter for a device.
 
     BLE and Tuya devices get a cached persistent adapter. Govee LAN and cloud
@@ -45,31 +68,32 @@ def acquire(device: Dict[str, Any], server=None) -> TransportAdapter:
     """
     if is_pooled(device):
         key = _ble_key(device)
+        device = as_device(device).copy()
         with _pool_lock:
-            adapter = _ble_adapters.get(key)
-            if adapter is not None and adapter.device != device:
+            adapter = _pooled_adapters.get(key)
+            if adapter is not None and not _same_connection_target(adapter.device, device):
                 adapter.close()
                 adapter = None
             if adapter is None:
-                adapter = create_adapter(dict(device))
-                if str(device.get("transport", "")).lower() == "tuya":
-                    for other in _ble_adapters.values():
-                        if str(other.device.get("transport", "")).lower() == "tuya" and _tuya_connection_key(other.device) == _tuya_connection_key(device):
+                adapter = create_adapter(device)
+                if device.transport == "tuya":
+                    for other in _pooled_adapters.values():
+                        if as_device(other.device).transport == "tuya" and _tuya_connection_key(other.device) == _tuya_connection_key(device):
                             adapter.share_connection(other)
                             break
-                _ble_adapters[key] = adapter
+                _pooled_adapters[key] = adapter
         return adapter
     return create_adapter(device, server)
 
 
-def is_pooled(device: Dict[str, Any]) -> bool:
-    return _is_ble(device) or str(device.get("transport", "")).lower() == "tuya"
+def is_pooled(device: DeviceLike) -> bool:
+    return as_device(device).is_pooled
 
 
-def close(device: Dict[str, Any]) -> None:
+def close(device: DeviceLike) -> None:
     """Close and drop the pooled adapter for a device, if any."""
     with _pool_lock:
-        adapter = _ble_adapters.pop(_ble_key(device), None)
+        adapter = _pooled_adapters.pop(_ble_key(device), None)
     if adapter is not None:
         try:
             adapter.close()
@@ -80,8 +104,8 @@ def close(device: Dict[str, Any]) -> None:
 def close_all() -> None:
     """Close every pooled adapter (call after workers stop on shutdown)."""
     with _pool_lock:
-        adapters = list(_ble_adapters.values())
-        _ble_adapters.clear()
+        adapters = list(_pooled_adapters.values())
+        _pooled_adapters.clear()
     for adapter in adapters:
         try:
             adapter.close()
