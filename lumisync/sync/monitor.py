@@ -52,21 +52,18 @@ class ScreenGrab:
 
     def __init__(self, *, display_index: int = 0) -> None:
         self.display_index = int(display_index)
+        self.camera = None
         if GENERAL.platform == "Windows":
             import dxcam
 
-            # dxcam caches camera instances globally. We must delete the old
-            # instance before creating one for a different output.
+            # dxcam caches camera instances globally. Release the old instance
+            # before creating one for a different output; a released camera can
+            # be replaced, while a cached broken one cannot.
             if (
                 ScreenGrab._dxcam_instance is not None
                 and ScreenGrab._dxcam_output_idx != self.display_index
             ):
-                try:
-                    del ScreenGrab._dxcam_instance
-                except Exception:
-                    pass
-                ScreenGrab._dxcam_instance = None
-                ScreenGrab._dxcam_output_idx = None
+                self._release_cached_dxcam()
 
             if ScreenGrab._dxcam_instance is None:
                 requested_output = max(0, self.display_index)
@@ -111,30 +108,94 @@ class ScreenGrab:
                 # than a raw NotImplementedError.
                 raise WaylandUnsupportedError(WAYLAND_MESSAGE)
 
-    def capture_array(self) -> Optional[np.ndarray]:
-        """Capture the screen as a contiguous ``(H, W, 3)`` uint8 RGB array.
+    @classmethod
+    def _release_cached_dxcam(cls) -> None:
+        camera = cls._dxcam_instance
+        cls._dxcam_instance = None
+        cls._dxcam_output_idx = None
+        if camera is not None:
+            try:
+                release = getattr(camera, "release", None)
+                if callable(release):
+                    release()
+            except Exception:
+                pass
+            try:
+                del camera
+            except Exception:
+                pass
 
-        Returning NumPy directly lets the sync pipeline vectorize zone sampling
-        instead of paying for a PIL round-trip and per-pixel Python access.
-        """
+    @classmethod
+    def reset_cache(cls) -> None:
+        """Drop the cached camera so the next ScreenGrab starts clean."""
+        cls._release_cached_dxcam()
+
+    def close(self) -> None:
+        """Release the capture backend so a broken camera can be recreated."""
+        camera = self.camera
+        self.camera = None
+        if camera is None:
+            return
+        if GENERAL.platform == "Windows":
+            if ScreenGrab._dxcam_instance is camera:
+                self._release_cached_dxcam()
+            else:
+                try:
+                    release = getattr(camera, "release", None)
+                    if callable(release):
+                        release()
+                except Exception:
+                    pass
+        else:
+            try:
+                close = getattr(camera, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                pass
+
+    def _capture_screen(self):
         try:
             screen = self.capture_method()
         except ModuleNotFoundError as exc:
             if exc.name == "cv2":
                 raise ScreenCaptureDependencyError(MISSING_CAPTURE_BACKEND_MESSAGE) from exc
             raise
+        return screen
+
+    def capture_frame(self) -> Tuple[Optional[np.ndarray], str]:
+        """Return the native capture array and its channel order.
+
+        Keeping the native BGRA buffer avoids copying a full 4K frame into a
+        new RGB array on every tick. ``average_zone_colors`` only materializes
+        the small sampled sub-rectangles, so the channel swap happens there.
+        """
+        screen = self._capture_screen()
         if screen is None:
-            return None
+            return None, "RGB"
 
         array = np.asarray(screen)
         if array.ndim == 3 and array.shape[2] == 4 and (
             GENERAL.platform == "Windows" or GENERAL.compositor == "x11"
         ):
-            # DXCam and mss both return native BGRA; reorder to RGB and drop alpha.
-            array = array[..., [2, 1, 0]]
-        elif array.ndim == 3 and array.shape[2] == 4:
-            array = array[..., :3]
-        return np.ascontiguousarray(array)
+            return array, "BGRA"
+        if array.ndim == 3 and array.shape[2] == 4:
+            return array[..., :3], "RGB"
+        return array, "RGB"
+
+    def capture_array(self) -> Optional[np.ndarray]:
+        """Capture the screen as a contiguous ``(H, W, 3)`` uint8 RGB array.
+
+        Returning NumPy directly lets the sync pipeline vectorize zone sampling
+        instead of paying for a PIL round-trip and per-pixel Python access.
+        """
+        frame, channel_order = self.capture_frame()
+        if frame is None:
+            return None
+        if channel_order == "BGRA":
+            # Compatibility path for callers that want a ready-to-use RGB frame.
+            frame = frame[..., [2, 1, 0]]
+        return np.ascontiguousarray(frame)
 
 def apply_brightness(
     colors: List[Tuple[int, int, int]], brightness_factor: float

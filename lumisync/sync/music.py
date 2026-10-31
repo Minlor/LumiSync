@@ -26,6 +26,17 @@ def _soundcard_backend():
     return soundcard
 
 
+def default_output_id():
+    """Return a stable identifier for the current default speaker, if known."""
+    try:
+        sc = _soundcard_backend()
+        speaker = sc.default_speaker()
+    except Exception:
+        return None
+    identity = getattr(speaker, "id", None) or getattr(speaker, "name", None)
+    return str(identity) if identity else None
+
+
 def default_loopback_microphone():
     """Return a soundcard microphone that captures the system audio output.
 

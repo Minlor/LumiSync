@@ -125,6 +125,17 @@ class WindowsPackagingTests(unittest.TestCase):
 
         self.assertEqual(frame.tolist(), [[[20, 10, 5]]])
 
+    def test_native_capture_keeps_bgra_for_zone_sampling(self):
+        screen_grab = monitor.ScreenGrab.__new__(monitor.ScreenGrab)
+        native = np.array([[[5, 10, 20, 255]]], dtype=np.uint8)
+        screen_grab.capture_method = lambda: native
+
+        with patch.object(monitor.GENERAL, "platform", "Windows"):
+            frame, channel_order = screen_grab.capture_frame()
+
+        self.assertIs(frame, native)  # no full-frame RGB copy on the sync path
+        self.assertEqual(channel_order, "BGRA")
+
 
 if __name__ == "__main__":
     unittest.main()

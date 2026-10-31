@@ -62,14 +62,17 @@ def average_zone_colors(
     mapping: Sequence[dict],
     *,
     gamma_correct: bool = True,
+    channel_order: str = "RGB",
 ) -> List[RGB]:
-    """Average the pixels inside each mapped zone of an RGB frame.
+    """Average the pixels inside each mapped zone of a captured frame.
 
     Args:
-        frame: ``(H, W, 3)`` uint8 array in RGB order (as produced by
-            :meth:`ScreenGrab.capture_array`).
+        frame: ``(H, W, 3)`` or ``(H, W, 4)`` uint8 array.
         mapping: normalized edge rectangles, one per LED zone.
         gamma_correct: average in linear light for perceptually accurate color.
+        channel_order: ``"RGB"`` or ``"BGRA"``. Keeping the native BGRA buffer
+            avoids copying a full frame just to swap channels; only the small
+            sampled sub-rectangles are reordered.
 
     Returns:
         One ``(r, g, b)`` tuple per zone.
@@ -77,6 +80,7 @@ def average_zone_colors(
     if frame is None or frame.size == 0:
         return [(0, 0, 0) for _ in mapping]
 
+    order = str(channel_order or "RGB").upper()
     height, width = frame.shape[:2]
     colors: List[RGB] = []
     for rect in mapping:
@@ -85,7 +89,10 @@ def average_zone_colors(
 
         step_y = max(1, sub.shape[0] // _MAX_SAMPLES_PER_AXIS)
         step_x = max(1, sub.shape[1] // _MAX_SAMPLES_PER_AXIS)
-        sub = sub[::step_y, ::step_x].reshape(-1, 3)
+        sub = sub[::step_y, ::step_x]
+        if order == "BGRA":
+            sub = sub[..., [2, 1, 0]]
+        sub = sub.reshape(-1, 3)
 
         if gamma_correct:
             linear = _SRGB_TO_LINEAR[sub]

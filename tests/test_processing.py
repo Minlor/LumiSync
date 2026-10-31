@@ -53,6 +53,19 @@ class ZoneAveragingTests(unittest.TestCase):
         )[0]
         self.assertEqual(color, (120, 120, 120))
 
+    def test_native_bgra_frames_are_sampled_without_a_full_rgb_copy(self):
+        # Windows dxcam / X11 mss deliver BGRA. The zone sampler swaps only the
+        # sampled pixels, so the caller can keep the large native buffer.
+        frame = np.array([[[20, 10, 5, 255]]], dtype=np.uint8)
+
+        color = processing.average_zone_colors(
+            frame,
+            [{"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}],
+            channel_order="BGRA",
+        )[0]
+
+        self.assertEqual(color, (5, 10, 20))
+
 
 class ColorAdjustmentTests(unittest.TestCase):
     def test_saturation_identity_at_one(self):
