@@ -21,7 +21,6 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-  "colorama>=0.4.6",
   "dxcam>=0.3.0; sys_platform == 'win32'",
   "numpy>=2.2.4",
   "packaging>=24.0",

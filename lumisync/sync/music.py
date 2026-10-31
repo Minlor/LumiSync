@@ -1,8 +1,6 @@
 import socket
-import sys
-import time
 import threading
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -11,9 +9,8 @@ import numpy as np
 if np.lib.NumpyVersion(np.__version__) >= '2.0.0':
     np.fromstring = np.frombuffer
 
-from ..config.options import AUDIO, BRIGHTNESS, SYNC
-from ..drivers.registry import create_adapter
-from . import artwork, audio, processing, system_volume
+from ..config.sync_settings import SyncSettings
+from . import processing
 
 
 def _soundcard_backend():
@@ -66,100 +63,24 @@ def default_loopback_microphone():
     )
 
 
-def start(server: socket.socket, device: Dict[str, Any], stop_event=None) -> None:
-    """Run the CLI music-sync loop for a single device.
+def start(
+    server: socket.socket,
+    device: Dict[str, Any],
+    stop_event=None,
+    settings: Optional[SyncSettings] = None,
+) -> None:
+    """Run music sync through the shared :class:`SyncSession` engine."""
+    from .session import SyncSession
 
-    Each captured audio window is split into bass/mid/treble energy by an FFT
-    and rendered using the selected palette and spatial reaction style.
-    """
-    # Initialize COM on Windows (required for soundcard library in threads)
-    if sys.platform == "win32":
-        import pythoncom
-        pythoncom.CoInitialize()
-
-    adapter = None
-    stop_event = stop_event or threading.Event()
-    try:
-        adapter = create_adapter(device, server)
-        if not getattr(adapter.capabilities, "supports_streaming", True):
-            raise RuntimeError("Music sync requires a local LAN or Bluetooth connection.")
-        adapter.begin_stream()
-        segment_count = adapter.capabilities.segment_count
-        renderer = audio.MusicPatternRenderer(segment_count, SYNC.music_fps)
-        # Persists across reaction changes so its loudness envelope keeps
-        # adapting instead of resetting whenever the style switches.
-        normalizer = audio.AutoGain(SYNC.music_fps)
-        # Reads the master-volume fader so it can be cancelled directly;
-        # AutoGain then only has to clean up per-app volume differences.
-        volume_probe = system_volume.MasterVolumeProbe()
-        artwork_provider = artwork.ArtworkPaletteProvider()
-        smoother = processing.ColorSmoother(
-            SYNC.music_smoothing, segment_count
-        )
-        active_reaction = SYNC.music_reaction
-        numframes = int(max(AUDIO.duration, AUDIO.music_window) * AUDIO.sample_rate)
-        frame_interval = 1.0 / max(0.1, min(SYNC.music_fps, getattr(adapter.capabilities, "max_update_hz", 40.0)))
-
-        while not stop_event.is_set():
-            with default_loopback_microphone().recorder(
-                samplerate=AUDIO.sample_rate
-            ) as mic:
-                while not stop_event.is_set():
-                    frame_start = time.monotonic()
-                    # NOTE: Try/except due to a soundcard error when no audio plays.
-                    try:
-                        data = mic.record(numframes=numframes)
-                    except TypeError:
-                        data = None
-
-                    if active_reaction != SYNC.music_reaction:
-                        active_reaction = SYNC.music_reaction
-                        renderer = audio.MusicPatternRenderer(
-                            segment_count, SYNC.music_fps
-                        )
-                        smoother = processing.ColorSmoother(
-                            SYNC.music_smoothing, segment_count
-                        )
-
-                    bands = audio.spectral_bands(data, AUDIO.sample_rate)
-                    if SYNC.music_auto_gain:
-                        bands = system_volume.compensate(
-                            bands, volume_probe.linear_gain()
-                        )
-                        bands = normalizer.process(bands)
-                    palette_colors = (
-                        artwork_provider.get_colors()
-                        if SYNC.music_palette == audio.PALETTE_ALBUM_ART
-                        else None
-                    )
-                    frame = renderer.render(
-                        bands,
-                        reaction=SYNC.music_reaction,
-                        gain=SYNC.music_gain,
-                        palette=SYNC.music_palette,
-                        palette_colors=palette_colors,
-                    )
-                    smoother.alpha = SYNC.music_smoothing
-                    frame = smoother.update(frame)
-
-                    adjusted = processing.apply_brightness(
-                        frame, BRIGHTNESS.music
-                    )
-                    adapter.set_segments(adjusted)
-
-                    elapsed = time.monotonic() - frame_start
-                    if elapsed < frame_interval:
-                        stop_event.wait(frame_interval - elapsed)
-    finally:
-        try:
-            if adapter is not None:
-                try:
-                    adapter.end_stream()
-                finally:
-                    adapter.close()
-        finally:
-            if sys.platform == "win32":
-                pythoncom.CoUninitialize()
+    session = SyncSession(
+        "music",
+        [device],
+        settings or SyncSettings.from_options(),
+        server=server,
+        stop_event=stop_event or threading.Event(),
+        on_error=print,
+    )
+    session.run()
 
 
 def get_amplitude(mic_data=None) -> float:

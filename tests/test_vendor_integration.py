@@ -610,13 +610,18 @@ class QtIntegrationTests(unittest.TestCase):
 
     def test_headless_monitor_exits_and_closes_when_stop_is_requested(self):
         from lumisync.sync import monitor
+        from lumisync.sync import session as sync_session
+
         adapter = Mock()
         adapter.capabilities.segment_count = 1
         adapter.capabilities.max_update_hz = 5
         adapter.capabilities.supports_streaming = True
         event = threading.Event()
         event.set()
-        with patch.object(monitor, "create_adapter", return_value=adapter), patch.object(monitor, "ScreenGrab"):
+        with (
+            patch.object(sync_session.pool, "acquire", return_value=adapter),
+            patch.object(sync_session.monitor, "ScreenGrab"),
+        ):
             monitor.start(object(), {}, event)
         adapter.set_segments.assert_not_called()
         adapter.end_stream.assert_called_once()

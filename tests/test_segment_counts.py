@@ -374,11 +374,11 @@ class SegmentCountTests(unittest.TestCase):
         mapping = [{"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}]
         with (
             patch(
-                "lumisync.gui.controllers.sync_controller.pool.acquire",
+                "lumisync.sync.session.pool.acquire",
                 return_value=adapter,
             ),
             patch(
-                "lumisync.gui.controllers.sync_controller.monitor.ScreenGrab",
+                "lumisync.sync.session.monitor.ScreenGrab",
                 return_value=FakeScreenGrab(),
             ),
             patch(
@@ -386,7 +386,7 @@ class SegmentCountTests(unittest.TestCase):
                 return_value=mapping,
             ),
             patch(
-                "lumisync.gui.controllers.sync_controller.time.monotonic",
+                "lumisync.sync.session.time.monotonic",
                 side_effect=monotonic,
             ),
         ):
@@ -431,11 +431,11 @@ class SegmentCountTests(unittest.TestCase):
 
         with (
             patch(
-                "lumisync.gui.controllers.sync_controller.pool.acquire",
+                "lumisync.sync.session.pool.acquire",
                 return_value=FakeAdapter(),
             ),
             patch(
-                "lumisync.gui.controllers.sync_controller.monitor.ScreenGrab",
+                "lumisync.sync.session.monitor.ScreenGrab",
                 return_value=BrokenScreenGrab(),
             ),
         ):

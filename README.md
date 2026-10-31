@@ -164,9 +164,9 @@ pip install -e .
 lumisync
 ```
 
-The GUI opens by default. The legacy interactive terminal is still available
-with `lumisync --cli`; direct headless modes are available through
-`lumisync --monitor` and `lumisync --music`.
+The GUI opens by default. Headless mode is available through
+`lumisync --monitor` and `lumisync --music`; both read the same sync settings
+the GUI writes.
 
 ### Quick Start
 

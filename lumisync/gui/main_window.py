@@ -3,6 +3,7 @@ Main application window for the LumiSync GUI.
 """
 
 import sys
+import time
 from PySide6.QtWidgets import QMainWindow, QMenu, QMessageBox, QApplication, QSystemTrayIcon
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl, QThreadPool
 from PySide6.QtGui import QDesktopServices
@@ -14,7 +15,7 @@ from .theme import apply_theme
 from ..utils.logging import setup_logger
 
 from .controllers.device_controller import DeviceController
-from .controllers.sync_controller import SyncController, load_sync_settings
+from .controllers.sync_controller import SyncController
 from .controllers.update_controller import UpdateController
 
 logger = setup_logger('lumisync_gui')
@@ -33,7 +34,6 @@ class LumiSyncMainWindow(QMainWindow):
         self.setMenuBar(None)
 
         self.settings = QSettings("Minlor", "LumiSync")
-        load_sync_settings(self.settings)
 
         # If Govee Desktop is installed, learn real per-device segment counts and
         # capabilities from its local cache. No-op on Linux / when absent.
@@ -53,6 +53,7 @@ class LumiSyncMainWindow(QMainWindow):
         self._quitting = False
         self._shutdown_started = False
         self._shutdown_ready = False
+        self._shutdown_deadline = None
 
         self.setup_controller_connections()
         self.setup_ui()
@@ -107,12 +108,6 @@ class LumiSyncMainWindow(QMainWindow):
         # accessibility tree.
         self.nav_shell = NavigationShell(title="LumiSync", icon_only=True)
         self.setCentralWidget(self.nav_shell)
-
-        try:
-            display_index = int(self.settings.value("sync/monitor_display", 0))
-        except Exception:
-            display_index = 0
-        self.sync_controller.set_monitor_display(display_index)
 
         self.nav_shell.add_page(
             key="devices", title="Devices",
@@ -191,10 +186,18 @@ class LumiSyncMainWindow(QMainWindow):
     def quit_app(self):
         """Quit deliberately (tray menu) — skips the tray-hide and the prompt."""
         self._quitting = True
+        if self.tray is not None:
+            # Hide the icon first: on a slow shutdown the app should visibly
+            # be on its way out rather than appearing to ignore the action.
+            self.tray.hide()
+        try:
+            self.sync_controller.stop_sync(announce=False)
+        except Exception:
+            pass
         self.close()
 
     def setup_status_bar(self):
-        raw = self.settings.value("ui/status_bar", False)
+        raw = self.settings.value("ui/status_bar", True)
         show_status = str(raw).lower() in ("true", "1")
         self.statusBar().setVisible(show_status)
         if show_status:
@@ -248,14 +251,14 @@ class LumiSyncMainWindow(QMainWindow):
         return active
 
     def show_status(self, message: str, timeout: int = 5000):
-        if self.statusBar().isVisible():
-            self.statusBar().showMessage(message, timeout)
-        self.toasts.show(message)
+        # Info updates live in the status bar only — frequent progress
+        # messages ("imported 4 devices", "sync started") used to stack up as
+        # toasts and cover the controls.
+        self.statusBar().showMessage(message, timeout)
         logger.info(f"Status: {message}")
 
     def show_error(self, message: str):
-        if self.statusBar().isVisible():
-            self.statusBar().showMessage(message, 8000)
+        self.statusBar().showMessage(message, 8000)
         self.toasts.error(message)
         logger.error(f"Error: {message}")
 
@@ -355,11 +358,16 @@ class LumiSyncMainWindow(QMainWindow):
         self.settings.setValue("geometry", self.saveGeometry())
         self._shutdown_started = True
         self._quitting = True
+        # A stuck background task (account refresh, scan, blocked socket) must
+        # never leave the app half-dead in the tray: force the exit after this.
+        self._shutdown_deadline = time.monotonic() + 4.0
         self.setEnabled(False)
         self.device_controller.shutdown()
         self.update_controller.shutdown()
         if hasattr(self.sync_controller, 'stop_sync'):
             self.sync_controller.stop_sync()
+        if hasattr(self.sync_controller, 'flush_sync_settings'):
+            self.sync_controller.flush_sync_settings()
         draw_view = getattr(self, "draw_view", None)
         if draw_view is not None:
             try:
@@ -372,19 +380,44 @@ class LumiSyncMainWindow(QMainWindow):
         self._finish_shutdown()
 
     def _finish_shutdown(self) -> None:
-        draw_view = getattr(self, "draw_view", None)
-        draw_thread = getattr(draw_view, "_thread", None)
-        draw_running = draw_thread is not None and not draw_thread.wait(0)
-        if not self.device_controller.shutdown() or not self.update_controller.shutdown() or self.sync_controller.is_syncing() or draw_running or QThreadPool.globalInstance().activeThreadCount():
-            self.statusBar().showMessage("Finishing device connections before closing…")
-            QTimer.singleShot(100, self._finish_shutdown)
-            return
-        from ..drivers import pool
-        from ..accounts.manager import account_manager
-        pool.close_all()
-        account_manager.close_all()
+        try:
+            draw_view = getattr(self, "draw_view", None)
+            draw_thread = getattr(draw_view, "_thread", None)
+            draw_running = draw_thread is not None and not draw_thread.wait(0)
+            overdue = (
+                self._shutdown_deadline is not None
+                and time.monotonic() >= self._shutdown_deadline
+            )
+            busy = (
+                not self.device_controller.shutdown()
+                or not self.update_controller.shutdown()
+                or self.sync_controller.is_syncing()
+                or draw_running
+                or QThreadPool.globalInstance().activeThreadCount()
+            )
+            if busy and not overdue:
+                self.statusBar().showMessage("Finishing device connections before closing…")
+                QTimer.singleShot(100, self._finish_shutdown)
+                return
+            from ..drivers import pool
+            from ..accounts.manager import account_manager
+            pool.close_all()
+            account_manager.close_all()
+        except Exception:
+            logger.exception("Shutdown cleanup failed; forcing exit")
         self._shutdown_ready = True
-        self.close()
+        # Quit directly instead of calling close() again: this runs inside the
+        # original closeEvent, and a re-entrant close() is ignored by Qt, which
+        # left the process running with no window after a quick shutdown.
+        if self.tray is not None:
+            self.tray.hide()
+        from ..drivers import tuya_aoi, tuya_presence
+        tuya_presence.stop_presence_listener()
+        try:
+            tuya_aoi.aoi().stop()
+        except Exception:
+            pass
+        QApplication.instance().quit()
 
 
 def main():
@@ -408,6 +441,9 @@ def main():
             sys.exit(0)
 
         _install_excepthook()
+
+        from ..drivers import tuya_presence
+        tuya_presence.start_presence_listener()
 
         apply_theme(app)
 

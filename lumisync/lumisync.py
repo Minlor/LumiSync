@@ -1,25 +1,21 @@
 """LumiSync entry point.
 
 Default behavior (no args): launch the GUI.
-Use `--cli` for the legacy interactive terminal menu.
-Direct subcommands (`--monitor`, `--music`, `--test`) bypass the menu.
+Use ``--monitor`` or ``--music`` for headless sync.
 """
 
 import argparse
 import os
-import subprocess
 import sys
 from pathlib import Path
-from threading import Thread, Event
+from threading import Event, Thread
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "lumisync"
 
-import colorama
-from colorama import Fore
-
-from . import connection
+from . import connection, devices
+from .config.sync_settings import SyncSettings
 from .utils.logging import setup_logger
 
 logger = setup_logger("lumisync")
@@ -39,57 +35,64 @@ def _launch_gui() -> int:
         from .gui import run_gui
     except ImportError as e:
         logger.error("Failed to load GUI module", exc_info=True)
-        print(f"{Fore.RED}GUI module failed to load: {e}")
-        print("Run with --cli to use the terminal menu instead.")
+        print(f"GUI module failed to load: {e}")
+        print("Run 'lumisync --check-gui' to diagnose the installation.")
         return 1
     run_gui()
     return 0
 
 
-def _connect_for_cli():
-    """Connect and return (server, devices) for CLI sync paths."""
-    server, devices = connection.connect()
-    logger.info(f"Found {len(devices)} device(s)")
-    return server, devices
-
-
-def _start_sync(mode: str) -> int:
-    """Start monitor or music sync in a thread; block on Enter."""
-    server = None
+def _cli_sync_settings() -> SyncSettings:
+    """Load the same persisted preferences the GUI uses."""
     try:
-        server, devices = _connect_for_cli()
-        if not devices:
-            print(f"{Fore.RED}No devices found.")
-            return 1
-
-        return _run_cli_sync(server, devices[0], mode)
-    except Exception as e:
-        logger.critical(f"Sync error: {e}", exc_info=True)
-        return 1
-    finally:
-        if server is not None:
-            try:
-                server.close()
-            except Exception:
-                pass
+        data = devices.get_data(refresh=False)
+        return SyncSettings.from_mapping(data.get("sync"))
+    except Exception:
+        logger.warning("Could not read sync settings; using defaults", exc_info=True)
+        return SyncSettings.from_options()
 
 
-def _run_cli_sync(server, device, mode: str) -> int:
-    from .sync import monitor, music
-    sync = monitor if mode == "monitor" else music
+def _discover_for_cli():
+    """Return a server and the saved + discovered devices for headless sync."""
+    saved = devices.get_data(refresh=False)
+    saved_devices = list(saved.get("devices", []))
+    server, discovered = connection.connect()
+    if discovered:
+        return server, devices.merge_discovered_devices(saved_devices, discovered)
+    return server, saved_devices
+
+
+def _run_cli_sync(server, selected, mode: str, settings: SyncSettings) -> int:
+    from .sync.session import SyncSession
+
     stop_event = Event()
     failures = []
+
+    def report_error(message: str) -> None:
+        failures.append(message)
+        print(message)
+
+    session = SyncSession(
+        mode,
+        selected,
+        settings,
+        server=server,
+        stop_event=stop_event,
+        on_error=report_error,
+    )
+
     def run():
         try:
-            sync.start(server, device, stop_event)
+            session.run()
         except Exception as exc:
             failures.append(exc)
             logger.error("CLI sync failed: %s", exc)
             print(f"Sync failed: {exc}")
+
     thread = Thread(daemon=True, target=run, name="sync")
     thread.start()
     try:
-        input(f"{Fore.GREEN}{mode.capitalize()} sync running. Press Enter to exit...")
+        input(f"{mode.capitalize()} sync running. Press Enter to exit...")
     finally:
         stop_event.set()
         thread.join(35)  # Bound connection/write/disconnect completion before exit.
@@ -99,29 +102,24 @@ def _run_cli_sync(server, device, mode: str) -> int:
     return 1 if failures else 0
 
 
-def _run_tests() -> int:
-    """List tests and run the chosen one."""
-    files = list(enumerate(os.listdir("tests"), 1))
-    print(
-        f"{Fore.LIGHTYELLOW_EX}Choose test to run:\n{Fore.YELLOW}"
-        + "\n".join([f"{i}) {x}" for i, x in files])
-    )
-    test = input("Test: ")
+def _start_sync(mode: str) -> int:
+    """Start monitor or music sync in a thread; block on Enter."""
+    server = None
     try:
-        choice = int(test)
-    except ValueError:
-        print(f"{Fore.RED}Invalid selection")
+        server, selected = _discover_for_cli()
+        if not selected:
+            print("No devices found.")
+            return 1
+        return _run_cli_sync(server, selected, mode, _cli_sync_settings())
+    except Exception as e:
+        logger.critical("Sync error: %s", e, exc_info=True)
         return 1
-    for i, x in files:
-        if i == choice:
+    finally:
+        if server is not None:
             try:
-                subprocess.run(["python", f"tests/{x}"], check=True)
-                return 0
-            except subprocess.CalledProcessError as e:
-                logger.error(f"Test {x} failed (exit {e.returncode})", exc_info=True)
-                return e.returncode
-    print(f"{Fore.RED}No test with that number")
-    return 1
+                server.close()
+            except Exception:
+                pass
 
 
 def _check_integrations() -> int:
@@ -178,60 +176,14 @@ def _check_gui() -> int:
         return 1
 
 
-def _run_cli_menu() -> int:
-    """The legacy interactive terminal menu (--cli)."""
-    server = None
-    try:
-        server, devices = _connect_for_cli()
-
-        colorama.init(True)
-        print(Fore.MAGENTA + f"Welcome to {Fore.LIGHTBLUE_EX}LumiSync!")
-        print(Fore.YELLOW + "Please select a option:")
-        print(Fore.GREEN + "1) Monitor Sync\n2) Music Sync\n3) Launch GUI\n9) Run test")
-
-        mode = input("")
-        logger.info(f"User selected mode: {mode}")
-        match mode:
-            case "1" | "2":
-                if not devices:
-                    print(f"{Fore.RED}No devices found.")
-                    return 1
-                return _run_cli_sync(server, devices[0], "monitor" if mode == "1" else "music")
-            case "3":
-                # Close discovery server before handing off to the GUI
-                if server is not None:
-                    server.close()
-                    server = None
-                return _launch_gui()
-            case "9":
-                if server is not None:
-                    server.close()
-                    server = None
-                return _run_tests()
-            case _:
-                input(Fore.RED + "Invalid option!\nPress Enter to exit...")
-                return 1
-    except Exception as e:
-        logger.critical(f"Critical error in CLI: {e}", exc_info=True)
-        return 1
-    finally:
-        if server is not None:
-            try:
-                server.close()
-            except Exception:
-                pass
-
-
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="lumisync",
         description="Sync smart lights and pixel panels with your screen and audio. Default: launch GUI.",
     )
     g = p.add_mutually_exclusive_group()
-    g.add_argument("--cli", "-c", action="store_true", help="Open the interactive terminal menu instead of the GUI.")
     g.add_argument("--monitor", action="store_true", help="Start monitor sync directly (headless).")
     g.add_argument("--music", action="store_true", help="Start music sync directly (headless).")
-    g.add_argument("--test", action="store_true", help="Run the test selector.")
     g.add_argument("--check-integrations", action="store_true", help="Check vendor integration dependencies offline.")
     g.add_argument("--check-gui", action="store_true", help="Check GUI startup with isolated settings and no device connections.")
     return p
@@ -243,14 +195,10 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    if args.cli:
-        sys.exit(_run_cli_menu())
     if args.monitor:
         sys.exit(_start_sync("monitor"))
     if args.music:
         sys.exit(_start_sync("music"))
-    if args.test:
-        sys.exit(_run_tests())
     if args.check_integrations:
         sys.exit(_check_integrations())
     if args.check_gui:

@@ -1,21 +1,18 @@
 import socket
-import time
 import threading
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from PIL import Image
 
-from .. import led_mapping, utils
-from ..config.options import BRIGHTNESS, GENERAL, SYNC
-from ..drivers.registry import create_adapter
+from ..config.options import GENERAL
+from ..config.sync_settings import SyncSettings
 from . import processing
 
 
-MISSING_CV2_MESSAGE = (
-    "Monitor sync requires OpenCV's cv2 module for Windows screen capture. "
-    "Install opencv-python-headless or use a LumiSync build that bundles it."
+MISSING_CAPTURE_BACKEND_MESSAGE = (
+    "Monitor sync could not load dxcam's screen-capture backend. Reinstall "
+    "LumiSync (or the dxcam wheel for this Python version) and try again."
 )
 
 WAYLAND_MESSAGE = (
@@ -124,7 +121,7 @@ class ScreenGrab:
             screen = self.capture_method()
         except ModuleNotFoundError as exc:
             if exc.name == "cv2":
-                raise ScreenCaptureDependencyError(MISSING_CV2_MESSAGE) from exc
+                raise ScreenCaptureDependencyError(MISSING_CAPTURE_BACKEND_MESSAGE) from exc
             raise
         if screen is None:
             return None
@@ -139,14 +136,6 @@ class ScreenGrab:
             array = array[..., :3]
         return np.ascontiguousarray(array)
 
-    def capture(self) -> Image.Image | None:
-        """Captures a screenshot as a PIL image (compatibility helper)."""
-        array = self.capture_array()
-        if array is None:
-            return None
-        return Image.fromarray(array)
-
-
 def apply_brightness(
     colors: List[Tuple[int, int, int]], brightness_factor: float
 ) -> List[Tuple[int, int, int]]:
@@ -154,85 +143,21 @@ def apply_brightness(
     return processing.apply_brightness(colors, brightness_factor)
 
 
-def start(server: socket.socket, device: Dict[str, Any], stop_event=None) -> None:
-    """Run the CLI monitor-sync loop for a single device.
+def start(
+    server: socket.socket,
+    device: Dict[str, Any],
+    stop_event=None,
+    settings: Optional[SyncSettings] = None,
+) -> None:
+    """Run monitor sync through the shared :class:`SyncSession` engine."""
+    from .session import SyncSession
 
-    Each iteration captures one frame, averages the mapped edge zones, applies
-    saturation/brightness, smooths toward the new colors with a temporal EMA,
-    and sends exactly one packet. Frame pacing keeps CPU and UDP traffic in
-    check while staying far more responsive than the old ten-packets-per-frame
-    approach.
-    """
-    adapter = create_adapter(device, server)
-    try:
-        if not getattr(adapter.capabilities, "supports_streaming", True):
-            raise RuntimeError("Monitor sync requires a local LAN or Bluetooth connection.")
-        adapter.begin_stream()
-        _run_monitor(adapter, stop_event or threading.Event())
-    finally:
-        try:
-            adapter.end_stream()
-        finally:
-            adapter.close()
-
-
-def _run_monitor(adapter, stop_event) -> None:
-    try:
-        screen_grab = ScreenGrab()
-    except ScreenCaptureDependencyError as exc:
-        print(f"Monitor sync unavailable: {exc}")
-        return
-
-    segment_count = adapter.capabilities.segment_count
-    smoother = processing.ColorSmoother(SYNC.smoothing, segment_count)
-    frame_interval = 1.0 / max(0.1, min(SYNC.monitor_fps, getattr(adapter.capabilities, "max_update_hz", 40.0)))
-    mapping: Optional[List[led_mapping.NormalizedRect]] = None
-    mapping_aspect: Optional[float] = None
-    last_sent: Optional[List[Tuple[int, int, int]]] = None
-    last_sent_at: Optional[float] = None
-
-    while not stop_event.is_set():
-        frame_start = time.monotonic()
-        try:
-            frame = screen_grab.capture_array()
-        except ScreenCaptureDependencyError as exc:
-            print(f"Monitor sync unavailable: {exc}")
-            return
-        except OSError:
-            print("Warning: Screenshot failed, trying again...")
-            stop_event.wait(0.05)
-            continue
-
-        if frame is None:
-            stop_event.wait(0.01)
-            continue
-
-        height, width = frame.shape[:2]
-        aspect_ratio = width / max(1, height)
-        if mapping is None or aspect_ratio != mapping_aspect:
-            mapping = led_mapping.generate_screen_mapping(segment_count, aspect_ratio)
-            mapping_aspect = aspect_ratio
-
-        colors = processing.average_zone_colors(
-            frame, mapping, gamma_correct=SYNC.gamma_correct
-        )
-        colors = processing.apply_saturation(colors, SYNC.saturation)
-        colors = utils.resample_colors_to_count(colors, segment_count)
-        colors = processing.apply_brightness(colors, BRIGHTNESS.monitor)
-        smoothed = smoother.update(colors)
-
-        now = time.monotonic()
-        if processing.frame_needs_send(
-            last_sent,
-            smoothed,
-            SYNC.delta_threshold,
-            last_sent_at=last_sent_at,
-            now=now,
-        ):
-            adapter.set_segments(smoothed)
-            last_sent = smoothed
-            last_sent_at = now
-
-        elapsed = time.monotonic() - frame_start
-        if elapsed < frame_interval:
-            stop_event.wait(frame_interval - elapsed)
+    session = SyncSession(
+        "monitor",
+        [device],
+        settings or SyncSettings.from_options(),
+        server=server,
+        stop_event=stop_event or threading.Event(),
+        on_error=print,
+    )
+    session.run()

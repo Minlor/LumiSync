@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
 )
 
 from ..controllers.sync_controller import SYNC_SETTINGS_KEYS, load_sync_settings
-from ...config.options import SYNC
 from ..widgets.product_controls import ProductComboBox, ProductSlider, ToggleSwitch
 
 
@@ -31,6 +30,12 @@ class SettingsPage(QWidget):
         super().__init__(main_window)
         self.settings = settings
         self._main_window = main_window
+        controller = getattr(main_window, "sync_controller", None)
+        self._sync_settings = (
+            controller.sync_settings
+            if controller is not None
+            else load_sync_settings(self.settings)
+        )
         self.setObjectName("SettingsPage")
 
         root = QVBoxLayout(self)
@@ -211,7 +216,7 @@ class SettingsPage(QWidget):
         form.addRow("Startup", self.autostart_check)
 
         self.statusbar_check = ToggleSwitch("Show the status bar")
-        self.statusbar_check.setChecked(_bool_setting("ui/status_bar", False))
+        self.statusbar_check.setChecked(_bool_setting("ui/status_bar", True))
         self.statusbar_check.toggled.connect(self._on_statusbar_toggled)
         form.addRow("Status bar", self.statusbar_check)
 
@@ -285,7 +290,11 @@ class SettingsPage(QWidget):
 
         self.display_combo = ProductComboBox()
         self._populate_displays()
-        saved_display = int(self.settings.value("sync/monitor_display", 0))
+        controller = getattr(self._main_window, "sync_controller", None)
+        if controller is not None:
+            saved_display = controller.get_monitor_display()
+        else:
+            saved_display = int(self.settings.value("sync/monitor_display", 0))
         idx = self.display_combo.findData(saved_display)
         if idx >= 0:
             self.display_combo.setCurrentIndex(idx)
@@ -300,27 +309,27 @@ class SettingsPage(QWidget):
         form.setSpacing(8)
 
         self.smoothing_slider, smoothing_row, self.smoothing_label = self._slider_row(
-            5, 100, int(round(SYNC.smoothing * 100)), self._on_smoothing
+            5, 100, int(round(self._sync_settings.smoothing * 100)), self._on_smoothing
         )
-        self.smoothing_label.setText(f"{SYNC.smoothing:.2f}")
+        self.smoothing_label.setText(f"{self._sync_settings.smoothing:.2f}")
         form.addRow("Monitor smoothing", smoothing_row)
 
         self.saturation_slider, saturation_row, self.saturation_label = self._slider_row(
-            100, 200, int(round(SYNC.saturation * 100)), self._on_saturation
+            100, 200, int(round(self._sync_settings.saturation * 100)), self._on_saturation
         )
-        self.saturation_label.setText(f"{SYNC.saturation:.2f}×")
+        self.saturation_label.setText(f"{self._sync_settings.saturation:.2f}×")
         form.addRow("Color saturation", saturation_row)
 
         self.fps_slider, fps_row, self.fps_label = self._slider_row(
-            10, 120, int(SYNC.monitor_fps), self._on_fps
+            10, 120, int(self._sync_settings.monitor_fps), self._on_fps
         )
-        self.fps_label.setText(f"{int(SYNC.monitor_fps)} fps")
+        self.fps_label.setText(f"{int(self._sync_settings.monitor_fps)} fps")
         form.addRow("Max frame rate", fps_row)
 
         self.gamma_check = ToggleSwitch(
             "Blend zone colors in linear light (recommended)"
         )
-        self.gamma_check.setChecked(bool(SYNC.gamma_correct))
+        self.gamma_check.setChecked(bool(self._sync_settings.gamma_correct))
         self.gamma_check.toggled.connect(self._on_gamma)
         form.addRow("Gamma", self.gamma_check)
 
@@ -332,15 +341,15 @@ class SettingsPage(QWidget):
         form.setSpacing(8)
 
         self.gain_slider, gain_row, self.gain_label = self._slider_row(
-            50, 400, int(round(SYNC.music_gain * 100)), self._on_gain
+            50, 400, int(round(self._sync_settings.music_gain * 100)), self._on_gain
         )
-        self.gain_label.setText(f"{SYNC.music_gain:.2f}×")
+        self.gain_label.setText(f"{self._sync_settings.music_gain:.2f}×")
         form.addRow("Music sensitivity", gain_row)
 
         self.music_smoothing_slider, music_smoothing_row, self.music_smoothing_label = self._slider_row(
-            5, 100, int(round(SYNC.music_smoothing * 100)), self._on_music_smoothing
+            5, 100, int(round(self._sync_settings.music_smoothing * 100)), self._on_music_smoothing
         )
-        self.music_smoothing_label.setText(f"{SYNC.music_smoothing:.2f}")
+        self.music_smoothing_label.setText(f"{self._sync_settings.music_smoothing:.2f}")
         form.addRow("Music smoothing", music_smoothing_row)
 
         return group
@@ -360,7 +369,10 @@ class SettingsPage(QWidget):
         return slider, row, label
 
     def _reload_sync(self) -> None:
-        load_sync_settings(self.settings)
+        self._sync_settings = load_sync_settings(self.settings)
+        controller = getattr(self._main_window, "sync_controller", None)
+        if controller is not None:
+            controller.apply_sync_settings(self._sync_settings)
 
     def _on_smoothing(self, value: int) -> None:
         self.smoothing_label.setText(f"{value / 100:.2f}")

@@ -1,10 +1,13 @@
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 
-from lumisync.sync import monitor, processing
+from lumisync.config.sync_settings import SyncSettings
+from lumisync.sync import processing
+from lumisync.sync import session as sync_session
 
 
 class ZoneAveragingTests(unittest.TestCase):
@@ -135,14 +138,15 @@ class ColorAdjustmentTests(unittest.TestCase):
 
 class MonitorLoopTests(unittest.TestCase):
     def test_cli_monitor_resends_static_frame_as_keepalive(self):
-        class StopLoop(Exception):
-            pass
+        stop = threading.Event()
 
         class FakeAdapter:
             capabilities = SimpleNamespace(segment_count=1)
 
             def __init__(self):
                 self.frames = []
+                self.ended = False
+                self.closed = False
 
             def begin_stream(self):
                 pass
@@ -150,7 +154,7 @@ class MonitorLoopTests(unittest.TestCase):
             def set_segments(self, colors):
                 self.frames.append(colors)
                 if len(self.frames) == 2:
-                    raise StopLoop
+                    stop.set()
 
             def end_stream(self):
                 self.ended = True
@@ -162,15 +166,37 @@ class MonitorLoopTests(unittest.TestCase):
             def capture_array(self):
                 return np.full((2, 2, 3), (120, 30, 10), dtype=np.uint8)
 
+        class InlineSender:
+            def __init__(self, send, max_hz=40.0, **_kwargs):
+                self._send = send
+
+            def submit(self, frame):
+                self._send(frame)
+
+            def close(self):
+                pass
+
+        class FakeClock:
+            def __init__(self):
+                self.value = 0.0
+
+            def __call__(self):
+                self.value += 0.6
+                return self.value
+
         adapter = FakeAdapter()
-        clock = iter((0.0, 0.1, 0.2, 0.6, 0.7))
         with (
-            patch.object(monitor, "create_adapter", return_value=adapter),
-            patch.object(monitor, "ScreenGrab", return_value=FakeScreenGrab()),
-            patch.object(monitor.time, "monotonic", side_effect=lambda: next(clock)),
+            patch.object(sync_session.pool, "acquire", return_value=adapter),
+            patch.object(sync_session.monitor, "ScreenGrab", return_value=FakeScreenGrab()),
+            patch.object(sync_session.time, "monotonic", FakeClock()),
         ):
-            with self.assertRaises(StopLoop):
-                monitor.start(object(), {"model": "H6672"})
+            sync_session.SyncSession(
+                "monitor",
+                [{"model": "H6672"}],
+                SyncSettings(),
+                stop_event=stop,
+                sender_factory=InlineSender,
+            ).run()
 
         self.assertEqual(len(adapter.frames), 2)
         self.assertTrue(adapter.ended)
@@ -193,6 +219,26 @@ class ColorSmootherTests(unittest.TestCase):
         result = smoother.update([(40, 40, 40)] * 5)
         self.assertEqual(len(result), 5)
         self.assertEqual(result, [(40, 40, 40)] * 5)
+
+    def test_smoothing_is_time_based_for_slower_transports(self):
+        baseline = processing.ColorSmoother(alpha=0.55, count=1)
+        baseline.update([(0, 0, 0)])
+        normal = baseline.update(
+            [(255, 255, 255)], dt=processing.ColorSmoother.REFERENCE_INTERVAL
+        )
+        slow = processing.ColorSmoother(alpha=0.55, count=1)
+        slow.update([(0, 0, 0)])
+        fast = slow.update(
+            [(255, 255, 255)], dt=processing.ColorSmoother.REFERENCE_INTERVAL * 10
+        )
+        # A transport that updates 10x less often steps much further per frame,
+        # so the fade completes in the same wall-clock time.
+        self.assertGreater(fast[0][0], normal[0][0])
+
+    def test_smoothing_without_dt_keeps_original_behaviour(self):
+        smoother = processing.ColorSmoother(alpha=0.5)
+        smoother.update([(100, 100, 100)])
+        self.assertEqual(smoother.update([(0, 0, 0)]), [(50, 50, 50)])
 
 
 if __name__ == "__main__":

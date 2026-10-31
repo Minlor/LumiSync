@@ -307,8 +307,12 @@ class ResponsiveAppUiTests(unittest.TestCase):
         page.tray_check.setFocus()
         QTest.keyClick(page.tray_check, Qt.Key.Key_Space)
         self.assertEqual(self.settings.value("ui/minimize_to_tray"), not before)
+        before_statusbar = page.statusbar_check.isChecked()
         self.click(page.statusbar_check)
-        self.assertTrue(self.settings.value("ui/status_bar"))
+        self.assertEqual(
+            str(self.settings.value("ui/status_bar")).lower() in ("true", "1"),
+            not before_statusbar,
+        )
         page.window_material_combo.setFocus()
         QTest.keyClick(page.window_material_combo, Qt.Key.Key_End)
         self.assertEqual(self.settings.value("ui/window_material"), "solid")

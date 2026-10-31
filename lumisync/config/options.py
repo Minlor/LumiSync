@@ -15,8 +15,7 @@ def _detect_compositor() -> str:
     return "x11"
 
 
-# TODO: Should the led option be moved under a different global?
-GENERAL = SimpleNamespace(nled=20, platform=platform.system(), compositor=None)
+GENERAL = SimpleNamespace(platform=platform.system(), compositor=None)
 if GENERAL.platform != "Windows":
     GENERAL.compositor = _detect_compositor()
 
@@ -35,10 +34,6 @@ CONNECTION = SimpleNamespace(
 # NOTE: Duration (seconds). The music window is a little longer so the FFT has
 # enough samples (~1100 at 48 kHz) to separate bass from treble cleanly.
 AUDIO = SimpleNamespace(sample_rate=48000, duration=0.01, music_window=0.023)
-
-# TODO: This needs to change as soon as support for multiple devices
-# is being implemented -> Similar with next as for the devices query?
-COLORS = SimpleNamespace(previous=[], current=[])
 
 # NOTE: Brightness settings for different sync modes (percent)
 BRIGHTNESS = SimpleNamespace(monitor=0.75, music=0.85)

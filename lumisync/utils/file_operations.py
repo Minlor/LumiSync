@@ -9,8 +9,6 @@ from pathlib import Path
 import tempfile
 from typing import Any, Dict
 
-from colorama import Fore
-
 from .logging import get_logger
 
 # Set up logger for file operations
@@ -38,13 +36,9 @@ def write_json(settings: Dict[str, Any], filename: str = "settings.json") -> Non
         os.replace(temporary, destination)
         temporary = None
 
-        msg = f"Data written to {filename}"
-        print(f"{Fore.LIGHTGREEN_EX}{msg}")
-        logger.info(msg)
+        logger.info("Data written to %s", filename)
     except Exception as e:
-        error_msg = f"Error writing to {filename}: {str(e)}"
-        print(f"{Fore.RED}{error_msg}")
-        logger.error(error_msg, exc_info=True)
+        logger.error("Error writing to %s: %s", filename, e, exc_info=True)
         raise
     finally:
         if temporary is not None:
