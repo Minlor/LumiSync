@@ -70,8 +70,8 @@ class PresenceFrameTests(unittest.TestCase):
         self.listener = TuyaPresenceListener(self.registry)
 
     def test_valid_frame_marks_device_seen(self):
-        self.listener.handle_datagram(build_presence_frame("fixturedevice000000004"))
-        self.assertTrue(self.registry.is_online("fixturedevice000000004"))
+        self.listener.handle_datagram(build_presence_frame("fixturedevice000000002"))
+        self.assertTrue(self.registry.is_online("fixturedevice000000002"))
 
     def test_frame_source_address_is_remembered(self):
         self.listener.handle_datagram(build_presence_frame("gw1"), ("192.168.0.19", 6667))
