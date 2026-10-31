@@ -2,6 +2,7 @@
 Main application window for the LumiSync GUI.
 """
 
+import os
 import sys
 import time
 from PySide6.QtWidgets import QMainWindow, QMenu, QMessageBox, QApplication, QSystemTrayIcon
@@ -20,6 +21,16 @@ from .controllers.update_controller import UpdateController
 
 logger = setup_logger('lumisync_gui')
 
+# Prevent a repeating timer's exception from stacking modal error dialogs.
+_error_dialog_open = False
+_recent_error_times = {}
+
+
+def _quit_application() -> None:
+    app = QApplication.instance()
+    if app is not None:
+        app.quit()
+
 
 class LumiSyncMainWindow(QMainWindow):
     """Main application window for LumiSync."""
@@ -31,7 +42,7 @@ class LumiSyncMainWindow(QMainWindow):
         self.setWindowTitle("LumiSync")
         self.setMinimumSize(800, 520)
         self.resize(1120, 760)
-        self.setMenuBar(None)
+        self.setMenuBar(None)  # pyright: ignore[reportArgumentType]
 
         self.settings = QSettings("Minlor", "LumiSync")
 
@@ -191,7 +202,7 @@ class LumiSyncMainWindow(QMainWindow):
             # be on its way out rather than appearing to ignore the action.
             self.tray.hide()
         try:
-            self.sync_controller.stop_sync(announce=False)
+            self.sync_controller.shutdown()
         except Exception:
             pass
         self.close()
@@ -251,10 +262,17 @@ class LumiSyncMainWindow(QMainWindow):
         return active
 
     def show_status(self, message: str, timeout: int = 5000):
-        # Info updates live in the status bar only — frequent progress
-        # messages ("imported 4 devices", "sync started") used to stack up as
-        # toasts and cover the controls.
-        self.statusBar().showMessage(message, timeout)
+        # Keep frequent progress messages out of the toast stack while the
+        # status bar is visible. When the user hides it, fall back to a toast
+        # so "sync started", device recovery and other feedback is not lost.
+        status_bar = self.statusBar()
+        configured = str(
+            self.settings.value("ui/status_bar", True)
+        ).lower() in ("true", "1")
+        if configured:
+            status_bar.showMessage(message, timeout)
+        else:
+            self.toasts.show(message, duration=min(timeout, 5000))
         logger.info(f"Status: {message}")
 
     def show_error(self, message: str):
@@ -319,7 +337,7 @@ class LumiSyncMainWindow(QMainWindow):
             if self.tray is not None:
                 self.tray.hide()
             event.accept()
-            QApplication.instance().quit()
+            _quit_application()
             return
         if self._shutdown_started:
             event.ignore()
@@ -364,10 +382,13 @@ class LumiSyncMainWindow(QMainWindow):
         self.setEnabled(False)
         self.device_controller.shutdown()
         self.update_controller.shutdown()
-        if hasattr(self.sync_controller, 'stop_sync'):
-            self.sync_controller.stop_sync()
-        if hasattr(self.sync_controller, 'flush_sync_settings'):
-            self.sync_controller.flush_sync_settings()
+        if hasattr(self.sync_controller, 'shutdown'):
+            self.sync_controller.shutdown()
+        else:
+            if hasattr(self.sync_controller, 'stop_sync'):
+                self.sync_controller.stop_sync()
+            if hasattr(self.sync_controller, 'flush_sync_settings'):
+                self.sync_controller.flush_sync_settings()
         draw_view = getattr(self, "draw_view", None)
         if draw_view is not None:
             try:
@@ -378,6 +399,29 @@ class LumiSyncMainWindow(QMainWindow):
         # running QThread or closing its pooled connection can crash Qt.
         event.ignore()
         self._finish_shutdown()
+
+    def _force_exit(self) -> None:
+        """Save everything we can, then leave without waiting on a stuck thread.
+
+        Destroying a running QThread (or a native BLE connect that outlives the
+        deadline) aborts the process from Qt's cleanup path. Exiting directly
+        keeps the saved settings intact and avoids that crash.
+        """
+        logger.warning("Shutdown deadline exceeded; forcing process exit")
+        try:
+            self.settings.setValue("geometry", self.saveGeometry())
+            self.settings.sync()
+        except Exception:
+            pass
+        try:
+            self.sync_controller.flush_sync_settings()
+        except Exception:
+            pass
+        try:
+            self.device_controller._adopt_pooled_discovery()
+        except Exception:
+            pass
+        os._exit(0)
 
     def _finish_shutdown(self) -> None:
         try:
@@ -395,10 +439,19 @@ class LumiSyncMainWindow(QMainWindow):
                 or draw_running
                 or QThreadPool.globalInstance().activeThreadCount()
             )
-            if busy and not overdue:
+            if busy:
+                if overdue:
+                    self._force_exit()
+                    return
                 self.statusBar().showMessage("Finishing device connections before closing…")
                 QTimer.singleShot(100, self._finish_shutdown)
                 return
+            # Sync may have taught a pooled adapter new Tuya data points just
+            # before it stopped; persist them before the pool closes.
+            try:
+                self.device_controller._adopt_pooled_discovery()
+            except Exception:
+                pass
             from ..drivers import pool
             from ..accounts.manager import account_manager
             pool.close_all()
@@ -417,7 +470,7 @@ class LumiSyncMainWindow(QMainWindow):
             tuya_aoi.aoi().stop()
         except Exception:
             pass
-        QApplication.instance().quit()
+        _quit_application()
 
 
 def main():
@@ -461,6 +514,12 @@ def main():
         )
         logger.info("Window material enabled: %s", active_material)
         window.show()
+        from .. import devices as device_settings
+        settings_warning = device_settings.consume_settings_warning()
+        if settings_warning:
+            QTimer.singleShot(
+                0, lambda message=settings_warning: window.show_error(message)
+            )
         guard.activate_requested.connect(window.show_from_tray)
         QTimer.singleShot(1000, window.check_for_updates_on_startup)
 
@@ -483,12 +542,28 @@ def _install_excepthook():
     from ..utils.logging import get_logs_directory
 
     def hook(exc_type, exc_value, exc_tb):
+        global _error_dialog_open
         if issubclass(exc_type, KeyboardInterrupt):
             sys.__excepthook__(exc_type, exc_value, exc_tb)
             return
         logger.critical(
             "Uncaught exception", exc_info=(exc_type, exc_value, exc_tb)
         )
+
+        key = (exc_type.__name__, str(exc_value))
+        now = time.monotonic()
+        if _error_dialog_open or now - _recent_error_times.get(key, 0.0) < 30.0:
+            return
+        _recent_error_times[key] = now
+        # Bound the dedupe table for long sessions with a rotating error source.
+        if len(_recent_error_times) > 50:
+            oldest = min(
+                _recent_error_times,
+                key=lambda item: _recent_error_times.get(item, 0.0),
+            )
+            _recent_error_times.pop(oldest, None)
+
+        _error_dialog_open = True
         try:
             QMessageBox.critical(
                 None,
@@ -498,6 +573,8 @@ def _install_excepthook():
             )
         except Exception:
             pass
+        finally:
+            _error_dialog_open = False
 
     sys.excepthook = hook
 

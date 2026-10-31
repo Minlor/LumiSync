@@ -113,17 +113,8 @@ class UpdateController(QObject):
 
     def shutdown(self) -> bool:
         self._closing = True
-        if self._check_running():
-            self.check_thread.quit()
+        thread = self.check_thread
+        if self._check_running() and thread is not None:
+            thread.quit()
             return False
         return True
-
-    def __del__(self) -> None:
-        thread = self.check_thread
-        if thread is not None:
-            try:
-                if thread.isRunning():
-                    thread.quit()
-                    thread.wait(1000)
-            except Exception:
-                pass
