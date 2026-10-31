@@ -359,6 +359,7 @@ class GoveeAccountClient:
             load_key_and_certificates,
         )
         import paho.mqtt.client as mqtt
+        from paho.mqtt.enums import CallbackAPIVersion
 
         info = object_value(self._request("GET", "/app/v1/account/iot/key").get("data"))
         endpoint = str(info.get("endpoint", ""))
@@ -375,7 +376,9 @@ class GoveeAccountClient:
             )
             if key is None or certificate is None:
                 raise ValueError("missing certificate")
-            context = ssl.create_default_context(cafile=requests.certs.where())
+            requests_certs = getattr(requests, "certs", None)
+            cafile = requests_certs.where() if requests_certs is not None else None
+            context = ssl.create_default_context(cafile=cafile)
             # SSLContext needs filenames. mkstemp creates private files; delete
             # them immediately once the context has loaded the certificate.
             paths = []
@@ -402,7 +405,7 @@ class GoveeAccountClient:
                 "authentication",
             ) from None
         client = mqtt.Client(
-            mqtt.CallbackAPIVersion.VERSION2,
+            CallbackAPIVersion.VERSION2,
             client_id=f"AP/{self.credentials['account_id']}/{uuid.uuid4().hex}",
         )
         client.tls_set_context(context)
@@ -482,7 +485,12 @@ class GoveeAccountClient:
             }
             if data is not None:
                 message["data"] = data
-            info = self._mqtt.publish(
+            mqtt_client = self._mqtt
+            if mqtt_client is None:
+                raise AccountError(
+                    "The Govee Wi-Fi channel is not connected. Try again.", "network"
+                )
+            info = mqtt_client.publish(
                 topic, json.dumps({"msg": message}), qos=0, retain=False
             )
             info.wait_for_publish(timeout=5)

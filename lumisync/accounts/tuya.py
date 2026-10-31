@@ -10,6 +10,8 @@ import logging
 import re
 import threading
 import time
+from collections.abc import Mapping
+from typing import Any
 from urllib.parse import quote, urlparse
 
 import requests
@@ -47,18 +49,18 @@ ROLES = {
 PAINT_CODES = ("paint_colour_data", "paint_colour_1", "paint_data")
 
 
-def functions_for(device: dict) -> dict:
+def functions_for(device: Mapping[str, Any]) -> dict:
     return device.get("tuya_functions", {})
 
 
-def code_for(device: dict, role: str) -> str | None:
+def code_for(device: Mapping[str, Any], role: str) -> str | None:
     functions = functions_for(device)
     if role == "power" and device.get("tuya_power_code") in functions:
         return device["tuya_power_code"]
     return next((code for code in ROLES[role] if code in functions), None)
 
 
-def paint_dp(device: dict) -> int | None:
+def paint_dp(device: Mapping[str, Any]) -> int | None:
     """Numeric DP id of the per-zone RGBIC paint control, when known."""
     functions = functions_for(device)
     for code in PAINT_CODES:
@@ -75,7 +77,7 @@ def paint_dp(device: dict) -> int | None:
         return None
 
 
-def dp_layout(device: dict, default: str = "v2") -> str:
+def dp_layout(device: Mapping[str, Any], default: str = "v2") -> str:
     """('v1' | 'v2') data-point layout of a device descriptor.
 
     Tuya renumbered the lighting DPs when it introduced the modern schema:
@@ -118,7 +120,7 @@ def dp_layout(device: dict, default: str = "v2") -> str:
     return default if default in ("v1", "v2") else "v2"
 
 
-def colour_format(device: dict) -> str:
+def colour_format(device: Mapping[str, Any]) -> str:
     """Encoding of the colour DP: 'hsv' (``HHHHSSSSVVVV``, S/V 0-1000) or
     'legacy' (``RRGGBBHHHHSSVV``, S/V 0-255)."""
     value = str(device.get("colour_format", "")).strip().lower()
@@ -129,7 +131,7 @@ def colour_format(device: dict) -> str:
     return "hsv" if dp_layout(device) == "v2" else "legacy"
 
 
-def value_range(device: dict, role: str, default: tuple[int, int]) -> tuple[int, int]:
+def value_range(device: Mapping[str, Any], role: str, default: tuple[int, int]) -> tuple[int, int]:
     specification = functions_for(device).get(code_for(device, role), {})
     values = specification.get("values", {})
     if isinstance(values, str):
@@ -146,7 +148,7 @@ def value_range(device: dict, role: str, default: tuple[int, int]) -> tuple[int,
     return (low, high) if high > low else default
 
 
-def colour_scale(device: dict) -> int:
+def colour_scale(device: Mapping[str, Any]) -> int:
     return 1000 if colour_format(device) == "hsv" else 255
 
 
@@ -164,7 +166,7 @@ def colour_hsv_from_hex(value, fmt: str) -> tuple[int, int, int] | None:
     return None
 
 
-def colour_values(device: dict, value) -> tuple[int, int, int] | None:
+def colour_values(device: Mapping[str, Any], value) -> tuple[int, int, int] | None:
     """Decode the cloud's HSV JSON — or a local hex DP string — to HSV units."""
     hsv = None
     if isinstance(value, str):
@@ -267,9 +269,10 @@ class TuyaOpenApiClient:
 
     def __init__(self, credentials: dict, session=None) -> None:
         self.credentials = dict(credentials)
-        self.endpoint = REGIONS.get(credentials.get("region"))
-        if self.endpoint is None:
+        endpoint = REGIONS.get(str(credentials.get("region") or ""))
+        if endpoint is None:
             raise AccountError("Choose the data center used by your Tuya cloud project.", "validation")
+        self.endpoint = endpoint
         self.session = session or requests.Session()
         self._token = ""
         self._expires = 0.0

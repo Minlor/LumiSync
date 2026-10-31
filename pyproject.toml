@@ -71,8 +71,9 @@ dev = [
 typeCheckingMode = "basic"
 pythonVersion = "3.11"
 # Start with the typed core (device model, settings, sync session, transports).
-# The Qt views and vendor account clients still rely heavily on dynamic
-# attributes; bring them in file-by-file once they are annotated.
+# Tuya and the account clients are checked too: an unbound name in the AoI
+# fast-channel handshake previously slipped through because those files were
+# not in the program. Qt views remain staged file-by-file as they are annotated.
 include = [
   "lumisync/device.py",
   "lumisync/devices.py",
@@ -89,6 +90,20 @@ include = [
   "lumisync/drivers/idotmatrix_ble.py",
   "lumisync/drivers/pool.py",
   "lumisync/drivers/registry.py",
+  "lumisync/drivers/tuya_aoi.py",
+  "lumisync/drivers/tuya_lan.py",
+  "lumisync/drivers/tuya_presence.py",
+  "lumisync/accounts/govee.py",
+  "lumisync/accounts/http.py",
+  "lumisync/accounts/manager.py",
+  "lumisync/accounts/secrets.py",
+  "lumisync/accounts/tuya.py",
+  "lumisync/accounts/tuya_energy.py",
+  "lumisync/accounts/tuya_mobile.py",
+  "lumisync/gui/main_window.py",
+  "lumisync/gui/controllers/discovery.py",
+  "lumisync/gui/controllers/sync_controller.py",
+  "lumisync/gui/controllers/update_controller.py",
 ]
 exclude = ["**/__pycache__"]
 

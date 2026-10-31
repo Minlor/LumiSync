@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import uuid
+from typing import Any
 
 from .errors import AccountError
 from .secrets import protect_device, vault
@@ -30,7 +31,7 @@ def make_client(provider: str, credentials: dict):
 
 class AccountManager:
     def __init__(self) -> None:
-        self._clients: dict[str, object] = {}
+        self._clients: dict[str, Any] = {}
         self._lock = threading.RLock()
 
     def register(self, provider: str, client, *, remember: bool = True, identity: str | None = None) -> dict:

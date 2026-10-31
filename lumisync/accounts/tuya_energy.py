@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from calendar import monthrange
+from collections.abc import Mapping
 from datetime import date
 import json
 import math
+from typing import Any
 
 from .errors import AccountError
 
@@ -20,7 +22,7 @@ METER_CODES = {
 }
 
 
-def status_functions(device: dict) -> dict:
+def status_functions(device: Mapping[str, Any]) -> dict:
     return {**device.get("tuya_functions", {}), **device.get("tuya_status_functions", {})}
 
 
@@ -54,7 +56,7 @@ def _unit_factor(unit: str, field: str) -> float | None:
     }[field].get(unit)
 
 
-def meter_fields(device: dict) -> list[str]:
+def meter_fields(device: Mapping[str, Any]) -> list[str]:
     fields = []
     for code, (field, default_unit) in METER_CODES.items():
         spec = status_functions(device).get(code)
@@ -64,7 +66,7 @@ def meter_fields(device: dict) -> list[str]:
     return fields
 
 
-def decode_metering(device: dict, status: dict) -> dict:
+def decode_metering(device: Mapping[str, Any], status: dict) -> dict:
     """Do not mistake add_ele (an interval increment) for a lifetime total."""
     result = dict.fromkeys(meter_fields(device))
     for code, (field, default_unit) in METER_CODES.items():

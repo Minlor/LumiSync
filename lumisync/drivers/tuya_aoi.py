@@ -51,8 +51,9 @@ from ..utils.logging import get_logger
 logger = get_logger("lumisync_devices")
 
 AOI_FAST_STREAM = False  # frames leave the host at wire speed, but the strip
-# has not rendered any business payload yet;
-# the vendor-proven TCP paint path stays the default until this is solved.
+# has not rendered any business payload yet (the protocol notes above document
+# the handshake and frame layout); the vendor-proven TCP paint path stays the
+# default until that rendering issue is solved.
 
 AOI_PORT = 40001
 AOI_HEADER = bytes.fromhex("00006699")

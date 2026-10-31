@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import copy
 import threading
+from collections.abc import Mapping
 from typing import Any
 
 from ..device import as_device
@@ -84,17 +85,17 @@ class CredentialVault:
 vault = CredentialVault()
 
 
-def local_key_for(device: dict[str, Any]) -> str:
+def local_key_for(device: Mapping[str, Any]) -> str:
     # Legacy plaintext descriptors still work; the next settings write migrates them.
-    device = as_device(device)
-    key = device.get("local_key")
+    typed = as_device(device)
+    key = typed.get("local_key")
     if key:
         return str(key)
-    reference = device.get("local_key_ref")
+    reference = typed.get("local_key_ref")
     return str(vault.get(str(reference)).get("local_key", "")) if reference else ""
 
 
-def protect_device(device: dict[str, Any], *, remember: bool = True) -> dict[str, Any]:
+def protect_device(device: Mapping[str, Any], *, remember: bool = True) -> dict[str, Any]:
     result = as_device(device).to_dict()
     key = result.pop("local_key", None)
     if key:

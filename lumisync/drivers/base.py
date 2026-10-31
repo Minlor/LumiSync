@@ -74,7 +74,7 @@ class TransportAdapter(abc.ABC):
         # stamp learned fields (paint DP, zone grid, colour format) onto it and
         # expect those edits to reach the live controller. A copy would make
         # that knowledge vanish at the end of the call.
-        self.device: DeviceLike = device
+        self.device: Any = device
 
     @property
     @abc.abstractmethod

@@ -162,7 +162,7 @@ class TuyaMobileClient:
                 self._clock_offset = server_time - time.time()
             if reply.get("success") is not True:
                 self._raise_error(reply.get("errorCode"))
-            return reply.get("result")
+            return reply.get("result") or {}
 
     def _raise_error(self, raw_code):
         code = str(raw_code or "UNKNOWN")

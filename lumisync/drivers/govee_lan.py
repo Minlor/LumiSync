@@ -7,7 +7,6 @@ iDotMatrix look identical to the sync engine.
 
 from __future__ import annotations
 
-import socket
 from typing import Any, Dict, List, Optional
 
 from .. import connection, sku_catalog, utils
@@ -32,11 +31,11 @@ class GoveeLanAdapter(TransportAdapter):
     ) -> None:
         super().__init__(device)
         self._owns_socket = owns_socket or server is None
-        self.server: Optional[socket.socket] = (
+        self.server: Optional[connection.LanSocket] = (
             server if server is not None else connection.create_lan_socket()
         )
 
-    def _socket(self) -> socket.socket:
+    def _socket(self) -> connection.LanSocket:
         if self.server is None:
             raise RuntimeError("This Govee adapter has already been closed.")
         return self.server
