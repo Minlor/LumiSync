@@ -5,13 +5,14 @@ This module handles device discovery and management with PySide6 signals.
 
 import socket
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from PySide6.QtCore import QObject, Signal, Slot, QThread, QTimer, Qt
 
 from ... import connection, devices, groups
-from ...device import Device, as_device
-from ...drivers import pool
+from ...device import Device, DeviceLike, as_device
+from ...utils.logging import get_logger
+from ...drivers import pool, tuya_presence
 from ...drivers.registry import create_adapter, is_cloud, capabilities_for_device
 from .background import start_task
 from .command_queue import CoalescingCommandQueue
@@ -23,6 +24,8 @@ from .discovery import (
     DeviceDiscoveryWorker,
     DeviceStatusWorker,
 )
+
+logger = get_logger(__name__)
 
 
 class DeviceController(DeviceAdminMixin, QObject):
@@ -48,6 +51,7 @@ class DeviceController(DeviceAdminMixin, QObject):
     device_search_started = Signal()  # Combined LAN + Bluetooth search started
     device_search_finished = Signal(dict)  # Per-transport availability/results
     groups_changed = Signal(list)  # Updated list of sync groups
+    tuya_device_seen = Signal(str, str)  # Device ID, announced address (presence thread)
 
     @property
     def devices(self) -> List[Device]:
@@ -95,6 +99,11 @@ class DeviceController(DeviceAdminMixin, QObject):
         self._confirmation_delays = {}
         self._tuya_task = None
         self._closing = False
+        # LSC/Tuya lights announce their current address on UDP 6667; follow
+        # DHCP moves so a stale saved IP never strands commands and sync.
+        self.tuya_device_seen.connect(self._on_tuya_device_seen, Qt.ConnectionType.QueuedConnection)
+        self._presence_callback = self.tuya_device_seen.emit
+        tuya_presence.subscribe(self._presence_callback)
 
         # Initialize devices on startup
         self._init_devices()
@@ -527,16 +536,40 @@ class DeviceController(DeviceAdminMixin, QObject):
         output = state.get("active_output")
         return key in self._command_tasks or bool(output and output not in allowed_outputs)
 
+    def _index_for_key(self, key: str) -> int:
+        return next(
+            (
+                index
+                for index, device in enumerate(self.devices)
+                if self._device_key(device) == key
+            ),
+            -1,
+        )
+
     @Slot(int, dict)
     def _merge_device_state(self, index: int, updates: Dict[str, Any]) -> None:
         if self._closing:
             return
-        device = self._device_at(index)
-        if not device:
+        device = self._device_at(index) if index >= 0 else None
+        key = str(updates.get("device_key") or (self._device_key(device) if device else ""))
+        if not key:
             return
-        key = self._device_key(device)
-        if updates.get("device_key", key) != key:
-            return  # A removed/reordered device must not inherit an old worker's reply.
+        # Resolve by identity, not list position: a device can be removed or
+        # reordered while a status poll is in flight. Never paint the reply onto
+        # whichever card now happens to sit at the old index.
+        resolved = self._index_for_key(key)
+        if resolved < 0:
+            return
+        index = resolved
+        device = self.devices[index]
+
+        learned = updates.pop("learned", None)
+        if isinstance(learned, dict):
+            for field in DISCOVERY_KEYS:
+                value = learned.get(field)
+                if value is not None and device.get(field) != value:
+                    device[field] = value
+
         state = self.device_states.get(key, self._default_state(device))
         if (updates.get("query_started_at") is not None
                 and updates["query_started_at"] < (state.get("last_command_at") or 0)):
@@ -603,7 +636,7 @@ class DeviceController(DeviceAdminMixin, QObject):
         self._merge_device_state(index, payload)
 
     def mark_sync_active(
-        self, mode: str, active_devices: List[Dict[str, Any]]
+        self, mode: str, active_devices: Sequence[DeviceLike]
     ) -> None:
         """Expose active monitor/music output on matching device cards."""
         active_keys = {self._device_key(device) for device in active_devices}
@@ -620,7 +653,29 @@ class DeviceController(DeviceAdminMixin, QObject):
                     },
                 )
 
+    def _adopt_pooled_discovery(self) -> bool:
+        """Persist fields a pooled adapter learned during the last sync."""
+        changed = False
+        for device in self.devices:
+            learned = pool.learned_fields(device, DISCOVERY_KEYS)
+            if not learned:
+                continue
+            for field, value in learned.items():
+                if device.get(field) != value:
+                    device[field] = value
+                    changed = True
+        if changed:
+            try:
+                self._store.save()
+            except Exception:
+                logger.warning("Could not save learned device data", exc_info=True)
+            self.devices_discovered.emit(self.devices)
+        return changed
+
     def clear_sync_activity(self) -> None:
+        # Sync may have taught a pooled Tuya adapter a paint DP / zone grid.
+        # Save it now so quitting immediately afterwards keeps that knowledge.
+        self._adopt_pooled_discovery()
         for index in range(len(self.devices)):
             state = self.get_device_state_at(index)
             if state.get("active_output") in {"Monitor sync", "Music sync"}:
@@ -1314,10 +1369,49 @@ class DeviceController(DeviceAdminMixin, QObject):
     @staticmethod
     def _scan_tuya_lan() -> list[dict]:
         import tinytuya
-        found = tinytuya.deviceScan(verbose=False, maxretry=3, poll=False)
-        return [{"device_id": d.get("gwId") or d.get("id"), "ip": d.get("ip"),
-                 "protocol_version": str(d.get("version", "3.3"))} for d in found.values()
-                if isinstance(d, dict) and (d.get("gwId") or d.get("id")) and d.get("ip")]
+        with tuya_presence.released_port():
+            found = tinytuya.deviceScan(verbose=False, maxretry=3, poll=False)
+        results = [{"device_id": d.get("gwId") or d.get("id"), "ip": d.get("ip"),
+                    "protocol_version": str(d.get("version", "3.3"))} for d in found.values()
+                   if isinstance(d, dict) and (d.get("gwId") or d.get("id")) and d.get("ip")]
+        for result in results:
+            tuya_presence.registry.note_seen(result["device_id"], address=result["ip"])
+        return results
+
+    @Slot(str, str)
+    def _on_tuya_device_seen(self, device_id: str, address: str) -> None:
+        """Save the address an LSC/Tuya light now announces from.
+
+        Adapters already follow the beat on their own; saving it keeps the
+        device list and the next launch on the right IP. A light that is
+        streaming or running a command is updated on a later beat, once idle.
+        """
+        if self._closing or not device_id or not address:
+            return
+        updated = None
+        moved = []
+        for index, device in enumerate(self.devices):
+            typed = as_device(device)
+            if typed.transport != "tuya" or typed.device_id != device_id or typed.ip == address:
+                continue
+            if self.is_device_busy(device):
+                continue
+            if updated is None:
+                updated = [as_device(d).copy() for d in self.devices]
+            pool.close(updated[index])
+            updated[index]["ip"] = address
+            moved.append(typed.get("name") or typed.get("model") or device_id)
+        if updated is None:
+            return
+        try:
+            settings = self._load_settings_safe()
+            settings["devices"] = updated
+            devices.writeJSON(settings)
+        except Exception:
+            return
+        self.devices = updated
+        self.devices_discovered.emit(self.devices)
+        self.status_updated.emit(f"{', '.join(moved)}: now at {address}")
 
     @Slot(object, object)
     def _on_tuya_scan_finished(self, found, error) -> None:
@@ -1358,6 +1452,9 @@ class DeviceController(DeviceAdminMixin, QObject):
     def shutdown(self) -> bool:
         """Request cancellation, retaining running QThreads until they finish."""
         self._closing = True
+        tuya_presence.unsubscribe(self._presence_callback)
+        self._adopt_pooled_discovery()
+        self._close_server()
         self._command_queue.clear()
         for timer in self._confirmation_timers.values():
             timer.stop()
@@ -1441,25 +1538,3 @@ class DeviceController(DeviceAdminMixin, QObject):
                 self.server.close()
             finally:
                 self.server = None
-
-    def __del__(self):
-        """Clean up resources when the controller is deleted."""
-        for thread_attr in (
-            "status_thread",
-            "discovery_thread",
-            "_ble_scan_thread",
-        ):
-            thread = getattr(self, thread_attr, None)
-            if thread is not None:
-                try:
-                    if thread.isRunning():
-                        thread.quit()
-                        thread.wait(1000)
-                except Exception:
-                    pass
-        if self.server:
-            try:
-                self.server.close()
-                self.server = None
-            except Exception:
-                pass

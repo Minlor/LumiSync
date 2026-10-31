@@ -11,7 +11,8 @@ own short-lived sockets there, exactly as before.
 
 from __future__ import annotations
 
-from typing import Dict
+from collections.abc import Mapping
+from typing import Any, Dict, Iterable
 import threading
 
 from ..device import DeviceLike, as_device
@@ -88,6 +89,32 @@ def acquire(device: DeviceLike, server=None) -> TransportAdapter:
 
 def is_pooled(device: DeviceLike) -> bool:
     return as_device(device).is_pooled
+
+
+def learned_fields(
+    device: DeviceLike, fields: Iterable[str]
+) -> Dict[str, Any]:
+    """Return fields a pooled adapter learned, without opening a connection.
+
+    Sync streams can discover a Tuya paint data point or zone grid while the
+    controller still has a stale descriptor. Reading it back here lets the
+    caller persist that knowledge when sync stops instead of losing it until
+    the next status poll.
+    """
+    typed = as_device(device)
+    if not typed.is_pooled:
+        return {}
+    with _pool_lock:
+        adapter = _pooled_adapters.get(_ble_key(typed))
+    source = getattr(adapter, "device", None) if adapter is not None else None
+    if not isinstance(source, Mapping):
+        return {}
+    learned = {}
+    for field in fields:
+        value = source.get(field)
+        if value is not None and typed.get(field) != value:
+            learned[field] = value
+    return learned
 
 
 def close(device: DeviceLike) -> None:

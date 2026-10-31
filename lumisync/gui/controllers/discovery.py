@@ -15,6 +15,7 @@ from typing import Any, Dict, List
 from PySide6.QtCore import QObject, Signal, Slot, QThread
 
 from ... import connection, devices, groups
+from ...device import as_device
 from ...drivers import pool, tuya_presence
 from ...drivers.registry import is_cloud
 
@@ -63,10 +64,13 @@ class DeviceStatusWorker(QObject):
 
     def __init__(self, indexed_devices: List[tuple[int, Dict[str, Any]]]):
         super().__init__()
-        # Keep the live descriptors (not copies): status discovery — paint DP,
-        # zone grid, colour format — is stamped onto them by the adapter and
-        # then persisted by the controller's _flush_discovery.
-        self.indexed_devices = list(indexed_devices)
+        # Work on copies. The worker runs on its own thread while the GUI may
+        # save, edit or remove the live descriptors; learned fields are sent
+        # back with the state update and applied by the controller on the GUI
+        # thread instead of being written here.
+        self.indexed_devices = [
+            (index, as_device(device).copy()) for index, device in indexed_devices
+        ]
 
     @Slot()
     def run(self) -> None:
@@ -88,6 +92,7 @@ class DeviceStatusWorker(QObject):
                 try:
                     query_started_at = time.time()
                     status = None
+                    learned_fields: Dict[str, Any] = {}
                     transport = str(device.get("transport", "lan"))
                     if transport in ("", "lan") and server is not None and device.get("ip"):
                         status = connection.query_status(server, device, timeout=0.45)
@@ -131,34 +136,33 @@ class DeviceStatusWorker(QObject):
                         adapter = pool.acquire(device)
                         try:
                             status = adapter.query_status()
-                            if status is not None and pool.is_pooled(device):
+                            if pool.is_pooled(device):
                                 # Pooled adapters hold their own descriptor copy;
-                                # mirror what the adapter discovered (paint DP,
-                                # zone grid, formats) onto the live device so the
-                                # controller persists it.
+                                # return what the adapter discovered (paint DP,
+                                # zone grid, formats) with the state update so the
+                                # controller can apply it on the GUI thread.
                                 learned = getattr(adapter, "device", None)
                                 if isinstance(learned, Mapping):
-                                    for field in ("tuya_paint_dp", "tuya_paint_zones",
-                                                  "colour_format", "dp_schema"):
+                                    for field in DISCOVERY_KEYS:
                                         value = learned.get(field)
                                         if value is not None and device.get(field) != value:
-                                            device[field] = value
+                                            learned_fields[field] = value
                         finally:
                             if not pool.is_pooled(device):
                                 adapter.close()
                     if status is None:
-                        self.state_updated.emit(
-                            index,
-                            {
-                                "online": False,
-                                "stale": True,
-                                "status_source": "offline",
-                                "readback_supported": True,
-                                "last_error": "No status reply",
-                                "device_key": groups.device_key(device),
-                                "query_started_at": query_started_at,
-                            },
-                        )
+                        update = {
+                            "online": False,
+                            "stale": True,
+                            "status_source": "offline",
+                            "readback_supported": True,
+                            "last_error": "No status reply",
+                            "device_key": groups.device_key(device),
+                            "query_started_at": query_started_at,
+                        }
+                        if learned_fields:
+                            update["learned"] = learned_fields
+                        self.state_updated.emit(index, update)
                     else:
                         status.update(
                             {
@@ -172,22 +176,24 @@ class DeviceStatusWorker(QObject):
                                 "query_started_at": query_started_at,
                             }
                         )
+                        if learned_fields:
+                            status["learned"] = learned_fields
                         self.state_updated.emit(index, status)
                 except Exception as exc:
                     from ...accounts.errors import AccountError
                     message = str(exc) if isinstance(exc, AccountError) or not is_cloud(device) else "Could not read account device status. Reconnect the account and try again."
-                    self.state_updated.emit(
-                        index,
-                        {
-                            "online": False,
-                            "stale": True,
-                            "status_source": "offline",
-                            "readback_supported": True,
-                            "last_error": message,
-                            "device_key": groups.device_key(device),
-                            "query_started_at": query_started_at,
-                        },
-                    )
+                    update = {
+                        "online": False,
+                        "stale": True,
+                        "status_source": "offline",
+                        "readback_supported": True,
+                        "last_error": message,
+                        "device_key": groups.device_key(device),
+                        "query_started_at": query_started_at,
+                    }
+                    if learned_fields:
+                        update["learned"] = learned_fields
+                    self.state_updated.emit(index, update)
         except Exception as exc:
             self.error.emit(str(exc))
         finally:

@@ -1,6 +1,7 @@
 """Combined discovery refreshes every linked account without hardware writes."""
 
 import os
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -161,6 +162,68 @@ class FindDevicesRefreshTests(unittest.TestCase):
         self.assertEqual(controller.devices[0]["transport"], "tuya")
         self.assertEqual(controller.devices[0]["cloud_transport"], "tuya_cloud")
         self.assertFalse(controller._combined_search_active)
+
+    def _strip(self, ip="192.168.0.44"):
+        return {"transport": "tuya", "device_id": "strip-1", "ip": ip,
+                "name": "Battletron", "local_key_ref": "fixture-key-reference"}
+
+    def test_presence_beat_from_a_new_address_saves_the_moved_light(self):
+        controller = self.controller()
+        controller.devices = [self._strip()]
+        statuses = []
+        controller.status_updated.connect(statuses.append)
+        with patch.object(controller, "_load_settings_safe", return_value={"devices": []}),                 patch("lumisync.gui.controllers.device_controller.devices.writeJSON") as write,                 patch("lumisync.gui.controllers.device_controller.pool.close") as closed:
+            controller._on_tuya_device_seen("strip-1", "192.168.0.19")
+            controller._on_tuya_device_seen("strip-1", "192.168.0.19")  # later beats change nothing
+            controller._on_tuya_device_seen("someone-else", "192.168.0.50")
+        self.assertEqual(controller.devices[0]["ip"], "192.168.0.19")
+        write.assert_called_once()
+        self.assertEqual(write.call_args.args[0]["devices"][0]["ip"], "192.168.0.19")
+        closed.assert_called_once()
+        self.assertEqual(statuses, ["Battletron: now at 192.168.0.19"])
+
+    def test_presence_beat_waits_while_the_light_is_streaming(self):
+        controller = self.controller()
+        controller.devices = [self._strip()]
+        with patch.object(controller, "is_device_busy", return_value=True),                 patch("lumisync.gui.controllers.device_controller.devices.writeJSON") as write:
+            controller._on_tuya_device_seen("strip-1", "192.168.0.19")
+        write.assert_not_called()
+        self.assertEqual(controller.devices[0]["ip"], "192.168.0.44")
+
+    def test_presence_beats_reach_the_controller_from_the_listener_thread(self):
+        from lumisync.drivers import tuya_presence
+
+        controller = self.controller()
+        with patch.object(controller, "_on_tuya_device_seen") as seen:
+            # Queued connections re-bind the slot at emit time; reconnect it.
+            controller.tuya_device_seen.disconnect()
+            controller.tuya_device_seen.connect(seen)
+            thread = threading.Thread(target=tuya_presence._notify, args=("strip-1", "192.168.0.19"))
+            thread.start()
+            thread.join()
+            QTest.qWait(50)
+        seen.assert_called_once_with("strip-1", "192.168.0.19")
+        controller.shutdown()
+        self.assertNotIn(controller._presence_callback, tuya_presence._subscribers)
+
+    def test_tuya_lan_scan_frees_the_presence_port_and_shares_what_it_found(self):
+        from lumisync.drivers import tuya_presence
+
+        events = []
+
+        def scan(**kwargs):
+            events.append("scan")
+            return {"192.168.0.19": {"gwId": "strip-1", "ip": "192.168.0.19", "version": "3.5"}}
+
+        registry = tuya_presence.PresenceRegistry()
+        released = Mock()
+        released.return_value.__enter__ = lambda *_: events.append("released")
+        released.return_value.__exit__ = lambda *_: events.append("listening")
+        with patch("tinytuya.deviceScan", side_effect=scan),                 patch.object(tuya_presence, "released_port", released),                 patch.object(tuya_presence, "registry", registry):
+            found = DeviceController._scan_tuya_lan()
+        self.assertEqual(events, ["released", "scan", "listening"])
+        self.assertEqual(found, [{"device_id": "strip-1", "ip": "192.168.0.19", "protocol_version": "3.5"}])
+        self.assertEqual(registry.address("strip-1"), "192.168.0.19")
 
     def test_compact_devices_view_opens_details_without_squeezing_the_card_grid(self):
         controller = self.controller()
