@@ -148,7 +148,7 @@ export default function Home() {
 
       <section className="download" id="download">
         <img src="/lumisync-app.png" alt="LumiSync app icon" />
-        <h2>Download LumiSync 0.8.2.</h2>
+        <h2>Download LumiSync 1.0.0.</h2>
         <p>Discover local devices or connect your vendor account. Prebuilt downloads include the runtime; Python is only needed for pip or source installs.</p>
         <div className="downloadGrid">
           <a className="downloadOption featured" href={downloads.windows}><FaWindows aria-hidden="true" /><span><strong>Windows</strong><small>Single-file app · x64</small></span><ArrowDownToLine aria-hidden="true" /></a>

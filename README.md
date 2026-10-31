@@ -72,7 +72,7 @@ averaged ambient colour, like LSC bulbs.
 
 ## Screenshots
 
-Screenshots show LumiSync 0.8.2 with **example devices, accounts and readings**.
+Screenshots show LumiSync 1.0.0 with **example devices, accounts and readings**.
 
 ### Devices
 
@@ -248,7 +248,7 @@ lumisync/
 ### Run Tests
 
 ```bash
-python -m unittest discover -s tests
+python -m unittest discover -s tests -t .
 ```
 
 ### Brand and documentation assets
