@@ -284,7 +284,7 @@ class QtIntegrationTests(unittest.TestCase):
         controller.devices = [original]
         with patch("lumisync.gui.controllers.device_controller.devices.get_data", return_value={}), patch("lumisync.gui.controllers.device_controller.devices.writeJSON", side_effect=OSError("disk error")):
             self.assertFalse(controller.set_zone_count_at(0, 20))
-        self.assertIs(controller.devices[0], original)
+        self.assertEqual(controller.devices[0], original)
         self.assertEqual(original["segment_count_override"], 10)
 
     def test_zone_change_rejects_active_output_and_unsupported_transports(self):
@@ -341,7 +341,7 @@ class QtIntegrationTests(unittest.TestCase):
             controller._on_tuya_scan_finished([{"device_id": "bulb", "ip": "192.0.2.1", "protocol_version": "3.5"}, {"device_id": "unknown", "ip": "192.0.2.2"}], None)
         self.assertEqual(len(controller.devices), 1)
         self.assertEqual(controller.devices[0]["transport"], "tuya")
-        self.assertEqual(controller.devices[0]["protocol_version"], "3.5")
+        self.assertEqual(controller.devices[0]["protocol_version"], 3.5)
 
     def test_account_refresh_and_local_scan_preserve_all_switch_gangs(self):
         controller = self.controller()

@@ -40,6 +40,7 @@ class DeviceInspector(QFrame):
     color_temp_changed = Signal(int, int)
     zone_count_requested = Signal(int)
     zone_count_reset_requested = Signal(int)
+    firmware_requested = Signal(int)
     remove_requested = Signal(int)
     connection_changed = Signal(int, str)
     panel_tools_requested = Signal(int)
@@ -306,6 +307,15 @@ class DeviceInspector(QFrame):
         zone_actions.addWidget(self.reset_zones_button)
         detail_layout.addLayout(zone_actions)
 
+        self.firmware_button = QPushButton("Check Firmware")
+        self.firmware_button.setToolTip(
+            "Read the device's current firmware from its vendor account"
+        )
+        self.firmware_button.clicked.connect(
+            lambda: self.firmware_requested.emit(self._index)
+        )
+        detail_layout.addWidget(self.firmware_button)
+
         self.remove_button = QPushButton("Remove Device")
         self.remove_button.setProperty("role", "danger")
         self.remove_button.setIcon(
@@ -409,7 +419,13 @@ class DeviceInspector(QFrame):
                 f"{device.get('matrix_size', '32x32')} matrix"
             )
         elif transport == "tuya" or is_cloud(device):
-            self.zones_value.setText("Single ambient light" if transport == "tuya" else "Whole light · manual controls")
+            if cap.supports_segments and cap.segment_count > 1:
+                source = "custom" if device.get("segment_count_override") else "default"
+                self.zones_value.setText(f"{cap.segment_count} zones · {source}")
+            else:
+                self.zones_value.setText(
+                    "Single ambient light" if transport == "tuya" else "Whole light · manual controls"
+                )
         else:
             count = connection.get_segment_count(device)
             source = "custom" if device.get("segment_count_override") else "default"
@@ -439,6 +455,7 @@ class DeviceInspector(QFrame):
             widget.setVisible(supported)
 
         self.default_button.setVisible(cap.supports_streaming)
+        self.firmware_button.setVisible(bool(device.get("account_id")))
         self.default_button.setEnabled(not primary and cap.supports_streaming)
         self.default_button.setText(
             "Default Device" if primary else "Set as Default"

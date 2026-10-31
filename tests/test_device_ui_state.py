@@ -77,7 +77,9 @@ class DeviceUiStateTests(unittest.TestCase):
         self.assertTrue(state["stale"])
         self.assertFalse(state["readback_seen"])
 
-    def test_lan_status_failure_after_confirmation_stays_offline(self):
+    def test_lan_status_misses_are_tolerated_before_showing_offline(self):
+        # LSC strips answer status polls with change-only echoes while they
+        # stream paint; a single empty poll must not flash "Offline".
         controller = self._controller()
         controller.devices = [
             {"mac": "CC:DD", "ip": "192.168.1.4", "model": "H619C"}
@@ -94,6 +96,22 @@ class DeviceUiStateTests(unittest.TestCase):
                 "last_error": None,
             },
         )
+        for _ in range(controller.STATUS_MISS_TOLERANCE - 1):
+            controller._merge_device_state(
+                0,
+                {
+                    "online": False,
+                    "stale": True,
+                    "status_source": "offline",
+                    "readback_supported": True,
+                    "last_error": "No status reply",
+                },
+            )
+            state = controller.get_device_state_at(0)
+            self.assertTrue(state["readback_seen"])
+            self.assertEqual(state["status_source"], "pending")
+            self.assertTrue(state["online"])
+
         controller._merge_device_state(
             0,
             {
@@ -104,10 +122,54 @@ class DeviceUiStateTests(unittest.TestCase):
                 "last_error": "No status reply",
             },
         )
-
         state = controller.get_device_state_at(0)
         self.assertTrue(state["readback_seen"])
         self.assertEqual(state["status_source"], "offline")
+        self.assertFalse(state["online"])
+
+    def test_confirmation_resets_status_misses(self):
+        controller = self._controller()
+        controller.devices = [
+            {"mac": "CC:DD", "ip": "192.168.1.4", "model": "H619C"}
+        ]
+        with patch.object(controller, "_start_status_refresh"):
+            controller._merge_device_state(
+                0,
+                {"online": True, "status_source": "confirmed",
+                 "power_on": True, "readback_supported": True},
+            )
+            for _ in range(controller.STATUS_MISS_TOLERANCE):
+                controller._merge_device_state(
+                    0,
+                    {"online": False, "status_source": "offline",
+                     "last_error": "No status reply", "stale": True},
+                )
+            controller._merge_device_state(
+                0,
+                {"online": True, "status_source": "confirmed",
+                 "power_on": True, "readback_supported": True},
+            )
+            for _ in range(controller.STATUS_MISS_TOLERANCE - 1):
+                controller._merge_device_state(
+                    0,
+                    {"online": False, "status_source": "offline",
+                     "last_error": "No status reply", "stale": True},
+                )
+        state = controller.get_device_state_at(0)
+        self.assertEqual(state["status_source"], "pending")
+        self.assertTrue(state["online"])
+
+    def test_local_status_poll_skips_account_and_bluetooth_devices(self):
+        controller = self._controller()
+        controller.devices = [
+            {"transport": "lan", "ip": "192.168.1.4", "mac": "lan"},
+            {"transport": "tuya", "device_id": "dev", "mac": "tuya"},
+            {"transport": "tuya_cloud", "account_id": "acct", "mac": "cloud"},
+            {"transport": "ble", "mac": "ble"},
+        ]
+        with patch.object(controller, "_start_status_refresh") as start:
+            controller.refresh_local_device_states()
+        start.assert_called_once_with([0, 1])
 
     def test_card_shows_unknown_copy_for_unanswered_lan_status(self):
         card = DeviceCard(0, {"model": "H7020", "ip": "192.168.1.4"})

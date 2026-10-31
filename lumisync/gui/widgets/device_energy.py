@@ -236,8 +236,13 @@ class DeviceEnergy(QWidget):
             self._poll.stop()
 
     def _request_refresh(self):
-        if self.isVisible() and self._fields:
-            self.refresh_requested.emit()
+        try:
+            if self.isVisible() and self._fields:
+                self.refresh_requested.emit()
+        except RuntimeError:
+            # The panel was closed (and its C++ object deleted) between the
+            # queued refresh and this callback.
+            pass
 
     def showEvent(self, event):
         super().showEvent(event)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Set
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialogButtonBox,
@@ -47,10 +47,30 @@ class DevicesView(QWidget):
         self._inspected_key = ""
         self._inspector_animation = None
         self._group_selection_mode = False
+        self._card_sync_pending = False
+
+        # Keep the online/offline indicator honest: local devices are polled
+        # while this page is visible, instead of only refreshing after a
+        # command (which left unplugged devices showing "Online" forever).
+        self._status_poll_timer = QTimer(self)
+        self._status_poll_timer.setInterval(15_000)
+        self._status_poll_timer.timeout.connect(self._poll_local_status)
+        self._status_poll_timer.start()
 
         self._build()
         self._connect_signals()
         self._rebuild_cards()
+
+    def _poll_local_status(self) -> None:
+        if not self.isVisible():
+            return
+        self.controller.refresh_local_device_states()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().showEvent(event)
+        # Refresh once when the page is opened rather than waiting a full
+        # polling interval (the page may have been hidden for hours).
+        QTimer.singleShot(400, self._poll_local_status)
 
     # ------------------------------------------------------------------ build
 
@@ -301,14 +321,23 @@ class DevicesView(QWidget):
     # ------------------------------------------------------------------ wiring
 
     def _connect_signals(self) -> None:
-        self.controller.devices_discovered.connect(lambda *_: self._rebuild_cards())
-        self.controller.device_added.connect(lambda *_: self._rebuild_cards())
-        self.controller.device_removed.connect(lambda *_: self._rebuild_cards())
+        # Device cards are only rebuilt when the visible device set actually
+        # changes: every card is a full widget tree, and rebuilding them on
+        # each refresh made the grid flash ("a bunch of mini windows") and
+        # spiked CPU. State updates already flow through device_state_updated.
+        self.controller.devices_discovered.connect(lambda *_: self._sync_cards())
+        self.controller.device_added.connect(lambda *_: self._sync_cards())
+        self.controller.device_removed.connect(lambda *_: self._sync_cards())
+        self.controller.device_updated.connect(lambda *_: self._sync_cards())
         self.controller.device_state_updated.connect(self._on_device_state_updated)
         self.controller.device_search_started.connect(self._on_search_started)
         self.controller.device_search_finished.connect(self._on_search_finished)
         self.inspector.connection_changed.connect(self.controller.set_connection_at)
         self.inspector.panel_tools_requested.connect(self._open_panel_tools)
+        self.inspector.firmware_requested.connect(self._on_firmware_requested)
+
+    def _on_firmware_requested(self, index: int) -> None:
+        self.controller.check_firmware_at(index)
 
     def _open_panel_tools(self, index: int) -> None:
         from ..dialogs.panel_tools_dialog import PanelToolsDialog
@@ -412,6 +441,33 @@ class DevicesView(QWidget):
             )
 
     # ------------------------------------------------------------------ cards
+
+    _CARD_SIGNATURE_FIELDS = ("name", "model", "sku", "transport", "device_id", "mac")
+
+    def _card_signature(self, device: dict) -> tuple:
+        return tuple(str(device.get(field) or "") for field in self._CARD_SIGNATURE_FIELDS)
+
+    def _sync_cards(self) -> None:
+        """Coalesce refresh bursts and skip rebuilds when nothing changed."""
+        if self._card_sync_pending:
+            return
+        self._card_sync_pending = True
+        QTimer.singleShot(0, self._apply_device_list)
+
+    def _apply_device_list(self) -> None:
+        self._card_sync_pending = False
+        devices = self.controller.devices
+        current = [self._card_signature(card.device()) for card in self._cards]
+        wanted = [self._card_signature(device) for device in devices]
+        if current == wanted:
+            # Same devices in the same order: keep the existing cards. States
+            # arrive via device_state_updated, so nothing visible goes stale.
+            for index, card in enumerate(self._cards):
+                card.set_primary(index == self.controller.selected_device_index)
+                card.set_checked(index in self._selected)
+                card.set_inspected(index == self._inspected_index)
+            return
+        self._rebuild_cards()
 
     def _rebuild_cards(self) -> None:
         selected_keys = {device_key(card.device()) for card in self._cards if card._index in self._selected}

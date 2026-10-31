@@ -19,7 +19,10 @@ from PySide6.QtWidgets import (
 )
 
 from ... import connection, led_mapping, utils
+from ...drivers import pool
+from ...drivers.registry import capabilities_for_device
 from ...led_mapping import NormalizedRect
+from ..controllers.background import start_task
 from ..theme import qcolor
 from .product_controls import ProductSlider
 
@@ -379,6 +382,7 @@ class LedMappingWidget(QWidget):
         self.sync_controller = sync_controller
         self._test_mode_active = False
         self._test_timer: Optional[QTimer] = None
+        self._last_test_colors: Optional[List[Tuple[int, int, int]]] = None
         self._razer_mode_enabled = False
         self._segment_count = len(DEFAULT_LED_MAPPING)
         self._aspect_ratio = led_mapping.DEFAULT_ASPECT_RATIO
@@ -560,6 +564,7 @@ class LedMappingWidget(QWidget):
         self._test_mode_active = True
         self.test_button.setText("Stop test")
         self.test_button.setChecked(True)
+        self._last_test_colors = None
         self.selection_label.setText("Test mode - drag zones to swap LEDs")
         self._enable_razer_mode()
         self._update_test_display()
@@ -656,26 +661,54 @@ class LedMappingWidget(QWidget):
         led_colors: List[Tuple[int, int, int]],
         skip_razer_enable: bool = False,
     ) -> None:
+        if not self.sync_controller:
+            return
         try:
-            if not self.sync_controller:
-                return
+            if self._last_test_colors == led_colors:
+                return  # The 1 Hz timer re-sends unchanged test colors; skip.
+            self._last_test_colors = list(led_colors)
 
             devices = self.sync_controller.get_selected_devices()
             if not devices:
                 return
 
-            self.sync_controller._ensure_server()
-            server = self.sync_controller.server
-            if server:
-                if not skip_razer_enable and not self._razer_mode_enabled:
-                    for device in devices:
-                        connection.switch_razer(server, device, True)
-                    self._razer_mode_enabled = True
-                for device in devices:
-                    payload = utils.convert_colors(
-                        fit_led_colors_to_device(device, led_colors)
-                    )
-                    connection.send_razer_data(server, device, payload)
+            # Tuya strips cannot read the Govee sync-server protocol (UDP
+            # JSON); drive them through their transport adapter exactly like a
+            # live sync run does. Adapter work is queued off the GUI thread:
+            # connecting to a Tuya device takes seconds and froze the mapping
+            # dialog when done inline.
+            tuya_devices = [
+                d for d in devices
+                if str(d.get("transport", "lan")).lower() == "tuya"
+            ]
+            govee = [d for d in devices if d not in tuya_devices]
+
+            for device in tuya_devices:
+                colors = utils.resample_colors_to_count(
+                    led_colors, capabilities_for_device(device).segment_count
+                )
+
+                def do_send(dev=device, frame=colors):
+                    pool.acquire(dev, self.sync_controller.server).set_segments(frame)
+
+                def on_done(_value, error, dev=device):
+                    if error and self._test_mode_active:
+                        self.selection_label.setText(f"{dev.get('model', 'Device')}: {error[:26]}")
+
+                start_task(do_send, on_done)
+            if govee:
+                self.sync_controller._ensure_server()
+                server = self.sync_controller.server
+                if server:
+                    if not skip_razer_enable and not self._razer_mode_enabled:
+                        for device in govee:
+                            connection.switch_razer(server, device, True)
+                        self._razer_mode_enabled = True
+                    for device in govee:
+                        payload = utils.convert_colors(
+                            fit_led_colors_to_device(device, led_colors)
+                        )
+                        connection.send_razer_data(server, device, payload)
         except Exception as e:
             if self._test_mode_active:
                 self.selection_label.setText(f"Connection error: {str(e)[:30]}")
