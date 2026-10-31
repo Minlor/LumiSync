@@ -3,6 +3,7 @@
 import json
 import os
 import unittest
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -51,6 +52,17 @@ class PresenceRegistryTests(unittest.TestCase):
         self.assertIsNone(registry.last_seen("missing"))
         self.assertFalse(registry.is_online("missing"))
 
+    def test_address_follows_the_latest_fresh_beat(self):
+        registry = PresenceRegistry()
+        registry.note_seen("dev1", at=100.0, address="192.168.0.44")
+        registry.note_seen("dev1", at=110.0, address="192.168.0.19")  # new DHCP lease
+        self.assertEqual(registry.address("dev1", now=115.0), "192.168.0.19")
+        # A stale beat is no proof of where the device lives now.
+        self.assertIsNone(registry.address("dev1", now=110.0 + tuya_presence.PRESENCE_FRESH_AFTER + 1))
+        self.assertIsNone(registry.address("missing", now=115.0))
+        registry.forget_all()
+        self.assertIsNone(registry.address("dev1", now=115.0))
+
 
 class PresenceFrameTests(unittest.TestCase):
     def setUp(self):
@@ -58,8 +70,12 @@ class PresenceFrameTests(unittest.TestCase):
         self.listener = TuyaPresenceListener(self.registry)
 
     def test_valid_frame_marks_device_seen(self):
-        self.listener.handle_datagram(build_presence_frame("fixturedevice000000006"))
-        self.assertTrue(self.registry.is_online("fixturedevice000000006"))
+        self.listener.handle_datagram(build_presence_frame("fixturedevice000000004"))
+        self.assertTrue(self.registry.is_online("fixturedevice000000004"))
+
+    def test_frame_source_address_is_remembered(self):
+        self.listener.handle_datagram(build_presence_frame("gw1"), ("192.168.0.19", 6667))
+        self.assertEqual(self.registry.address("gw1"), "192.168.0.19")
 
     def test_callbacks_receive_the_device_and_address(self):
         seen = []
@@ -91,6 +107,51 @@ class PresenceFrameTests(unittest.TestCase):
         blob = b"".join([_HEADER, aad, nonce, ciphertext, _TAIL])
         self.listener.handle_datagram(blob)
         self.assertIsNone(self.registry.last_seen("gw4"))
+
+
+class PresenceListenerLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(tuya_presence, "_listener", None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_system_listener_notifies_subscribers_of_every_beat(self):
+        heard = []
+
+        def subscriber(device_id, address):
+            heard.append((device_id, address))
+
+        registry = PresenceRegistry()
+        with mock.patch.object(tuya_presence, "registry", registry),                 mock.patch.object(TuyaPresenceListener, "start", return_value=True):
+            tuya_presence.start_presence_listener()
+            tuya_presence.subscribe(subscriber)
+            try:
+                tuya_presence._listener.handle_datagram(
+                    build_presence_frame("gw1"), ("192.168.0.19", 6667))
+            finally:
+                tuya_presence.unsubscribe(subscriber)
+        self.assertEqual(heard, [("gw1", "192.168.0.19")])
+        self.assertEqual(registry.address("gw1"), "192.168.0.19")
+        self.assertNotIn(subscriber, tuya_presence._subscribers)
+
+    def test_released_port_pauses_a_running_listener_for_the_scan(self):
+        running = mock.Mock()
+        running.started.is_set.return_value = True
+        calls = []
+        with mock.patch.object(tuya_presence, "_listener", running),                 mock.patch.object(tuya_presence, "stop_presence_listener", side_effect=lambda: calls.append("stop")),                 mock.patch.object(tuya_presence, "start_presence_listener", side_effect=lambda: calls.append("start")):
+            with self.assertRaises(OSError):
+                with tuya_presence.released_port():
+                    calls.append("scan")
+                    raise OSError("scan failed")
+        # Listening resumes even when the scan itself fails.
+        self.assertEqual(calls, ["stop", "scan", "start"])
+
+    def test_released_port_leaves_a_stopped_listener_alone(self):
+        with mock.patch.object(tuya_presence, "stop_presence_listener") as stop,                 mock.patch.object(tuya_presence, "start_presence_listener") as start:
+            with tuya_presence.released_port():
+                pass
+        stop.assert_not_called()
+        start.assert_not_called()
 
 
 if __name__ == "__main__":

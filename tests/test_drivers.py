@@ -23,7 +23,7 @@ from lumisync.drivers.idotmatrix_ble import (
     screen_to_pixels,
 )
 from lumisync.drivers.registry import create_adapter
-from lumisync.drivers import tuya_aoi
+from lumisync.drivers import tuya_aoi, tuya_presence
 from lumisync.drivers.tuya_lan import (
     PAINT_MAX_PAYLOAD,
     TuyaLightAdapter,
@@ -376,6 +376,33 @@ class FakeTuyaHandle:
         if self.echo is None:
             return {"Error": "no cached state"}
         return {"dps": dict(self.echo)}
+
+
+class FakeTinytuyaDevice(FakeTuyaHandle):
+    """Stands in for tinytuya.Device: remembers where it was opened."""
+
+    def __init__(self, dev_id, address=None, local_key=None):
+        super().__init__()
+        self.address = address
+        self.closed = False
+
+    def set_version(self, version):
+        pass
+
+    def set_socketPersistent(self, persist):
+        pass
+
+    def set_socketTimeout(self, seconds):
+        pass
+
+    def set_socketNODELAY(self, nodelay):
+        pass
+
+    def set_socketRetryLimit(self, limit):
+        pass
+
+    def close(self):
+        self.closed = True
 
 
 class TuyaEncoderTests(unittest.TestCase):
@@ -803,6 +830,47 @@ class TuyaAdapterTests(unittest.TestCase):
         probe = base64.b64decode(paints[0])
         self.assertEqual(probe[:5], bytes.fromhex("0001011401"))  # app-grammar stroke
         self.assertEqual(probe[4], 1)
+
+    def _presence(self, address, age=0.0):
+        import time
+
+        registry = tuya_presence.PresenceRegistry()
+        registry.note_seen("d", at=time.time() - age, address=address)
+        fake = mock.Mock(Device=FakeTinytuyaDevice)
+        return (mock.patch.object(tuya_presence, "registry", registry),
+                mock.patch("lumisync.drivers.tuya_lan._require_tinytuya", return_value=fake))
+
+    def test_handle_opens_where_a_fresh_presence_beat_announces(self):
+        # The router moved the strip to a new DHCP lease; the saved IP is stale.
+        a = TuyaLightAdapter({"ip": "192.168.0.44", "device_id": "d", "local_key": "k"})
+        beat, tinytuya = self._presence("192.168.0.19")
+        with beat, tinytuya:
+            handle = a._handle()
+        self.assertEqual(handle.address, "192.168.0.19")
+        self.assertEqual(a.device["ip"], "192.168.0.19")
+
+    def test_handle_reconnects_when_the_device_moves_mid_session(self):
+        a = TuyaLightAdapter({"ip": "192.168.0.44", "device_id": "d", "local_key": "k"})
+        old = FakeTinytuyaDevice("d", address="192.168.0.44")
+        a._dev = old
+        a._last_frame = [(9, 9, 9)] * 10
+        beat, tinytuya = self._presence("192.168.0.19")
+        with beat, tinytuya:
+            handle = a._handle()
+            self.assertIs(a._handle(), handle)  # settles on the new session
+        self.assertTrue(old.closed)
+        self.assertEqual(handle.address, "192.168.0.19")
+        self.assertIsNone(a._last_frame)  # repaint every zone at the new address
+
+    def test_handle_keeps_the_saved_ip_without_a_fresh_beat(self):
+        a = TuyaLightAdapter({"ip": "192.168.0.44", "device_id": "d", "local_key": "k"})
+        current = FakeTinytuyaDevice("d", address="192.168.0.44")
+        a._dev = current
+        beat, tinytuya = self._presence("192.168.0.19", age=tuya_presence.PRESENCE_FRESH_AFTER + 5)
+        with beat, tinytuya:
+            self.assertIs(a._handle(), current)
+        self.assertFalse(current.closed)
+        self.assertEqual(a.device["ip"], "192.168.0.44")
 
     def test_missing_credentials_raise(self):
         adapter = TuyaLightAdapter({"ip": "1.2.3.4"})  # no id/key

@@ -5,7 +5,9 @@ UDP 6667 roughly every ten seconds; the vendor apps use these to show a device
 as online with a 20-second grace window. The frames are AES-128-GCM encrypted
 and decode without any account or device secret, so LumiSync mirrors the same
 behaviour passively: bind to 6667, decode the ``gwId``, remember when each
-device was last seen.
+device was last seen and which address it announced from. Routers hand these
+strips new DHCP leases, so the beat's source address is the freshest record of
+where a device lives.
 
 Frame layout (reverse engineered from the official desktop app's decoder):
 
@@ -27,7 +29,8 @@ import json
 import socket
 import threading
 import time
-from typing import Callable, Dict, Optional
+from contextlib import contextmanager
+from typing import Callable, Dict, Iterator, List, Optional
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -52,12 +55,16 @@ class PresenceRegistry:
         self._fresh_after = float(fresh_after)
         self._lock = threading.Lock()
         self._seen: Dict[str, float] = {}
+        self._addresses: Dict[str, str] = {}
 
-    def note_seen(self, device_id: str, at: Optional[float] = None) -> None:
+    def note_seen(self, device_id: str, at: Optional[float] = None,
+                  address: Optional[str] = None) -> None:
         with self._lock:
             self._seen[str(device_id)] = float(
                 time.time() if at is None else at
             )
+            if address:
+                self._addresses[str(device_id)] = str(address)
 
     def last_seen(self, device_id: str) -> Optional[float]:
         with self._lock:
@@ -73,9 +80,16 @@ class PresenceRegistry:
         age = self.age(device_id, now)
         return age is not None and age <= self._fresh_after
 
+    def address(self, device_id: str, now: Optional[float] = None) -> Optional[str]:
+        """Where the device announced itself from, while that beat is fresh."""
+        with self._lock:
+            address = self._addresses.get(str(device_id))
+        return address if address and self.is_online(device_id, now) else None
+
     def forget_all(self) -> None:
         with self._lock:
             self._seen.clear()
+            self._addresses.clear()
 
 
 class TuyaPresenceListener:
@@ -135,8 +149,11 @@ class TuyaPresenceListener:
 
     def _run(self) -> None:
         while not self._stop.is_set():
+            listener = self._socket
+            if listener is None:
+                break
             try:
-                data, address = self._socket.recvfrom(1500)
+                data, address = listener.recvfrom(1500)
             except socket.timeout:
                 continue
             except OSError:
@@ -171,7 +188,7 @@ class TuyaPresenceListener:
         device_id = payload.get("gwId") if isinstance(payload, dict) else None
         if not device_id or not isinstance(device_id, str):
             return
-        self.registry.note_seen(device_id)
+        self.registry.note_seen(device_id, address=address[0] if address else None)
         callback = self._on_seen
         if callback is not None:
             try:
@@ -183,6 +200,31 @@ class TuyaPresenceListener:
 # Process-wide singletons: one registry, one listener per process.
 registry: PresenceRegistry = PresenceRegistry()
 _listener: Optional[TuyaPresenceListener] = None
+_subscribers: List[Callable[[str, str], None]] = []
+_subscribers_lock = threading.Lock()
+
+
+def subscribe(callback: Callable[[str, str], None]) -> None:
+    """Call ``callback(device_id, address)`` for every beat (listener thread)."""
+    with _subscribers_lock:
+        if callback not in _subscribers:
+            _subscribers.append(callback)
+
+
+def unsubscribe(callback: Callable[[str, str], None]) -> None:
+    with _subscribers_lock:
+        if callback in _subscribers:
+            _subscribers.remove(callback)
+
+
+def _notify(device_id: str, address: str) -> None:
+    with _subscribers_lock:
+        callbacks = list(_subscribers)
+    for callback in callbacks:
+        try:
+            callback(device_id, address)
+        except Exception:
+            pass
 
 
 def start_presence_listener() -> bool:
@@ -190,7 +232,7 @@ def start_presence_listener() -> bool:
     global _listener
     if _listener is not None and _listener.started.is_set():
         return True
-    _listener = TuyaPresenceListener(registry)
+    _listener = TuyaPresenceListener(registry, on_seen=_notify)
     return _listener.start()
 
 
@@ -201,6 +243,23 @@ def stop_presence_listener() -> None:
         _listener = None
 
 
+@contextmanager
+def released_port() -> Iterator[None]:
+    """Free UDP 6667 for a tinytuya scan, then resume listening.
+
+    tinytuya binds the port without SO_REUSEADDR, which Windows refuses while
+    this listener holds it (WinError 10048): every Tuya LAN search failed.
+    """
+    running = _listener is not None and _listener.started.is_set()
+    if running:
+        stop_presence_listener()
+    try:
+        yield
+    finally:
+        if running:
+            start_presence_listener()
+
+
 def is_device_online(device_id: str) -> bool:
     """Whether a fresh presence beat for this device has arrived recently."""
     return registry.is_online(device_id)
@@ -209,3 +268,8 @@ def is_device_online(device_id: str) -> bool:
 def presence_age(device_id: str) -> Optional[float]:
     """Seconds since the last beat, or None when never seen."""
     return registry.age(device_id)
+
+
+def presence_address(device_id: str) -> Optional[str]:
+    """The address of a fresh beat, or None when unseen or stale."""
+    return registry.address(device_id)

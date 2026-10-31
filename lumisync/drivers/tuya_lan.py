@@ -37,11 +37,12 @@ import re
 import select
 import threading
 import time
+from collections.abc import Mapping, Sequence
 from typing import Any, Dict, List, Optional
 
 from ..device import DeviceLike
 from .base import RGB, DeviceCapabilities, TransportAdapter
-from . import tuya_aoi
+from . import tuya_aoi, tuya_presence
 from ..accounts.secrets import local_key_for
 from ..accounts.tuya import code_for, dp_layout, paint_dp, value_range
 from ..utils.colors import resample_colors_to_count
@@ -115,11 +116,14 @@ def encode_colour(r: int, g: int, b: int, *, schema: str = "hsv") -> str:
 def decode_colour(colour: str, *, schema: str = "hsv") -> RGB:
     """Decode a Tuya ``colour_data`` hex string back into 0-255 RGB."""
     if _colour_mode(schema) == "legacy":
-        return tuple(int(colour[i:i + 2], 16) for i in (0, 2, 4))
+        return (
+            int(colour[0:2], 16),
+            int(colour[2:4], 16),
+            int(colour[4:6], 16),
+        )
     h, s, v = (int(colour[i:i + 4], 16) for i in (0, 4, 8))
-    return tuple(
-        round(c * 255) for c in colorsys.hsv_to_rgb(h / 360, s / 1000, v / 1000)
-    )
+    red, green, blue = colorsys.hsv_to_rgb(h / 360, s / 1000, v / 1000)
+    return (round(red * 255), round(green * 255), round(blue * 255))
 
 
 def encode_brightness(percent: int, *, schema: str = "hsv") -> int:
@@ -144,14 +148,14 @@ def encode_temperature(kelvin: int, min_k: int, max_k: int, *, schema: str = "hs
     return round(frac * top)
 
 
-def dp_schema(device: Dict[str, Any]) -> Dict[str, int]:
+def dp_schema(device: Mapping[str, Any]) -> Dict[str, int]:
     """Return the DP index map for a device (layout 'v1' | 'v2' by DP ids)."""
     defaults = DP_V1 if dp_layout(device) == "v1" else DP_V2
     overrides = device.get("dp_map")
     return {**defaults, **{key: int(value) for key, value in overrides.items() if key in defaults}} if isinstance(overrides, dict) else defaults
 
 
-def colour_schema(device: Dict[str, Any]) -> str:
+def colour_schema(device: Mapping[str, Any]) -> str:
     """'hsv' | 'legacy' colour encoding for this device.
 
     ``colour_format`` on the descriptor wins; modern DP-numbered devices (DP
@@ -163,7 +167,7 @@ def colour_schema(device: Dict[str, Any]) -> str:
     return "legacy" if dp_layout(device) == "v1" else "hsv"
 
 
-def build_color_command(device: Dict[str, Any], r: int, g: int, b: int) -> Dict[int, Any]:
+def build_color_command(device: Mapping[str, Any], r: int, g: int, b: int) -> Dict[int, Any]:
     """DP payload that switches a light to colour mode and sets ``(r,g,b)``."""
     dp = dp_schema(device)
     schema = colour_schema(device)
@@ -230,7 +234,7 @@ def encode_paint_all(r: int, g: int, b: int, *, zones: int = 20) -> str:
     return base64.b64encode(bytes.fromhex(hexstr)).decode("ascii")
 
 
-def encode_paint_single(indexes: List[int], r: int, g: int, b: int, *,
+def encode_paint_single(indexes: Sequence[int], r: int, g: int, b: int, *,
                         zones: int = 20, effect: int = 1) -> str:
     """Paint one colour across the given 0-based zone indexes (single mode).
 
@@ -256,7 +260,7 @@ def encode_paint_single(indexes: List[int], r: int, g: int, b: int, *,
     return base64.b64encode(bytes.fromhex(hexstr)).decode("ascii")
 
 
-def encode_paint_clear(indexes: List[int], *, zones: int = 20) -> str:
+def encode_paint_clear(indexes: Sequence[int], *, zones: int = 20) -> str:
     """Clear painting on the given zone indexes (smear mode 'clear')."""
     body = []
     for index in indexes:
@@ -343,29 +347,39 @@ def reduce_palette(colors: List[RGB], limit: int = 5) -> List[RGB]:
     fast, continuous motion on the paint DP. Colours always come from the
     input frame, so palettes stay true to the screen content.
     """
-    colors = [(int(c[0]), int(c[1]), int(c[2])) for c in colors]
-    limit = max(1, min(int(limit), len(colors)))
-    distinct = list(dict.fromkeys(colors))
+    palette: List[RGB] = [(int(c[0]), int(c[1]), int(c[2])) for c in colors]
+    limit = max(1, min(int(limit), len(palette)))
+    distinct: List[RGB] = list(dict.fromkeys(palette))
     if len(distinct) <= limit:
-        return colors
+        return palette
     # Seed centres with an even sample across the run (ordered by luminance).
     ordered = sorted(distinct, key=lambda c: c[0] * 299 + c[1] * 587 + c[2] * 114)
     step = max(1, len(ordered) // limit)
-    centres = [ordered[min(len(ordered) - 1, i * step)] for i in range(limit)]
+    centres: List[RGB] = [
+        ordered[min(len(ordered) - 1, i * step)] for i in range(limit)
+    ]
     for _ in range(3):
-        buckets = [[] for _ in centres]
+        buckets: List[List[RGB]] = [[] for _ in centres]
         for colour in ordered:
-            best = min(range(len(centres)),
-                       key=lambda i: sum((a - b) ** 2 for a, b in zip(colour, centres[i])))
-            buckets[best].append(colour)
+            best_index = min(
+                range(len(centres)),
+                key=lambda i: sum(
+                    (a - b) ** 2 for a, b in zip(colour, centres[i])
+                ),
+            )
+            buckets[best_index].append(colour)
         centres = [
-            tuple(sum(c[ch] for c in bucket) // len(bucket) for ch in range(3))
+            (
+                sum(c[0] for c in bucket) // len(bucket),
+                sum(c[1] for c in bucket) // len(bucket),
+                sum(c[2] for c in bucket) // len(bucket),
+            )
             if bucket else centres[i]
             for i, bucket in enumerate(buckets)
         ]
     # Snap each zone to the nearest centre, then to the frame colour nearest
     # that centre so painted colours stay true RGB values from the screen.
-    snapped = []
+    snapped: List[RGB] = []
     for colour in colors:
         best = min(centres, key=lambda c: sum((a - b) ** 2 for a, b in zip(colour, c)))
         candidate = min(distinct, key=lambda c: sum((a - b) ** 2 for a, b in zip(c, best)))
@@ -576,11 +590,36 @@ class TuyaLightAdapter(TransportAdapter):
 
     # -- transport plumbing -------------------------------------------------
 
-    def _handle(self):
-        if self._dev is not None:
-            return self._dev
+    def _address(self) -> Optional[str]:
+        """Where the device lives now: a fresh presence beat beats the saved IP.
 
-        ip = self.device.get("ip")
+        Routers hand LSC strips new DHCP leases, and the strip keeps announcing
+        itself on UDP 6667 from wherever it landed. Following the beat keeps
+        commands and sync frames from timing out against the old address.
+        """
+        saved = self.device.get("ip")
+        identity = self._aoi_identity()
+        seen = tuya_presence.presence_address(identity) if identity else None
+        if not seen or seen == saved:
+            return saved
+        logger.info("%s now announces from %s (saved %s)", identity, seen, saved)
+        try:
+            self.device["ip"] = seen
+        except TypeError:
+            pass
+        return seen
+
+    def _handle(self):
+        ip = self._address()
+        if self._dev is not None:
+            current = getattr(self._dev, "address", None)
+            if not ip or not isinstance(current, str) or current == ip:
+                return self._dev
+            # The device moved: drop the session to the old address and repaint
+            # every zone on the new one.
+            self.close()
+            self._last_frame = None
+
         dev_id = self.device.get("device_id") or self.device.get("devId")
         local_key = local_key_for(self.device)
         if not (ip and dev_id and local_key):
@@ -614,8 +653,11 @@ class TuyaLightAdapter(TransportAdapter):
         if paint_dp(self.device) is None and self._paint_dp is None:
             return 1
         for key in ("segment_count_override", "segmentCountOverride"):
+            raw_count = self.device.get(key)
+            if raw_count is None:
+                continue
             try:
-                count = int(self.device.get(key))
+                count = int(raw_count)
             except (TypeError, ValueError):
                 continue
             if count > 0:
@@ -769,7 +811,7 @@ class TuyaLightAdapter(TransportAdapter):
         schema = colour_schema(self.device)
         low, high = value_range(self.device, "temperature", (0, 255) if schema == "legacy" else (0, 1000))
         value = round(low + (high - low) * (_clamp(kelvin, cap.color_temp_min, cap.color_temp_max) - cap.color_temp_min) / (cap.color_temp_max - cap.color_temp_min))
-        command = {dp["temperature"]: value}
+        command: Dict[int, Any] = {dp["temperature"]: value}
         if "tuya_functions" not in self.device or code_for(self.device, "mode"):
             command[dp["mode"]] = "white"
         with self._lock:
