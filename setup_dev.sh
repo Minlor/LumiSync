@@ -1,24 +1,23 @@
 #!/bin/bash
 # LumiSync Development Setup Script
-# This script builds and installs LumiSync in development/editable mode
+# Installs the locked development environment with uv.
 
 set -e  # Exit on error
 
 echo "=== LumiSync Development Setup ==="
 
-# Check if we're in a virtual environment
-if [ -z "$VIRTUAL_ENV" ]; then
-    echo "Warning: No virtual environment detected. Consider activating one first."
+if ! command -v uv >/dev/null 2>&1; then
+    echo "uv is required. Install it from https://docs.astral.sh/uv/"
+    exit 1
 fi
 
-# Clean previous builds
+# Clean previous build output; the uv-managed .venv is kept and updated.
 echo "Cleaning previous builds..."
 rm -rf build/ dist/ *.egg-info/
 
-# Install in editable mode with dependencies
-echo "Installing in editable mode..."
-python -m pip install -e .
+echo "Installing the locked environment..."
+uv sync --frozen --group dev
 
 echo ""
 echo "=== Setup Complete ==="
-echo "You can now run 'lumisync' to start the application."
+echo "Run 'uv run lumisync' to start the application."

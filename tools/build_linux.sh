@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Build a Linux AppImage of LumiSync.
 #
-# Steps: create a build venv, install the app + PyInstaller, build the onedir
-# bundle from the shared spec, assemble an AppDir, and pack it with
-# appimagetool into dist/LumiSync-x86_64.AppImage.
+# Steps: create a locked build venv with uv, build the onedir bundle from the
+# shared spec, assemble an AppDir, and pack it with appimagetool into
+# dist/LumiSync-x86_64.AppImage.
 #
 # Env vars:
 #   PYTHON=python3.12   interpreter to build with (default: python3)
@@ -26,21 +26,23 @@ APPDIR="$BUILD/LumiSync.AppDir"
 
 step() { printf '\n==> %s\n' "$1"; }
 
-step "Creating build virtualenv"
+step "Installing the locked build environment"
+if ! command -v uv >/dev/null 2>&1; then
+    echo "uv is required for reproducible builds. See https://docs.astral.sh/uv/" >&2
+    exit 1
+fi
 rm -rf "$VENV"
-"$PYTHON" -m venv "$VENV"
-# shellcheck disable=SC1091
-. "$VENV/bin/activate"
-python -m pip install --upgrade pip wheel
-python -m pip install -e "$ROOT" pyinstaller
+UV_PROJECT_ENVIRONMENT="$VENV" uv sync \
+    --frozen --no-dev --project "$ROOT" --group build --python "$PYTHON"
+PY="$VENV/bin/python"
 
 if [ "${RUN_TESTS:-0}" = "1" ]; then
     step "Running unit tests"
-    QT_QPA_PLATFORM=offscreen python -m unittest discover -s "$ROOT/tests"
+    QT_QPA_PLATFORM=offscreen "$PY" -m unittest discover -s "$ROOT/tests"
 fi
 
 step "Building PyInstaller onedir bundle"
-python -m PyInstaller \
+"$PY" -m PyInstaller \
     --noconfirm --clean \
     --distpath "$DIST" \
     --workpath "$BUILD/pyinstaller" \

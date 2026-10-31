@@ -136,16 +136,20 @@ pip install git+https://github.com/Minlor/LumiSync.git
 ```bash
 git clone https://github.com/Minlor/LumiSync.git
 cd LumiSync
-pip install -e .
+uv sync --frozen --group dev
+uv run lumisync
 ```
+
+`uv.lock` is committed so every checkout and release build resolves the same
+dependency versions.
 
 ### Prebuilt downloads
 
 - **Windows** — a portable `.zip` and a single-file `.exe` are attached to each
   [GitHub release](https://github.com/Minlor/LumiSync/releases).
 - **Linux** — an `x86_64` **AppImage** is attached to each release; `chmod +x`
-  it and run. Build it yourself with `tools/build_linux.sh` (needs Python 3.12+
-  and the Qt X11 runtime libraries listed in
+  it and run. Build it yourself with `tools/build_linux.sh` (needs Python 3.12+,
+  `uv`, and the Qt X11 runtime libraries listed in
   [the Linux build workflow](.github/workflows/linux-release.yaml)). The
   AppImage requires glibc 2.35 or newer (Ubuntu 22.04+). Linux releases are
   checked by opening the packaged GUI on X11 in a clean Ubuntu 22.04 runtime.

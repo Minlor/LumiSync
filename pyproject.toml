@@ -58,6 +58,40 @@ target-version = "py311"
 # widened. These are the rules the project has enforced all along.
 select = ["E4", "E7", "E9", "F"]
 
+# Reproducible build/test tooling. `uv sync --frozen --group build` installs
+# the exact PyInstaller version from uv.lock instead of "whatever pip finds".
+[dependency-groups]
+build = ["pyinstaller>=6.16"]
+dev = [
+  "pyright>=1.1.400",
+  "ruff>=0.11",
+]
+
+[tool.pyright]
+typeCheckingMode = "basic"
+pythonVersion = "3.11"
+# Start with the typed core (device model, settings, sync session, transports).
+# The Qt views and vendor account clients still rely heavily on dynamic
+# attributes; bring them in file-by-file once they are annotated.
+include = [
+  "lumisync/device.py",
+  "lumisync/devices.py",
+  "lumisync/connection.py",
+  "lumisync/groups.py",
+  "lumisync/led_mapping.py",
+  "lumisync/lumisync.py",
+  "lumisync/config",
+  "lumisync/sync/processing.py",
+  "lumisync/sync/session.py",
+  "lumisync/sync/streaming.py",
+  "lumisync/drivers/base.py",
+  "lumisync/drivers/govee_lan.py",
+  "lumisync/drivers/idotmatrix_ble.py",
+  "lumisync/drivers/pool.py",
+  "lumisync/drivers/registry.py",
+]
+exclude = ["**/__pycache__"]
+
 [tool.setuptools.packages.find]
 include = ["lumisync*"]
 

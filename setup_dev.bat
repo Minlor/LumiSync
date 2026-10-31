@@ -1,31 +1,24 @@
 @echo off
 REM LumiSync Development Setup Script
-REM This script builds and installs LumiSync in development/editable mode
+REM Installs the locked development environment with uv.
 
 echo === LumiSync Development Setup ===
 
-REM Check for virtual environment
-if not defined VIRTUAL_ENV (
-    echo Warning: No virtual environment detected. Consider activating one first.
+where uv >nul 2>nul
+if errorlevel 1 (
+    echo uv is required. Install it from https://docs.astral.sh/uv/
+    exit /b 1
 )
 
-REM Try to activate common venv locations
-if exist .venv\Scripts\activate.bat (
-    call .venv\Scripts\activate.bat
-) else if exist venv\Scripts\activate.bat (
-    call venv\Scripts\activate.bat
-)
-
-REM Clean previous builds
+REM Clean previous build output; the uv-managed .venv is kept and updated.
 echo Cleaning previous builds...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
 if exist *.egg-info rmdir /s /q *.egg-info
 
-REM Install in editable mode with dependencies
-echo Installing in editable mode...
-python -m pip install -e .
+echo Installing the locked environment...
+uv sync --frozen --group dev
 
 echo.
 echo === Setup Complete ===
-echo You can now run 'lumisync' to start the application.
+echo Run 'uv run lumisync' to start the application.

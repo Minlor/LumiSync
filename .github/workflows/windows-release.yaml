@@ -16,19 +16,16 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v5
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.13"
-          # The build script installs into its own venv, but pip's download
-          # cache is user-wide, so this still skips re-downloading the large
-          # PySide6 / numpy / opencv wheels.
-          cache: pip
-          cache-dependency-path: pyproject.toml
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
       - name: Build Windows artifacts
         shell: pwsh
-        run: .\tools\build_windows.ps1 -Clean -RunTests -PythonCommand python -PythonVersion ""
+        run: .\tools\build_windows.ps1 -Clean -RunTests -PythonVersion "3.13"
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v7

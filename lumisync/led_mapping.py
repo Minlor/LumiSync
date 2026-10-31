@@ -36,7 +36,7 @@ def clamp_zone_count(zone_count: int) -> int:
 
 def sanitize_aspect_ratio(aspect_ratio: float | int | None) -> float:
     try:
-        ratio = float(aspect_ratio)
+        ratio = float(aspect_ratio)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return DEFAULT_ASPECT_RATIO
     if ratio <= 0:
@@ -46,7 +46,7 @@ def sanitize_aspect_ratio(aspect_ratio: float | int | None) -> float:
 
 def clamp_capture_depth(capture_depth: float | int | None) -> float:
     try:
-        depth = float(capture_depth)
+        depth = float(capture_depth)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return DEFAULT_CAPTURE_DEPTH
     return max(MIN_CAPTURE_DEPTH, min(MAX_CAPTURE_DEPTH, depth))

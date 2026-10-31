@@ -2,8 +2,10 @@
 param(
     [switch]$Clean,
     [switch]$RunTests,
+    # Kept for workflow compatibility; the build itself is driven by uv.
     [string]$PythonCommand = "py",
-    [string]$PythonVersion = "-3.13"
+    [string]$PythonVersion = "3.13",
+    [string]$UvCommand = "uv"
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,18 +59,6 @@ function Invoke-Checked {
     }
 }
 
-function Invoke-BasePython {
-    param([string[]]$Arguments)
-
-    if ([string]::IsNullOrWhiteSpace($PythonVersion)) {
-        Invoke-Checked $PythonCommand $Arguments
-    }
-    else {
-        $allArguments = @($PythonVersion) + $Arguments
-        Invoke-Checked $PythonCommand $allArguments
-    }
-}
-
 function Invoke-SmokeCheck {
     param([string]$ExePath)
 
@@ -113,15 +103,28 @@ if ($Clean) {
     Remove-RepoPath $OnefileExe
 }
 
-Write-Step "Creating isolated build environment"
-if (-not (Test-Path $VenvPython)) {
-    New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
-    Invoke-BasePython @("-m", "venv", $VenvDir)
+if (-not (Get-Command $UvCommand -ErrorAction SilentlyContinue)) {
+    throw "uv is required for reproducible builds. Install it from https://docs.astral.sh/uv/ and rerun."
 }
 
-Write-Step "Installing build dependencies"
-Invoke-Checked $VenvPython @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
-Invoke-Checked $VenvPython @("-m", "pip", "install", "-e", $Root, "pyinstaller")
+Write-Step "Installing the locked build environment"
+New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
+$previousEnvironment = $env:UV_PROJECT_ENVIRONMENT
+$env:UV_PROJECT_ENVIRONMENT = $VenvDir
+try {
+    $syncArguments = @("sync", "--frozen", "--no-dev", "--project", $Root, "--group", "build")
+    $python = $PythonVersion -replace '^-', ''
+    if (-not [string]::IsNullOrWhiteSpace($python)) {
+        $syncArguments += @("--python", $python)
+    }
+    Invoke-Checked $UvCommand $syncArguments
+}
+finally {
+    $env:UV_PROJECT_ENVIRONMENT = $previousEnvironment
+}
+if (-not (Test-Path $VenvPython)) {
+    throw "uv did not create the expected build environment at $VenvDir"
+}
 
 if ($RunTests) {
     Write-Step "Running unit tests"
