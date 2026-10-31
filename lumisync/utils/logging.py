@@ -6,24 +6,101 @@ This module provides logging functionality for the application.
 import os
 import logging
 import datetime
+import sys
+import tempfile
+import time
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
 # Dictionary to store loggers so we don't create duplicates
 _loggers = {}
+_logs_directory = None
+_pruned = False
+
+_LOG_MAX_AGE_DAYS = 14
+_LOG_MAX_FILES = 40
+_LOG_MAX_BYTES = 50 * 1024 * 1024
+
+
+def _running_under_tests() -> bool:
+    if os.environ.get("LUMISYNC_TESTING"):
+        return True
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    executable = str(sys.argv[0] if sys.argv else "").lower()
+    return any(token in executable for token in ("pytest", "py.test", "unittest"))
+
 
 def get_logs_directory():
     """Get or create the logs directory."""
-    # Get user's home directory
-    home_dir = str(Path.home())
+    global _logs_directory
+    if _logs_directory is not None:
+        return _logs_directory
 
-    # Create logs directory path
-    logs_dir = os.path.join(home_dir, ".lumisync", "logs")
+    override = os.environ.get("LUMISYNC_LOG_DIR")
+    if override:
+        logs_dir = Path(override)
+    elif _running_under_tests():
+        # Keep test runs out of the developer's real ~/.lumisync/logs folder.
+        logs_dir = (
+            Path(tempfile.gettempdir())
+            / "lumisync-tests"
+            / f"pid-{os.getpid()}"
+        )
+    else:
+        logs_dir = Path.home() / ".lumisync" / "logs"
 
-    # Create the directory if it doesn't exist
-    os.makedirs(logs_dir, exist_ok=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    _logs_directory = str(logs_dir)
+    return _logs_directory
 
-    return logs_dir
+
+def _prune_logs(logs_dir: str) -> None:
+    """Keep the log directory bounded without touching unrelated files."""
+    global _pruned
+    if _pruned:
+        return
+    _pruned = True
+    directory = Path(logs_dir)
+    try:
+        files = [
+            path
+            for path in directory.iterdir()
+            if path.is_file()
+            and (
+                path.name.startswith("lumisync")
+                or path.name.startswith("settings")
+            )
+            and (path.suffix == ".log" or ".log." in path.name)
+        ]
+    except OSError:
+        return
+
+    cutoff = time.time() - _LOG_MAX_AGE_DAYS * 86400
+    kept = []
+    for path in files:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if stat.st_mtime < cutoff:
+            try:
+                path.unlink()
+                continue
+            except OSError:
+                pass
+        kept.append((stat.st_mtime, stat.st_size, path))
+
+    kept.sort(reverse=True)
+    total = 0
+    for index, (_mtime, size, path) in enumerate(kept):
+        total += size
+        if index < _LOG_MAX_FILES and total <= _LOG_MAX_BYTES:
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
 def setup_logger(name, level=logging.INFO, max_size=10485760, backup_count=5):
     """
@@ -52,6 +129,7 @@ def setup_logger(name, level=logging.INFO, max_size=10485760, backup_count=5):
 
     # Get logs directory
     logs_dir = get_logs_directory()
+    _prune_logs(logs_dir)
 
     # Create a formatter
     formatter = logging.Formatter(

@@ -2,7 +2,6 @@
 
 import datetime
 import faulthandler
-import os
 import re
 import sys
 import threading
@@ -29,7 +28,9 @@ def install_crash_reporting(logger) -> None:
         return
     date = datetime.date.today().isoformat()
     try:
-        path = Path(get_logs_directory()) / f"lumisync_fault_{date}_{os.getpid()}.log"
+        # One file per day instead of one per launch, so fault diagnostics do
+        # not add dozens of tiny files to the logs folder.
+        path = Path(get_logs_directory()) / f"lumisync_fault_{date}.log"
         _fault_file = path.open("a", encoding="utf-8", buffering=1)
         _fault_file.write(f"LumiSync crash diagnostics started {datetime.datetime.now().isoformat()}\n")
         faulthandler.enable(file=_fault_file, all_threads=True)
@@ -38,7 +39,12 @@ def install_crash_reporting(logger) -> None:
         logger.warning("Could not enable native crash diagnostics: %s", type(exc).__name__)
 
     def qt_message(kind, _context, message):
-        logger.warning("Qt %s: %s", kind.name, _safe_message(message))
+        text = _safe_message(message)
+        # A recurring Windows COM warning during window.show() does not affect
+        # the running app; logging it every launch buried real faults.
+        if "0x8001010d" in text.lower():
+            return
+        logger.warning("Qt %s: %s", kind.name, text)
 
     _qt_handler = qt_message
     qInstallMessageHandler(_qt_handler)
