@@ -4,14 +4,15 @@ This module handles device discovery and management.
 """
 
 import copy
+import datetime
 import json
 import os
 from pathlib import Path
 import shutil
-import socket
 import sys
+import tempfile
 import time
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from . import connection
 from .connection import connect, listen as connection_listen, parse
@@ -25,9 +26,110 @@ logger = get_logger('lumisync_devices')
 # Store a global server socket that can be reused
 _global_server = None
 
+# One-shot warning for the GUI/CLI after a settings file was recovered.
+_settings_warning: Optional[str] = None
+
 
 def _empty_settings() -> Dict[str, Any]:
     return {"devices": [], "selectedDevice": 0, "time": time.time()}
+
+
+def _remember_settings_warning(message: str) -> None:
+    global _settings_warning
+    _settings_warning = message
+    logger.error(message)
+
+
+def consume_settings_warning() -> Optional[str]:
+    """Return (and clear) a warning produced while loading settings."""
+    global _settings_warning
+    message, _settings_warning = _settings_warning, None
+    return message
+
+
+def _read_settings_file(path: Path) -> Dict[str, Any]:
+    """Read a settings object, rejecting invalid UTF-8 and non-object JSON."""
+    with path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError("settings root is not a JSON object")
+    return data
+
+
+def _quarantine_settings(path: Path) -> Optional[Path]:
+    """Move a damaged settings file aside instead of letting a save erase it."""
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = path.with_name(f"{path.name}.corrupt-{stamp}")
+    counter = 1
+    while target.exists():
+        target = path.with_name(f"{path.name}.corrupt-{stamp}-{counter}")
+        counter += 1
+    try:
+        path.replace(target)
+        return target
+    except OSError as exc:
+        logger.warning("Could not set damaged settings aside: %s", exc)
+        return None
+
+
+def _recover_saved_settings(path: Path, reason: str) -> Dict[str, Any]:
+    """Restore the last good backup after finding a damaged settings file."""
+    damaged = _quarantine_settings(path)
+    backup_path = path.with_name(path.name + ".bak")
+    restored = None
+    if backup_path.is_file():
+        try:
+            restored = _read_settings_file(backup_path)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            restored = None
+
+    location = f" The damaged file was kept as {damaged.name}." if damaged else ""
+    if restored is not None:
+        _remember_settings_warning(
+            f"Your settings file was damaged ({reason}). LumiSync restored the "
+            f"last good backup.{location}"
+        )
+        return restored
+
+    _remember_settings_warning(
+        f"Your settings file was damaged ({reason}) and no usable backup was "
+        f"found.{location} Saved devices will need to be added or discovered again."
+    )
+    return _empty_settings()
+
+
+def _backup_good_settings(path: Path) -> None:
+    """Keep a backup copy of the last settings file that parsed successfully."""
+    if not path.is_file():
+        return
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            json.load(handle)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        # Never overwrite a good backup with a damaged file.
+        return
+
+    backup = path.with_name(path.name + ".bak")
+    temporary = None
+    try:
+        fd, temporary = tempfile.mkstemp(
+            prefix=backup.name + ".", suffix=".tmp", dir=path.parent
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            with path.open("r", encoding="utf-8") as source:
+                shutil.copyfileobj(source, output)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, backup)
+        temporary = None
+    except OSError as exc:
+        logger.warning("Could not back up settings to %s: %s", backup, exc)
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
 
 
 def _looks_like_lumisync_settings(path: Path) -> bool:
@@ -35,7 +137,7 @@ def _looks_like_lumisync_settings(path: Path) -> bool:
     try:
         with path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, ValueError):
         return False
     return isinstance(data, dict) and isinstance(data.get("devices", []), list)
 
@@ -110,15 +212,34 @@ def settings_path(filename: str | os.PathLike[str] = "settings.json") -> Path:
 
 
 def _load_saved_settings(filename: str | os.PathLike[str] = "settings.json") -> Dict[str, Any]:
-    """Load persisted devices without triggering a network discovery."""
+    """Load persisted devices without triggering a network discovery.
+
+    A damaged file is moved aside and the last good ``.bak`` is restored rather
+    than silently returning an empty inventory that the next save would make
+    permanent.
+    """
     path = settings_path(filename)
     try:
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return _empty_settings()
-
-    if not isinstance(data, dict):
+        data = _read_settings_file(path)
+    except FileNotFoundError:
+        # A missing settings.json may follow a quarantine or an accidental
+        # delete. Recover the last good backup instead of inventing an empty
+        # inventory that the next save would make permanent.
+        backup_path = path.with_name(path.name + ".bak")
+        if not backup_path.is_file():
+            return _empty_settings()
+        try:
+            data = _read_settings_file(backup_path)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            return _empty_settings()
+        _remember_settings_warning(
+            f"Your settings file was missing. LumiSync restored "
+            f"{backup_path.name}."
+        )
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+        data = _recover_saved_settings(path, str(exc))
+    except OSError as exc:
+        _remember_settings_warning(f"Could not read settings from {path}: {exc}")
         return _empty_settings()
 
     devices = data.get("devices")
@@ -308,7 +429,7 @@ def discover_lan_devices(
         settings["lastDiscoveryDevices"] = discovered_devices
     return settings
 
-def request() -> socket.socket:
+def request() -> connection.LanSocket:
     """Request device data from the network."""
     global _global_server
 
@@ -324,7 +445,7 @@ def request() -> socket.socket:
     _global_server = server
     return server
 
-def listen(server: socket.socket) -> List[str]:
+def listen(server: connection.LanSocket) -> List[str]:
     """Listen for device responses."""
     try:
         logger.info("Listening for device responses")
@@ -351,7 +472,7 @@ def parseMessages(messages: List[str]) -> Dict[str, Any]:
     return settings
 
 def writeJSON(settings: Dict[str, Any]) -> None:
-    """Write settings to a JSON file."""
+    """Write settings to a JSON file, keeping the last good copy as ``.bak``."""
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     logger.info("Writing settings to %s", path)
@@ -362,7 +483,12 @@ def writeJSON(settings: Dict[str, Any]) -> None:
         protect_device(as_device(device).to_dict())
         for device in settings.get("devices", [])
     ]
+    backup = path.with_name(path.name + ".bak")
+    _backup_good_settings(path)
     write_json(protected, str(path))
+    if not backup.exists():
+        # First save: keep a recovery copy from the very beginning.
+        _backup_good_settings(path)
 
 def update_settings(
     updates: Dict[str, Any],
@@ -380,38 +506,34 @@ def get_data(*, refresh: bool = True) -> Dict[str, Any]:
     path = settings_path()
     if not refresh:
         return _load_saved_settings(path)
+
+    logger.info("Attempting to load device data from %s", path)
+    had_file = path.exists()
+    data = _load_saved_settings(path)
     try:
-        logger.info("Attempting to load device data from %s", path)
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
+        saved_at = float(data.get("time", 0) or 0)
+    except (TypeError, ValueError):
+        saved_at = 0.0
 
-        if time.time() - data.get("time", 0) > 86400:
-            logger.info("Device data is older than 24 hours, requesting new data...")
-            print("Device data is older than 24 hours, requesting new data...")
-            try:
-                return discover_lan_devices(preserve_existing=True)
-            except Exception as e:
-                logger.error(f"Discovery refresh failed: {str(e)}", exc_info=True)
-                return _normalize_settings(data)
-        normalized = _normalize_settings(data)
-        logger.info(
-            "Loaded data with %s device(s) from %s",
-            len(normalized["devices"]),
-            path,
-        )
-        return normalized
+    # A missing (or quarantined) file with no recovered devices must trigger the
+    # first discovery, exactly like the old FileNotFoundError path did.
+    if (not had_file or not path.exists()) and not data.get("devices"):
+        should_discover = True
+    else:
+        should_discover = time.time() - saved_at > 86400
 
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        error_msg = f"Settings.json not found or invalid, requesting new data... ({str(e)})"
-        print(error_msg)
-        logger.info(error_msg)
+    if should_discover:
+        logger.info("Device data is older than 24 hours, requesting new data...")
+        print("Device data is older than 24 hours, requesting new data...")
         try:
-            return discover_lan_devices(preserve_existing=False)
-        except Exception as exc:
-            logger.error(f"Initial discovery failed: {str(exc)}", exc_info=True)
-            return _empty_settings()
-    except Exception as e:
-        error_msg = f"Error getting device data: {str(e)}"
-        logger.error(error_msg, exc_info=True)
-        # Return empty data as fallback
-        return {"devices": [], "selectedDevice": 0, "time": time.time()}
+            return discover_lan_devices(preserve_existing=True)
+        except Exception as e:
+            logger.error(f"Discovery refresh failed: {str(e)}", exc_info=True)
+
+    normalized = _normalize_settings(data)
+    logger.info(
+        "Loaded data with %s device(s) from %s",
+        len(normalized["devices"]),
+        path,
+    )
+    return normalized
