@@ -12,7 +12,7 @@ from __future__ import annotations
 import platform
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from .. import led_mapping, utils
 from ..config.options import AUDIO
@@ -26,6 +26,19 @@ RGB = Tuple[int, int, int]
 MappingProvider = Callable[[int, float], List[led_mapping.NormalizedRect]]
 StatusCallback = Callable[[str], None]
 AutoStateCallback = Callable[[str, Tuple[int, int, int]], None]
+
+# A device that recovers and then fails the same way again is reported at most
+# this often, so a flaky link cannot flood the error toasts.
+REPEAT_SEND_ERROR_AFTER = 30.0
+_SENDER_STOPPED = "the frame sender stopped."
+
+
+class _SendFailure(NamedTuple):
+    """The last send error reported for one device."""
+
+    message: str
+    reported_at: float
+    sent_at_failure: Optional[int]
 
 
 def _default_mapping(segment_count: int, aspect_ratio: float) -> List[led_mapping.NormalizedRect]:
@@ -70,7 +83,7 @@ class SyncSession:
         self.adapters: Dict[str, TransportAdapter] = {}
         self.senders: Dict[str, Any] = {}
         self._keys: List[Tuple[Device, str]] = []
-        self._sender_errors: Dict[str, Optional[str]] = {}
+        self._sender_errors: Dict[str, _SendFailure] = {}
 
     # --------------------------------------------------------------- public API
 
@@ -227,18 +240,27 @@ class SyncSession:
         self._keys.clear()
         self._sender_errors.clear()
 
-    def _drain_sender_errors(self) -> None:
-        """Surface per-device send failures instead of looking healthy forever."""
+    def _drain_sender_errors(self, now: Optional[float] = None) -> None:
+        """Surface each device's send failures once per failure episode.
+
+        ``last_error()`` clears on read, so an empty read only means nothing
+        failed since the last check, not that the device recovered. An episode
+        ends once a frame is sent after the failure (``sent_count`` moved on);
+        the same error is then reported again at most every
+        ``REPEAT_SEND_ERROR_AFTER`` seconds.
+        """
+        now = time.monotonic() if now is None else now
         for device, key in self._keys:
             sender = self.senders.get(key)
             if sender is None:
                 continue
             label = self._device_label(device)
+            reported = self._sender_errors.get(key)
 
-            alive = getattr(sender, "alive", True)
-            if not alive and self._sender_errors.get(key) != "stopped":
-                self._error(f"{label}: the frame sender stopped.")
-                self._sender_errors[key] = "stopped"
+            if not getattr(sender, "alive", True):
+                if reported is None or reported.message != _SENDER_STOPPED:
+                    self._error(f"{label}: {_SENDER_STOPPED}")
+                    self._sender_errors[key] = _SendFailure(_SENDER_STOPPED, now, None)
                 continue
 
             last_error = getattr(sender, "last_error", None)
@@ -248,13 +270,25 @@ class SyncSession:
                 error = last_error()
             except Exception:
                 continue
-            if error:
-                message = str(error)
-                if self._sender_errors.get(key) != message:
-                    self._error(f"{label}: {message}")
-                    self._sender_errors[key] = message
-            elif alive:
-                self._sender_errors[key] = None
+            if not error:
+                continue
+
+            message = str(error)
+            sent = getattr(sender, "sent_count", None)
+            recovered = (
+                reported is not None
+                and sent is not None
+                and sent != reported.sent_at_failure
+            )
+            if (
+                reported is None
+                or message != reported.message
+                or (recovered and now - reported.reported_at >= REPEAT_SEND_ERROR_AFTER)
+            ):
+                self._error(f"{label}: {message}")
+                self._sender_errors[key] = _SendFailure(message, now, sent)
+            else:
+                self._sender_errors[key] = reported._replace(sent_at_failure=sent)
 
     # ---------------------------------------------------------------- monitor
 

@@ -61,6 +61,9 @@ class LatestFrameSenderTests(unittest.TestCase):
             sender.close()
         self.assertEqual(error, "boom")
         self.assertEqual(frames[-1], [(2, 2, 2)])
+        # Only the second frame went through; the session uses this count to
+        # tell a recovered device from one that is still failing.
+        self.assertEqual(sender.sent_count, 1)
 
 
     def test_fast_sender_is_not_slowed_by_a_slow_co_device(self):

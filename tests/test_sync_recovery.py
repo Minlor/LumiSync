@@ -182,5 +182,64 @@ class MonitorRecoveryTests(unittest.TestCase):
         self.assertEqual(sum("boom" in message for message in errors), 1)
 
 
+class ScriptedSender:
+    """Plays back one ``(error, sent_count)`` pair per ``last_error()`` call."""
+
+    alive = True
+
+    def __init__(self, script):
+        self._script = list(script)
+        self.sent_count = 0
+
+    def last_error(self):
+        if not self._script:
+            return None
+        error, self.sent_count = self._script.pop(0)
+        return error
+
+
+class SendErrorReportingTests(unittest.TestCase):
+    def drain(self, script, step=0.1):
+        errors = []
+        session = sync_session.SyncSession(
+            "monitor",
+            [{"mac": "AA:BB", "model": "H6672", "name": "Strip"}],
+            SyncSettings(),
+            on_error=errors.append,
+        )
+        session._keys = [(session.devices[0], "strip")]
+        session.senders = {"strip": ScriptedSender(script)}
+        for tick in range(len(script)):
+            session._drain_sender_errors(now=tick * step)
+        return errors
+
+    def test_a_device_that_keeps_failing_is_reported_once(self):
+        # last_error() clears on read, so a dead device alternates between an
+        # error and an empty read. That must not count as recovering.
+        errors = self.drain([("Tuya did not answer", 0), (None, 0)] * 50)
+
+        self.assertEqual(errors, ["Strip: Tuya did not answer"])
+
+    def test_a_flaky_device_is_reported_at_most_every_repeat_interval(self):
+        # Every failure follows a successful send, 0.1 s apart, for 10 s.
+        errors = self.drain([("timed out", sent) for sent in range(100)])
+
+        self.assertEqual(errors, ["Strip: timed out"])
+
+    def test_a_device_that_recovers_and_fails_later_is_reported_again(self):
+        script = [("timed out", 0)]
+        script += [(None, sent) for sent in range(1, 400)]
+        script += [("timed out", 400)]  # 40 s later, after frames got through
+
+        errors = self.drain(script)
+
+        self.assertEqual(errors, ["Strip: timed out", "Strip: timed out"])
+
+    def test_a_different_error_is_reported_straight_away(self):
+        errors = self.drain([("timed out", 0), (None, 0), ("connection refused", 0)])
+
+        self.assertEqual(errors, ["Strip: timed out", "Strip: connection refused"])
+
+
 if __name__ == "__main__":
     unittest.main()

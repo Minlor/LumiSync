@@ -39,6 +39,7 @@ class LatestFrameSender:
         self._frame = None
         self._closed = False
         self._last_error: Optional[str] = None
+        self._sent = 0
         self._next_at = 0.0
         self._thread = threading.Thread(
             target=self._run, name="lumisync-frame-sender", daemon=True
@@ -69,6 +70,12 @@ class LatestFrameSender:
     def alive(self) -> bool:
         return self._thread.is_alive()
 
+    @property
+    def sent_count(self) -> int:
+        """How many frames have been sent successfully so far."""
+        with self._lock:
+            return self._sent
+
     # ------------------------------------------------------------------ worker
 
     def _run(self) -> None:
@@ -95,6 +102,9 @@ class LatestFrameSender:
             except Exception as exc:  # keep the stream alive; report if asked
                 with self._lock:
                     self._last_error = str(exc)
+            else:
+                with self._lock:
+                    self._sent += 1
             self._next_at = self._clock() + self._interval
 
 
