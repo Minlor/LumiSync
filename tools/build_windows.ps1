@@ -126,7 +126,9 @@ if (-not (Test-Path $VenvPython)) {
 
 if ($RunTests) {
     Write-Step "Running unit tests"
-    Invoke-Checked $VenvPython @("-m", "unittest", "discover", "-s", (Join-Path $Root "tests"))
+    # -t imports tests as a package, so tests/__init__.py installs the per-test
+    # watchdog and keeps test logs out of the user's log folder.
+    Invoke-Checked $VenvPython @("-m", "unittest", "discover", "-s", (Join-Path $Root "tests"), "-t", $Root)
 }
 
 Write-Step "Building onedir bundle (packaging smoke check)"

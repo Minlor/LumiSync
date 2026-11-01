@@ -11,6 +11,9 @@ permissions:
 jobs:
   windows-release:
     runs-on: windows-latest
+    # A hung test or build step must not hold the runner for GitHub's 6-hour
+    # default; a clean release build normally finishes well inside this.
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
