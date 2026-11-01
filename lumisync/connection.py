@@ -148,6 +148,11 @@ class _LanSocketCore:
                 data, address = self._socket.recvfrom(65535)
             except socket.timeout:
                 continue
+            except ConnectionResetError:
+                # Windows reports an ICMP "port unreachable" from an earlier
+                # send (say, to a stale device IP) on the next receive. It says
+                # nothing about this socket, so keep reading.
+                continue
             except OSError:
                 return
             with self._lock:

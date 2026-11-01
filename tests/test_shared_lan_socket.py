@@ -1,6 +1,7 @@
 """All LAN callers share one UDP 4002 socket and receive replies."""
 
 import socket
+import time
 import unittest
 
 from lumisync import connection
@@ -66,6 +67,17 @@ class SharedLanSocketTests(unittest.TestCase):
         self.send(b"three")
 
         self.assertEqual(second.recvfrom(64)[0], b"three")
+
+    def test_a_send_to_a_closed_port_does_not_stop_replies(self):
+        # Windows reports the ICMP "port unreachable" for this send as a
+        # ConnectionResetError on the next receive; the reader must survive it.
+        server = self.facade()
+        server.sendto(b"stale", ("127.0.0.1", free_udp_port()))
+        time.sleep(0.3)
+
+        self.send(b"four")
+
+        self.assertEqual(server.recvfrom(64)[0], b"four")
 
     def test_port_conflict_is_reported_instead_of_silently_sharing(self):
         holder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
