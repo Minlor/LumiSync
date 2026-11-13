@@ -1,4 +1,5 @@
 import base64
+import errno
 import json
 import platform
 import queue
@@ -11,10 +12,14 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from . import sku_catalog
 from .config.options import CONNECTION
 from .device import DeviceLike, as_device
+from .utils.logging import get_logger
+
+logger = get_logger("lumisync_devices")
 
 
 STATUS_COMMANDS = ("status", "devStatus")
 DISCOVERY_METADATA_KEYS = ("Device_Port", "devicePort")
+LISTEN_DRAIN_SECONDS = 2.0
 LAN_REQUIREMENTS_MESSAGE = (
     "Make sure the device is on the same network and LAN Control is enabled "
     "for it in Govee Home."
@@ -38,6 +43,9 @@ def _windows_udp_port_owner(port: int) -> Optional[str]:
             text=True,
             timeout=2,
             check=False,
+            # The windowed build has no console; without this flag Windows
+            # flashes one up for netstat.
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -66,6 +74,27 @@ def describe_port_conflict(
     return message
 
 
+class _PortInUse(OSError):
+    """The LAN port could not be bound (diagnosed by the caller, unlocked)."""
+
+
+# Receive errors that mean the socket itself is gone, not one bad datagram.
+_DEAD_SOCKET_ERRNOS = {
+    code
+    for code in (
+        errno.EBADF,
+        errno.ENOTSOCK,
+        getattr(errno, "WSAEBADF", 10009),
+        getattr(errno, "WSAENOTSOCK", 10038),
+    )
+    if code
+}
+# Consecutive receive errors after which an unrecognized failure is treated as
+# a dead socket (~10 s at the retry pace below).
+_MAX_READ_ERRORS = 50
+_READ_ERROR_PAUSE = 0.2
+
+
 class _LanSocketCore:
     """One UDP socket with a reader thread that fans replies out to callers.
 
@@ -78,6 +107,10 @@ class _LanSocketCore:
 
     def __init__(self, port: int, broadcast: bool) -> None:
         self.port = port
+        self.broadcast = broadcast
+        # Set when the reader found the socket unusable; consumers then move
+        # to a freshly bound core instead of sending into a closed socket.
+        self.dead = False
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         if broadcast:
             self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -92,7 +125,9 @@ class _LanSocketCore:
             self._socket.bind(("", port))
         except OSError as exc:
             self._socket.close()
-            raise OSError(describe_port_conflict(port)) from exc
+            # The netstat diagnosis (up to 2 s) runs in create_lan_socket,
+            # after the registry lock is released.
+            raise _PortInUse(f"UDP port {port} is already in use.") from exc
 
         self._socket.settimeout(0.25)
         self._lock = threading.Lock()
@@ -119,13 +154,22 @@ class _LanSocketCore:
                 self._closed = True
         if not empty:
             return
+        self._release()
+
+    def _release(self) -> None:
+        """Close the socket and drop this core from the registry, atomically.
+
+        Closing under the registry lock means a new consumer can never find
+        this core registered while its port is still bound — it either gets
+        here first or binds a fresh core on the freed port.
+        """
         with _lan_cores_lock:
+            try:
+                self._socket.close()
+            except OSError:
+                pass
             if _lan_cores.get(self.port) is self:
                 _lan_cores.pop(self.port, None)
-        try:
-            self._socket.close()
-        except OSError:
-            pass
 
     def sendto(self, data, address) -> None:
         with self._send_lock:
@@ -139,7 +183,26 @@ class _LanSocketCore:
     def getsockname(self):
         return self._socket.getsockname()
 
+    def _socket_gone(self, exc: OSError) -> bool:
+        codes = {exc.errno, getattr(exc, "winerror", None)}
+        if codes & _DEAD_SOCKET_ERRNOS:
+            return True
+        try:
+            return self._socket.fileno() < 0
+        except (OSError, ValueError):
+            return True
+
+    def _die(self) -> None:
+        """The socket is unusable: retire this core so the next caller rebinds."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self.dead = True
+        self._release()
+
     def _read_loop(self) -> None:
+        failures = 0
         while True:
             with self._lock:
                 if self._closed:
@@ -147,14 +210,32 @@ class _LanSocketCore:
             try:
                 data, address = self._socket.recvfrom(65535)
             except socket.timeout:
+                failures = 0
                 continue
             except ConnectionResetError:
                 # Windows reports an ICMP "port unreachable" from an earlier
                 # send (say, to a stale device IP) on the next receive. It says
                 # nothing about this socket, so keep reading.
                 continue
-            except OSError:
-                return
+            except OSError as exc:
+                with self._lock:
+                    if self._closed:
+                        return
+                failures += 1
+                if self._socket_gone(exc) or failures >= _MAX_READ_ERRORS:
+                    logger.warning(
+                        "LAN socket on UDP %s stopped working (%s); it will be reopened",
+                        self.port,
+                        exc,
+                    )
+                    self._die()
+                    return
+                # Network resets and adapter changes (WSAENETRESET,
+                # WSAENETDOWN, EAGAIN, ...) pass; keep the shared reader alive.
+                logger.debug("LAN socket read failed, retrying: %s", exc)
+                time.sleep(_READ_ERROR_PAUSE)
+                continue
+            failures = 0
             with self._lock:
                 consumers = list(self._consumers)
             for consumer in consumers:
@@ -173,6 +254,32 @@ class SharedLanSocket:
             maxsize=self._MAX_PENDING
         )
         self._closed = False
+        self._rebind_lock = threading.Lock()
+
+    def _live_core(self) -> _LanSocketCore:
+        """The shared core, moving to a freshly bound one if this one died.
+
+        Long-lived callers (a sync session) hold their socket for the whole
+        run; a reader that found its socket unusable must not leave them
+        sending into a closed socket until the app restarts.
+        """
+        core = self._core
+        if not core.dead or self._closed:
+            return core
+        with self._rebind_lock:
+            for _attempt in range(2):
+                if self._core is not core:
+                    break
+                try:
+                    fresh = _core_for(core.port, core.broadcast)
+                except OSError:
+                    break  # the port is taken now; sends report the closed socket
+                try:
+                    fresh.register(self)
+                except OSError:
+                    continue  # its last consumer closed meanwhile; bind again
+                self._core = fresh
+            return self._core
 
     def _deliver(self, data: bytes, address) -> None:
         if self._closed:
@@ -192,11 +299,12 @@ class SharedLanSocket:
                 pass
 
     def sendto(self, data, address) -> None:
-        self._core.sendto(data, address)
+        self._live_core().sendto(data, address)
 
     def recvfrom(self, bufsize: int):
         if self._closed:
             raise OSError("LAN socket is closed")
+        self._live_core()
         timeout = self._timeout
         try:
             data, address = self._queue.get(
@@ -222,7 +330,9 @@ class SharedLanSocket:
         if self._closed:
             return
         self._closed = True
-        self._core.unregister(self)
+        with self._rebind_lock:
+            core = self._core
+        core.unregister(self)
 
     @property
     def closed(self) -> bool:
@@ -235,6 +345,20 @@ _lan_cores: Dict[int, _LanSocketCore] = {}
 _lan_cores_lock = threading.Lock()
 
 
+def _core_for(port: int, broadcast: bool) -> _LanSocketCore:
+    """The live core for ``port``, binding a new one when there is none."""
+    try:
+        with _lan_cores_lock:
+            core = _lan_cores.get(port)
+            if core is None or core.dead:
+                core = _LanSocketCore(port, broadcast)
+                _lan_cores[port] = core
+            return core
+    except _PortInUse as exc:
+        # Diagnose (netstat, up to 2 s) without holding the registry lock.
+        raise OSError(describe_port_conflict(port)) from exc
+
+
 def create_lan_socket(
     bind_port: Optional[int] = None,
     timeout: Optional[float] = None,
@@ -245,11 +369,7 @@ def create_lan_socket(
     port = CONNECTION.default.listen_port if bind_port is None else int(bind_port)
     effective_timeout = CONNECTION.default.timeout if timeout is None else timeout
     for _attempt in range(2):
-        with _lan_cores_lock:
-            core = _lan_cores.get(port)
-            if core is None:
-                core = _LanSocketCore(port, broadcast)
-                _lan_cores[port] = core
+        core = _core_for(port, broadcast)
         consumer = SharedLanSocket(core, effective_timeout)
         try:
             core.register(consumer)
@@ -314,9 +434,12 @@ def listen(server) -> List[str]:
         messages = [message]
         print(f"Received from {address}")
         # Drain replies that arrived together without waiting another full
-        # discovery timeout.
+        # discovery timeout. The deadline caps the whole drain: a chatty
+        # network (or another app polling devices on the shared port) would
+        # otherwise keep every 0.2 s wait busy forever.
         server.settimeout(0.2)
-        while True:
+        deadline = time.monotonic() + LISTEN_DRAIN_SECONDS
+        while time.monotonic() < deadline:
             try:
                 message, address = server.recvfrom(4096)
             except (BlockingIOError, socket.timeout):
@@ -704,6 +827,10 @@ def build_segment_frame(
 ) -> bytes:
     """Build a binary segment-control frame for advanced per-zone control.
 
+    Dormant: nothing streams through it. 0xB1 with a declared length of 1 is
+    the razer on/off command (see :func:`switch_razer`), so devices do not
+    read this as a colour frame; every SKU streams via :func:`send_razer_data`.
+
     Frame layout (Govee proprietary binary protocol):
       0xBB 0x00 0x01 0xB1 <segment_count:1 byte> <R G B per segment...> <xor-checksum>
 
@@ -892,12 +1019,20 @@ def parse_status_payload(payload: Any) -> Optional[Dict[str, Any]]:
         if isinstance(payload, str):
             payload = json.loads(payload)
 
-        msg = payload.get("msg", {})
-        if msg.get("cmd") not in STATUS_COMMANDS:
+        # Anything can arrive on the shared LAN port; every level must be an
+        # object before it is read like one.
+        if not isinstance(payload, dict):
+            return None
+        msg = payload.get("msg")
+        if not isinstance(msg, dict) or msg.get("cmd") not in STATUS_COMMANDS:
             return None
 
-        data = msg.get("data", {}) or {}
+        data = msg.get("data") or {}
+        if not isinstance(data, dict):
+            return None
         color = data.get("color") or {}
+        if not isinstance(color, dict):
+            color = {}
         parsed_color = None
         if all(k in color for k in ("r", "g", "b")):
             parsed_color = (
@@ -928,40 +1063,27 @@ def query_status(
     """Query a device for its current LAN status.
 
     Recent Govee Desktop builds use `status`, while some integrations and
-    devices have used `devStatus`. Try both for firmware compatibility.
+    devices have used `devStatus`. Both are sent up front and the first valid
+    reply within the timeout wins: waiting out the whole timeout on `status`
+    first left no time for the `devStatus` fallback to be answered.
     """
     previous_timeout = server.gettimeout()
     effective_timeout = CONNECTION.default.timeout if timeout is None else timeout
     deadline = time.monotonic() + max(0.05, effective_timeout)
 
     try:
-        server.settimeout(max(0.05, effective_timeout))
-        command_index = 0
-        send(
-            server,
-            device,
-            {"msg": {"cmd": STATUS_COMMANDS[command_index], "data": {}}},
-        )
+        for command in STATUS_COMMANDS:
+            send(server, device, {"msg": {"cmd": command, "data": {}}})
 
-        while time.monotonic() < deadline:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            server.settimeout(max(0.01, remaining))
             try:
                 packet, address = server.recvfrom(4096)
             except socket.timeout:
-                command_index += 1
-                if command_index >= len(STATUS_COMMANDS):
-                    return None
-
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return None
-
-                server.settimeout(max(0.05, remaining))
-                send(
-                    server,
-                    device,
-                    {"msg": {"cmd": STATUS_COMMANDS[command_index], "data": {}}},
-                )
-                continue
+                return None
 
             # Ignore unrelated traffic. Broadcast sockets can receive stale
             # discovery or status packets from other devices.
@@ -971,7 +1093,5 @@ def query_status(
             status = parse_status_payload(packet)
             if status is not None:
                 return status
-
-        return None
     finally:
         server.settimeout(previous_timeout)

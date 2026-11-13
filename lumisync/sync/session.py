@@ -14,8 +14,10 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
+import numpy as np
+
 from .. import led_mapping, utils
-from ..config.options import AUDIO
+from ..config.options import AUDIO, GENERAL
 from ..config.sync_settings import SyncSettings
 from ..device import Device, DeviceLike, as_device
 from ..drivers import pool
@@ -26,11 +28,38 @@ RGB = Tuple[int, int, int]
 MappingProvider = Callable[[int, float], List[led_mapping.NormalizedRect]]
 StatusCallback = Callable[[str], None]
 AutoStateCallback = Callable[[str, Tuple[int, int, int]], None]
+StartedCallback = Callable[[int], None]
 
 # A device that recovers and then fails the same way again is reported at most
 # this often, so a flaky link cannot flood the error toasts.
 REPEAT_SEND_ERROR_AFTER = 30.0
 _SENDER_STOPPED = "the frame sender stopped."
+
+# Stream modes such as Govee's Razer/DreamView are enabled by one unacknowledged
+# packet and time out on the device. Re-arm them on a schedule, and before the
+# first frame after a pause (capture backoff, lock screen, PC sleep).
+STREAM_KEEPALIVE_INTERVAL = 10.0
+STREAM_RESUME_GAP = 2.0
+
+# Consecutive screen-capture failures before the displays are re-enumerated.
+CAPTURE_REBUILD_AFTER = 2
+# A still-black capture this long on Linux/macOS usually means no permission.
+BLACK_FRAME_HINT_AFTER = 10.0
+
+# Music: a loop gap this long means the PC slept or the loop froze; reopen the
+# recorder so audio that piled up meanwhile is dropped.
+AUDIO_REOPEN_GAP = 2.0
+# No audio at all (not even silence) from the backend for this long is a stall.
+AUDIO_STALL_SECONDS = 3.0
+AUDIO_OPEN_TIMEOUT = 5.0
+AUDIO_READ_TIMEOUT = 0.25
+# Recording threads stuck inside the audio backend are left behind; stop
+# opening new ones while this many are still stuck.
+MAX_STUCK_AUDIO_CAPTURES = 2
+SILENCE_PEAK = 1e-5
+SILENCE_HINT_AFTER = 8.0
+
+_FULL_SCREEN: led_mapping.NormalizedRect = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
 
 
 class _SendFailure(NamedTuple):
@@ -43,6 +72,26 @@ class _SendFailure(NamedTuple):
 
 def _default_mapping(segment_count: int, aspect_ratio: float) -> List[led_mapping.NormalizedRect]:
     return led_mapping.generate_screen_mapping(segment_count, aspect_ratio)
+
+
+def _max_update_hz(capabilities: Any) -> float:
+    try:
+        return max(0.1, float(getattr(capabilities, "max_update_hz", 40.0)))
+    except (TypeError, ValueError):
+        return 40.0
+
+
+def _streams_one_colour(capabilities: Any) -> bool:
+    """Whether a device shows a frame as one averaged colour (matrix panels)."""
+    return bool(getattr(capabilities, "is_matrix", False)) or not bool(
+        getattr(capabilities, "supports_segments", True)
+    )
+
+
+def _frame_is_black(frame: np.ndarray) -> bool:
+    height, width = frame.shape[:2]
+    sample = frame[:: max(1, height // 64), :: max(1, width // 64), :3]
+    return not bool(sample.any())
 
 
 class SyncSession:
@@ -65,6 +114,7 @@ class SyncSession:
         on_status: Optional[StatusCallback] = None,
         on_error: Optional[StatusCallback] = None,
         on_music_auto_state: Optional[AutoStateCallback] = None,
+        on_started: Optional[StartedCallback] = None,
         sender_factory: Optional[Callable[..., Any]] = None,
     ) -> None:
         if mode not in ("monitor", "music"):
@@ -78,12 +128,17 @@ class SyncSession:
         self._on_status = on_status
         self._on_error = on_error
         self._on_music_auto_state = on_music_auto_state
+        self._on_started = on_started
         self._sender_factory = sender_factory or streaming.LatestFrameSender
 
         self.adapters: Dict[str, TransportAdapter] = {}
         self.senders: Dict[str, Any] = {}
         self._keys: List[Tuple[Device, str]] = []
         self._sender_errors: Dict[str, _SendFailure] = {}
+        self._last_submit_at: Dict[str, float] = {}
+        self._last_keepalive_at: Dict[str, float] = {}
+        self._screen_grab: Any = None
+        self._stuck_captures: List[Any] = []
 
     # --------------------------------------------------------------- public API
 
@@ -98,6 +153,7 @@ class SyncSession:
                 com_initialized = True
             if not self._open_devices() or self.stop_event.is_set():
                 return
+            self._notify_started()
             if self.mode == "monitor":
                 self._run_monitor()
             else:
@@ -127,6 +183,15 @@ class SyncSession:
     def _error(self, message: str) -> None:
         if self._on_error is not None:
             self._on_error(message)
+
+    def _notify_started(self) -> None:
+        """Tell the front end how many devices are streaming, once they are."""
+        if self._on_started is None:
+            return
+        try:
+            self._on_started(len(self._keys))
+        except Exception:
+            pass
 
     def _wait(self, seconds: float) -> None:
         if seconds > 0:
@@ -178,6 +243,8 @@ class SyncSession:
                 continue
             self.adapters[key] = adapter
             self._keys.append((device, key))
+            # begin_stream() just armed the stream mode.
+            self._last_keepalive_at[key] = time.monotonic()
             # Stop was requested while connecting: do not open the rest, but
             # still let the caller tear down the device we just opened.
             if self.stop_event.is_set():
@@ -203,7 +270,7 @@ class SyncSession:
             try:
                 self.senders[key] = self._sender_factory(
                     send_frame,
-                    max_hz=float(getattr(adapter.capabilities, "max_update_hz", 40.0)),
+                    max_hz=_max_update_hz(adapter.capabilities),
                 )
             except Exception as exc:
                 failures.append(f"{self._device_label(device)}: {exc}")
@@ -239,6 +306,55 @@ class SyncSession:
         self.adapters.clear()
         self._keys.clear()
         self._sender_errors.clear()
+        self._last_submit_at.clear()
+        self._last_keepalive_at.clear()
+
+    def _device_rate_cap(self) -> Optional[float]:
+        """The fastest update rate any open device accepts, if known."""
+        rates = [
+            _max_update_hz(self.adapters[key].capabilities)
+            for _device, key in self._keys
+            if key in self.adapters
+        ]
+        return max(rates) if rates else None
+
+    def _frame_interval(self, fps: float, rate_cap: Optional[float]) -> float:
+        """Seconds per loop tick: the user's fps, but never above every device's rate."""
+        rate = max(1.0, float(fps))
+        if rate_cap is not None:
+            rate = min(rate, rate_cap)
+        return 1.0 / max(1.0, rate)
+
+    # -------------------------------------------------------- stream keepalive
+
+    def _keep_alive(self, key: str, now: float) -> None:
+        self._last_keepalive_at[key] = now
+        adapter = self.adapters.get(key)
+        keep_alive = getattr(adapter, "keep_stream_alive", None)
+        if not callable(keep_alive):
+            return
+        try:
+            keep_alive()
+        except Exception:
+            # The next scheduled keepalive retries; frames keep flowing.
+            pass
+
+    def _keep_streams_alive(self, now: float) -> None:
+        """Re-arm every device's stream mode about every ten seconds."""
+        for _device, key in self._keys:
+            last = self._last_keepalive_at.get(key)
+            if last is None:
+                self._last_keepalive_at[key] = now
+            elif now - last >= STREAM_KEEPALIVE_INTERVAL:
+                self._keep_alive(key, now)
+
+    def _submit(self, key: str, frame: Sequence[RGB], now: float) -> None:
+        """Queue a frame, re-arming the stream first if the device went quiet."""
+        last = self._last_submit_at.get(key)
+        if last is not None and now - last > STREAM_RESUME_GAP:
+            self._keep_alive(key, now)
+        self.senders[key].submit(frame)
+        self._last_submit_at[key] = now
 
     def _drain_sender_errors(self, now: Optional[float] = None) -> None:
         """Surface each device's send failures once per failure episode.
@@ -307,6 +423,21 @@ class SyncSession:
             except Exception:
                 pass
 
+    def _drop_screen_grab(self) -> None:
+        screen_grab, self._screen_grab = self._screen_grab, None
+        if screen_grab is not None:
+            self._release_screen_grab(screen_grab)
+
+    @staticmethod
+    def _after_capture_failure(failures: int) -> None:
+        """Re-enumerate displays once a capture keeps failing (hot-plug, GPU reset)."""
+        if failures < CAPTURE_REBUILD_AFTER:
+            return
+        try:
+            monitor.rebuild_capture_backend()
+        except Exception:
+            pass
+
     @staticmethod
     def _capture_screen_frame(screen_grab):
         """Read one frame, tolerating older/fake captures with capture_array only."""
@@ -319,44 +450,72 @@ class SyncSession:
         return screen_grab.capture_array(), "RGB"
 
     def _run_monitor(self) -> None:
-        screen_grab = None
-        current_display = -1
+        try:
+            self._monitor_loop()
+        finally:
+            # Release the dxcam camera / mss handle however the loop ended, so
+            # the next session (or another app) can open the display.
+            self._drop_screen_grab()
+
+    def _monitor_loop(self) -> None:
+        current_target: Optional[Tuple[int, str]] = None
         last_frame = None
         last_channel_order = "RGB"
         frame_missing_since: Optional[float] = None
         missing_warned = False
         capture_backoff = 1.0
+        capture_failures = 0
         last_capture_error: Optional[str] = None
         last_processing_error: Optional[str] = None
+        last_capture_note: Optional[str] = None
         mapping_check_counter = 0
-        cached_mappings: Dict[Tuple[int, int, int], List[led_mapping.NormalizedRect]] = {}
+        cached_mappings: Dict[Tuple[Any, ...], List[led_mapping.NormalizedRect]] = {}
+        # Per-frame zone colours, shared by every device with the same mapping
+        # and reused while the screen is still (same frame object).
+        zone_colors: Dict[Tuple[Any, ...], List[RGB]] = {}
+        colors_frame = None
+        check_black = GENERAL.platform != "Windows"
+        frame_black = False
+        black_since: Optional[float] = None
+        black_hinted = False
         smoothers: Dict[str, processing.ColorSmoother] = {}
         last_sent: Dict[str, Optional[List[RGB]]] = {}
         last_sent_at: Dict[str, Optional[float]] = {}
+        last_update_at: Dict[str, Optional[float]] = {}
+        rate_cap = self._device_rate_cap()
 
         for _device, key in self._keys:
-            adapter = self.adapters[key]
-            count = adapter.capabilities.segment_count
+            capabilities = self.adapters[key].capabilities
+            count = 1 if _streams_one_colour(capabilities) else capabilities.segment_count
             smoothers[key] = processing.ColorSmoother(self.settings.smoothing, count)
             last_sent[key] = None
             last_sent_at[key] = None
+            last_update_at[key] = None
 
         while not self.stop_event.is_set():
             frame_start = time.monotonic()
+            self._keep_streams_alive(frame_start)
             # Periodically drop the mapping cache so edits made in the LED
             # Mapping tab are picked up mid-sync.
             mapping_check_counter += 1
             if mapping_check_counter >= 100:
                 mapping_check_counter = 0
                 cached_mappings.clear()
+                zone_colors.clear()
 
-            desired_display = max(0, int(self.settings.monitor_display))
-            if screen_grab is None or desired_display != current_display:
-                if screen_grab is not None:
-                    self._release_screen_grab(screen_grab)
-                current_display = desired_display
+            target = (
+                max(0, int(self.settings.monitor_display)),
+                str(getattr(self.settings, "monitor_display_name", "") or ""),
+            )
+            if self._screen_grab is None or target != current_target:
+                self._drop_screen_grab()
+                current_target = target
                 try:
-                    screen_grab = monitor.ScreenGrab(display_index=current_display)
+                    self._screen_grab = monitor.ScreenGrab(
+                        display_index=target[0],
+                        display_name=target[1] or None,
+                        stop_event=self.stop_event,
+                    )
                 except (monitor.WaylandUnsupportedError, monitor.ScreenCaptureDependencyError):
                     raise
                 except Exception as exc:
@@ -364,39 +523,50 @@ class SyncSession:
                     if message != last_capture_error:
                         self._error(message)
                         last_capture_error = message
-                    screen_grab = None
-                    current_display = -1
+                    self._screen_grab = None
+                    current_target = None
                     try:
                         monitor.ScreenGrab.reset_cache()
                     except Exception:
                         pass
+                    capture_failures += 1
+                    self._after_capture_failure(capture_failures)
                     self._wait(capture_backoff)
                     capture_backoff = min(10.0, capture_backoff * 2)
                     continue
+                note = getattr(self._screen_grab, "fallback_note", None)
+                if isinstance(note, str) and note and note != last_capture_note:
+                    self._status(note)
+                    last_capture_note = note
                 cached_mappings.clear()
+                zone_colors.clear()
+                colors_frame = None
                 last_frame = None
                 frame_missing_since = None
                 missing_warned = False
 
             try:
-                frame, channel_order = self._capture_screen_frame(screen_grab)
+                frame, channel_order = self._capture_screen_frame(self._screen_grab)
             except (monitor.WaylandUnsupportedError, monitor.ScreenCaptureDependencyError):
                 raise
             except Exception as exc:
-                # A broken capture (dxcam's "NoneType has no AcquireNextFrame")
-                # usually never recovers by itself. Release it, drop the cached
-                # camera and rebuild with backoff. Report each distinct failure
-                # once instead of once per tick.
+                # A broken capture (dxcam's "NoneType has no AcquireNextFrame",
+                # or a display recovery that timed out) usually never recovers
+                # by itself. Release it, drop the cached camera and rebuild
+                # with backoff. Report each distinct failure once.
                 message = f"Error in monitor sync: {exc}"
                 if message != last_capture_error:
                     self._error(message)
                     last_capture_error = message
-                self._release_screen_grab(screen_grab)
-                screen_grab = None
-                current_display = -1
+                self._drop_screen_grab()
+                current_target = None
                 last_frame = None
+                colors_frame = None
+                zone_colors.clear()
                 frame_missing_since = None
                 missing_warned = False
+                capture_failures += 1
+                self._after_capture_failure(capture_failures)
                 self._wait(capture_backoff)
                 capture_backoff = min(10.0, capture_backoff * 2)
                 continue
@@ -416,11 +586,12 @@ class SyncSession:
                         )
                         missing_warned = True
                     if now - frame_missing_since >= 10.0:
-                        self._release_screen_grab(screen_grab)
-                        screen_grab = None
-                        current_display = -1
+                        self._drop_screen_grab()
+                        current_target = None
                         frame_missing_since = now
                         missing_warned = False
+                        capture_failures += 1
+                        self._after_capture_failure(capture_failures)
                         self._wait(capture_backoff)
                         capture_backoff = min(10.0, capture_backoff * 2)
                         continue
@@ -442,66 +613,103 @@ class SyncSession:
                 last_frame = frame
                 last_channel_order = channel_order
                 capture_backoff = 1.0
+                capture_failures = 0
 
             try:
                 height, width = frame.shape[:2]
                 aspect_ratio = width / max(1, height)
+                aspect_key = int(aspect_ratio * 1000)
+                now = time.monotonic()
+                if frame is not colors_frame:
+                    zone_colors.clear()
+                    colors_frame = frame
+                    if check_black and not black_hinted:
+                        frame_black = _frame_is_black(frame)
 
+                if check_black and not black_hinted:
+                    if not frame_black:
+                        black_since = None
+                    elif black_since is None:
+                        black_since = now
+                    elif now - black_since >= BLACK_FRAME_HINT_AFTER:
+                        self._status(
+                            "Screen capture only returns black frames. On macOS, "
+                            "allow LumiSync under System Settings > Privacy & "
+                            "Security > Screen Recording; on Linux, check that "
+                            "the X11 session allows screen capture. Then restart sync."
+                        )
+                        black_hinted = True
+
+                settings = self.settings
                 for _device, key in self._keys:
                     adapter = self.adapters[key]
-                    segment_count = adapter.capabilities.segment_count
-                    mapping_key = (
-                        segment_count,
-                        int(aspect_ratio * 1000),
-                        current_display,
+                    capabilities = adapter.capabilities
+                    one_colour = _streams_one_colour(capabilities)
+                    segment_count = 1 if one_colour else int(capabilities.segment_count)
+                    mapping_key = (one_colour, segment_count, aspect_key, target[0])
+                    colors_key = (
+                        mapping_key,
+                        bool(settings.gamma_correct),
+                        channel_order,
+                        float(settings.saturation),
+                        float(settings.monitor_boost),
                     )
-                    if mapping_key not in cached_mappings:
-                        cached_mappings[mapping_key] = self.mapping_provider(
-                            segment_count, aspect_ratio
+                    colors = zone_colors.get(colors_key)
+                    if colors is None:
+                        device_mapping = cached_mappings.get(mapping_key)
+                        if device_mapping is None:
+                            # A panel that shows one averaged colour samples the
+                            # whole screen once instead of hundreds of zones.
+                            device_mapping = (
+                                [dict(_FULL_SCREEN)]
+                                if one_colour
+                                else self.mapping_provider(segment_count, aspect_ratio)
+                            )
+                            cached_mappings[mapping_key] = device_mapping
+                        colors = processing.average_zone_colors(
+                            frame,
+                            device_mapping,
+                            gamma_correct=settings.gamma_correct,
+                            channel_order=channel_order,
                         )
-                    device_mapping = cached_mappings[mapping_key]
-
-                    colors = processing.average_zone_colors(
-                        frame,
-                        device_mapping,
-                        gamma_correct=self.settings.gamma_correct,
-                        channel_order=channel_order,
-                    )
-                    colors = processing.apply_saturation(
-                        colors, self.settings.saturation
-                    )
+                        colors = processing.apply_saturation(colors, settings.saturation)
+                        # Boost before brightness: the brightness slider is the
+                        # ceiling and must not be pushed back up to 255.
+                        colors = processing.apply_brightness_boost(
+                            colors, settings.monitor_boost
+                        )
+                        zone_colors[colors_key] = colors
                     colors = utils.resample_colors_to_count(colors, segment_count)
                     colors = processing.apply_brightness(
-                        colors, self.settings.monitor_brightness
+                        colors, settings.monitor_brightness
                     )
 
                     smoother = smoothers.get(key)
                     if smoother is None:
                         smoother = processing.ColorSmoother(
-                            self.settings.smoothing, segment_count
+                            settings.smoothing, segment_count
                         )
                         smoothers[key] = smoother
                     else:
-                        smoother.alpha = self.settings.smoothing
+                        smoother.alpha = settings.smoothing
 
-                    now = time.monotonic()
-                    previous_time = last_sent_at.get(key)
-                    dt = (now - previous_time) if previous_time is not None else None
                     # Fast transports keep the fixed per-frame EMA; slow ones
-                    # (Tuya paint streams) time-scale the fade.
-                    max_hz = float(
-                        getattr(adapter.capabilities, "max_update_hz", 40.0)
-                    )
+                    # (Tuya paint streams) time-scale the fade by the time since
+                    # the previous update, not the previous (skipped) send.
+                    previous_update = last_update_at.get(key)
+                    dt = (now - previous_update) if previous_update is not None else None
+                    last_update_at[key] = now
+                    max_hz = _max_update_hz(capabilities)
                     smoothed = smoother.update(colors, dt if max_hz < 30.0 else None)
 
                     if processing.frame_needs_send(
                         last_sent.get(key),
                         smoothed,
-                        self.settings.delta_threshold,
+                        settings.delta_threshold,
                         last_sent_at=last_sent_at.get(key),
                         now=now,
                     ):
-                        self.senders[key].submit(smoothed)
+                        self._submit(key, smoothed, now)
                         last_sent[key] = smoothed
                         last_sent_at[key] = now
                 last_processing_error = None
@@ -517,9 +725,41 @@ class SyncSession:
 
             self._drain_sender_errors()
             elapsed = time.monotonic() - frame_start
-            self._wait(1.0 / max(1, self.settings.monitor_fps) - elapsed)
+            self._wait(self._frame_interval(self.settings.monitor_fps, rate_cap) - elapsed)
 
     # ------------------------------------------------------------------ music
+
+    def _release_audio_capture(self, capture: Any) -> None:
+        capture.close()
+        if getattr(capture, "alive", False):
+            self._stuck_captures.append(capture)
+
+    def _open_audio_capture(self, numframes: int) -> Any:
+        """Start recording and wait (stop-responsively) until it is running."""
+        self._stuck_captures = [
+            stuck for stuck in self._stuck_captures if getattr(stuck, "alive", False)
+        ]
+        if len(self._stuck_captures) >= MAX_STUCK_AUDIO_CAPTURES:
+            raise RuntimeError(
+                "The audio system is not responding. Restart the audio service "
+                "(PulseAudio/PipeWire) or the computer."
+            )
+        capture = _audio_capture(numframes)
+        capture.start()
+        deadline = time.monotonic() + AUDIO_OPEN_TIMEOUT
+        try:
+            while not self.stop_event.is_set():
+                if capture.wait_until_ready(0.1):
+                    return capture
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"{capture.device_name} did not start recording within "
+                        f"{int(AUDIO_OPEN_TIMEOUT)} seconds."
+                    )
+        except BaseException:
+            self._release_audio_capture(capture)
+            raise
+        return capture
 
     def _run_music(self) -> None:
         renderers: Dict[str, audio.MusicPatternRenderer] = {}
@@ -527,7 +767,6 @@ class SyncSession:
         last_output_at: Dict[str, Optional[float]] = {}
         active_reaction = None
         normalizer = audio.AutoGain(self.settings.music_fps)
-        volume_probe = system_volume.MasterVolumeProbe()
         artwork_provider = artwork.ArtworkPaletteProvider()
         last_auto_reaction = ""
         last_auto_color = (0, 0, 0)
@@ -535,152 +774,195 @@ class SyncSession:
         numframes = int(max(AUDIO.duration, AUDIO.music_window) * AUDIO.sample_rate)
         last_audio_error = None
         audio_backoff = 1.0
+        listening_to: Optional[str] = None
+        silent_since: Optional[float] = None
+        silence_hinted = False
+        rate_cap = self._device_rate_cap()
 
         for _device, key in self._keys:
             last_output_at[key] = None
 
         while not self.stop_event.is_set():
+            capture = None
             try:
                 # Follow the default output so switching to headphones does not
                 # leave music sync recording the old speaker forever.
                 output_id = _audio_output_id()
-                with _loopback_microphone().recorder(
-                    samplerate=AUDIO.sample_rate
-                ) as mic:
-                    audio_backoff = 1.0
-                    next_output_check = time.monotonic() + 2.0
-                    while not self.stop_event.is_set():
-                        if time.monotonic() >= next_output_check:
-                            next_output_check = time.monotonic() + 2.0
-                            current_output = _audio_output_id()
-                            if (
-                                output_id is not None
-                                and current_output is not None
-                                and current_output != output_id
-                            ):
-                                self._status(
-                                    "Music sync audio output changed; switching "
-                                    "to the new playback device."
-                                )
-                                break
-                        frame_start = time.monotonic()
-                        try:
-                            data = mic.record(numframes=numframes)
-                        except TypeError:
-                            data = None
+                capture = self._open_audio_capture(numframes)
+                if self.stop_event.is_set():
+                    break
+                # The volume endpoint can change with the recorder; read the
+                # master volume from a fresh probe each time it reopens.
+                volume_probe = system_volume.MasterVolumeProbe()
+                source = capture.device_name
+                if source != listening_to:
+                    self._status(f"Listening to {source}")
+                    listening_to = source
 
-                        if data is not None and last_audio_error is not None:
-                            last_audio_error = None
-                            audio_backoff = 1.0
-                            self._status("Music sync audio input recovered")
-
-                        bands = audio.spectral_bands(data, AUDIO.sample_rate)
-                        if self.settings.music_auto_gain:
-                            bands = system_volume.compensate(
-                                bands, volume_probe.linear_gain()
+                next_output_check = time.monotonic() + 2.0
+                last_iteration = time.monotonic()
+                while not self.stop_event.is_set():
+                    frame_start = time.monotonic()
+                    if frame_start - last_iteration > AUDIO_REOPEN_GAP:
+                        # The PC slept or the loop froze. Reopen the recorder so
+                        # the silence soundcard queued meanwhile is dropped.
+                        break
+                    last_iteration = frame_start
+                    self._keep_streams_alive(frame_start)
+                    if frame_start >= next_output_check:
+                        next_output_check = frame_start + 2.0
+                        current_output = _audio_output_id()
+                        if (
+                            output_id is not None
+                            and current_output is not None
+                            and current_output != output_id
+                        ):
+                            self._status(
+                                "Music sync audio output changed; switching "
+                                "to the new playback device."
                             )
-                            bands = normalizer.process(bands)
-                        palette_colors = (
-                            artwork_provider.get_colors()
-                            if self.settings.music_palette == audio.PALETTE_ALBUM_ART
-                            else None
+                            break
+
+                    data = capture.read(numframes, timeout=AUDIO_READ_TIMEOUT)
+                    if data is None:
+                        if capture.seconds_since_data() > AUDIO_STALL_SECONDS:
+                            raise RuntimeError(
+                                f"No audio data from {source} for "
+                                f"{int(AUDIO_STALL_SECONDS)} seconds."
+                            )
+                        self._drain_sender_errors()
+                        continue
+
+                    peak = float(np.max(np.abs(data))) if np.size(data) else 0.0
+                    if peak >= SILENCE_PEAK:
+                        silent_since = None
+                        silence_hinted = False
+                    elif silent_since is None:
+                        silent_since = frame_start
+                    elif (
+                        not silence_hinted
+                        and frame_start - silent_since >= SILENCE_HINT_AFTER
+                    ):
+                        self._status(
+                            f"No sound is reaching LumiSync from {source}. Play "
+                            "some audio, or make sure it is the output you are "
+                            "listening on."
+                        )
+                        silence_hinted = True
+
+                    bands = audio.spectral_bands(data, AUDIO.sample_rate)
+                    if self.settings.music_auto_gain:
+                        bands = system_volume.compensate(
+                            bands, volume_probe.linear_gain()
+                        )
+                        bands = normalizer.process(bands)
+                    palette_colors = (
+                        artwork_provider.get_colors()
+                        if self.settings.music_palette == audio.PALETTE_ALBUM_ART
+                        else None
+                    )
+
+                    if active_reaction != self.settings.music_reaction:
+                        active_reaction = self.settings.music_reaction
+                        renderers.clear()
+                        smoothers.clear()
+
+                    auto_state = None
+                    for device_index, (_device, key) in enumerate(self._keys):
+                        adapter = self.adapters[key]
+                        segment_count = adapter.capabilities.segment_count
+                        renderer = renderers.get(key)
+                        if renderer is None:
+                            renderer = audio.MusicPatternRenderer(
+                                segment_count, self.settings.music_fps
+                            )
+                            renderers[key] = renderer
+                        frame = renderer.render(
+                            bands,
+                            reaction=self.settings.music_reaction,
+                            gain=self.settings.music_gain,
+                            palette=self.settings.music_palette,
+                            palette_colors=palette_colors,
                         )
 
-                        if active_reaction != self.settings.music_reaction:
-                            active_reaction = self.settings.music_reaction
-                            renderers.clear()
-                            smoothers.clear()
+                        smoother = smoothers.get(key)
+                        if smoother is None:
+                            smoother = processing.ColorSmoother(
+                                self.settings.music_smoothing, segment_count
+                            )
+                            smoothers[key] = smoother
+                        else:
+                            smoother.alpha = self.settings.music_smoothing
 
-                        auto_state = None
-                        for device_index, (_device, key) in enumerate(self._keys):
-                            adapter = self.adapters[key]
-                            segment_count = adapter.capabilities.segment_count
-                            renderer = renderers.get(key)
-                            if renderer is None:
-                                renderer = audio.MusicPatternRenderer(
-                                    segment_count, self.settings.music_fps
-                                )
-                                renderers[key] = renderer
-                            frame = renderer.render(
-                                bands,
-                                reaction=self.settings.music_reaction,
-                                gain=self.settings.music_gain,
-                                palette=self.settings.music_palette,
-                                palette_colors=palette_colors,
+                        now = time.monotonic()
+                        last_out = last_output_at.get(key)
+                        max_hz = _max_update_hz(adapter.capabilities)
+                        frame = smoother.update(
+                            frame,
+                            (now - last_out)
+                            if (last_out is not None and max_hz < 30.0)
+                            else None,
+                        )
+                        adjusted = processing.apply_brightness(
+                            frame, self.settings.music_brightness
+                        )
+                        self._submit(key, adjusted, now)
+                        last_output_at[key] = now
+
+                        if (
+                            device_index == 0
+                            and active_reaction == audio.REACTION_AUTO
+                            and sum(bands) > 1e-9
+                        ):
+                            representative = max(
+                                adjusted, key=sum, default=(0, 0, 0)
+                            )
+                            auto_state = (
+                                renderer.active_reaction,
+                                (
+                                    int(representative[0]),
+                                    int(representative[1]),
+                                    int(representative[2]),
+                                ),
                             )
 
-                            smoother = smoothers.get(key)
-                            if smoother is None:
-                                smoother = processing.ColorSmoother(
-                                    self.settings.music_smoothing, segment_count
-                                )
-                                smoothers[key] = smoother
-                            else:
-                                smoother.alpha = self.settings.music_smoothing
-
-                            now = time.monotonic()
-                            last_out = last_output_at.get(key)
-                            max_hz = float(
-                                getattr(adapter.capabilities, "max_update_hz", 40.0)
+                    if auto_state is not None and self._on_music_auto_state is not None:
+                        reaction_key, color = auto_state
+                        now = time.monotonic()
+                        color_delta = max(
+                            abs(first - second)
+                            for first, second in zip(color, last_auto_color)
+                        )
+                        if (
+                            reaction_key != last_auto_reaction
+                            or (
+                                now - last_auto_emit >= 0.10
+                                and color_delta >= 4
                             )
-                            frame = smoother.update(
-                                frame,
-                                (now - last_out)
-                                if (last_out is not None and max_hz < 30.0)
-                                else None,
+                        ):
+                            self._on_music_auto_state(
+                                reaction_key,
+                                (int(color[0]), int(color[1]), int(color[2])),
                             )
-                            adjusted = processing.apply_brightness(
-                                frame, self.settings.music_brightness
+                            last_auto_reaction = reaction_key
+                            last_auto_color = (
+                                int(color[0]),
+                                int(color[1]),
+                                int(color[2]),
                             )
-                            self.senders[key].submit(adjusted)
-                            last_output_at[key] = now
+                            last_auto_emit = now
 
-                            if (
-                                device_index == 0
-                                and active_reaction == audio.REACTION_AUTO
-                                and sum(bands) > 1e-9
-                            ):
-                                representative = max(
-                                    adjusted, key=sum, default=(0, 0, 0)
-                                )
-                                auto_state = (
-                                    renderer.active_reaction,
-                                    (
-                                        int(representative[0]),
-                                        int(representative[1]),
-                                        int(representative[2]),
-                                    ),
-                                )
+                    # Only a whole frame rendered and queued counts as recovery.
+                    if last_audio_error is not None:
+                        last_audio_error = None
+                        self._status("Music sync audio input recovered")
+                    audio_backoff = 1.0
 
-                        if auto_state is not None and self._on_music_auto_state is not None:
-                            reaction_key, color = auto_state
-                            now = time.monotonic()
-                            color_delta = max(
-                                abs(first - second)
-                                for first, second in zip(color, last_auto_color)
-                            )
-                            if (
-                                reaction_key != last_auto_reaction
-                                or (
-                                    now - last_auto_emit >= 0.10
-                                    and color_delta >= 4
-                                )
-                            ):
-                                self._on_music_auto_state(
-                                    reaction_key,
-                                    (int(color[0]), int(color[1]), int(color[2])),
-                                )
-                                last_auto_reaction = reaction_key
-                                last_auto_color = (
-                                    int(color[0]),
-                                    int(color[1]),
-                                    int(color[2]),
-                                )
-                                last_auto_emit = now
-
-                        self._drain_sender_errors()
-                        elapsed = time.monotonic() - frame_start
-                        self._wait(1.0 / max(1, self.settings.music_fps) - elapsed)
+                    self._drain_sender_errors()
+                    elapsed = time.monotonic() - frame_start
+                    self._wait(
+                        self._frame_interval(self.settings.music_fps, rate_cap) - elapsed
+                    )
 
             except Exception as exc:
                 # Audio-device failures can repeat every frame. Report once,
@@ -691,13 +973,19 @@ class SyncSession:
                     last_audio_error = message
                 self._wait(audio_backoff)
                 audio_backoff = min(10.0, audio_backoff * 2)
+            finally:
+                if capture is not None:
+                    self._release_audio_capture(capture)
 
 
-def _loopback_microphone():
+def _audio_capture(numframes: int) -> Any:
     # Imported lazily so constructing a session in tests does not touch audio.
-    from .music import default_loopback_microphone
+    from .music import AudioCapture
 
-    return default_loopback_microphone()
+    return AudioCapture(
+        samplerate=AUDIO.sample_rate,
+        buffer_frames=max(4096, int(numframes) * 2),
+    )
 
 
 def _audio_output_id():

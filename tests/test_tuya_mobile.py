@@ -422,6 +422,15 @@ def fake_bmp():
     return bytes(header + pixels)
 
 
+class TuyaMobileErrorTests(unittest.TestCase):
+    def test_device_offline_is_reported_as_a_connectivity_problem(self):
+        client = TuyaMobileClient("lsc", {"sid": "session"}, profile=profile("lsc"))
+        with self.assertRaises(AccountError) as caught:
+            client._raise_error("DEVICE_OFFLINE")
+        self.assertEqual(caught.exception.code, "offline")
+        self.assertIn("offline", str(caught.exception).lower())
+
+
 class FirmwareInfoTests(unittest.TestCase):
     def test_firmware_info_parses_ota_modules(self):
         client = TuyaMobileClient("lsc", {"sid": "session"}, profile=profile("lsc"))

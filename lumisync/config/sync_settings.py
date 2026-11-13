@@ -9,7 +9,7 @@ worker; live edits mutate that one object instead of a process-wide global.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
 
 from ..sync import audio
@@ -28,9 +28,14 @@ SYNC_SETTINGS_KEYS = {
     "music_palette": "sync/music_palette",
     "music_reaction": "sync/music_reaction",
     "monitor_brightness": "sync/monitor/brightness",
+    "monitor_boost": "sync/monitor/boost",
     "music_brightness": "sync/music/brightness",
     "monitor_display": "sync/monitor_display",
 }
+
+
+# Fields resolved at runtime and never written to settings.json or QSettings.
+RUNTIME_ONLY_FIELDS = frozenset({"monitor_display_name"})
 
 
 def _coerce_float(value: Any, fallback: float, low: float, high: float) -> float:
@@ -70,7 +75,12 @@ class SyncSettings:
     saturation: float = 1.15
     delta_threshold: int = 3
     monitor_brightness: float = 0.75
+    monitor_boost: float = 1.0
     monitor_display: int = 0
+    # Runtime only, never persisted: the GUI resolves ``monitor_display`` (an
+    # index into Qt's screen list) to that screen's name so capture can find
+    # the same display on any graphics adapter.
+    monitor_display_name: str = field(default="", compare=False)
 
     # Music sync
     music_fps: int = 60
@@ -91,6 +101,7 @@ class SyncSettings:
             saturation=float(SYNC.saturation),
             delta_threshold=int(SYNC.delta_threshold),
             monitor_brightness=float(BRIGHTNESS.monitor),
+            monitor_boost=float(getattr(SYNC, "monitor_boost", 1.0)),
             music_fps=int(SYNC.music_fps),
             music_gain=float(SYNC.music_gain),
             music_auto_gain=bool(SYNC.music_auto_gain),
@@ -124,6 +135,9 @@ class SyncSettings:
             delta_threshold=_coerce_int(value("delta_threshold"), base.delta_threshold, 0, 255),
             monitor_brightness=_coerce_float(
                 value("monitor_brightness"), base.monitor_brightness, 0.1, 1.0
+            ),
+            monitor_boost=_coerce_float(
+                value("monitor_boost"), base.monitor_boost, 1.0, 1.5
             ),
             monitor_display=max(0, _coerce_int(value("monitor_display"), base.monitor_display, 0, 16)),
             music_fps=_coerce_int(value("music_fps"), base.music_fps, 10, 144),
@@ -160,18 +174,27 @@ class SyncSettings:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        for name in RUNTIME_ONLY_FIELDS:
+            data.pop(name, None)
+        return data
 
     def to_qsettings(self, settings) -> None:
         for name in SYNC_SETTINGS_KEYS:
             settings.setValue(SYNC_SETTINGS_KEYS[name], getattr(self, name))
 
     def copy(self) -> "SyncSettings":
-        return SyncSettings(**self.to_dict())
+        return SyncSettings(**asdict(self))
 
     def update_from(self, other: "SyncSettings") -> None:
-        """Copy values into this instance so running workers see live edits."""
+        """Copy values into this instance so running workers see live edits.
+
+        Runtime-only fields belong to whoever resolved them (the GUI's screen
+        name); a settings object loaded from disk never carries them.
+        """
         for item in fields(self):
+            if item.name in RUNTIME_ONLY_FIELDS:
+                continue
             setattr(self, item.name, getattr(other, item.name))
 
     def brightness_for(self, mode: str) -> float:

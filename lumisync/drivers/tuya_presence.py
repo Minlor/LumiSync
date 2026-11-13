@@ -9,29 +9,45 @@ device was last seen and which address it announced from. Routers hand these
 strips new DHCP leases, so the beat's source address is the freshest record of
 where a device lives.
 
-Frame layout (reverse engineered from the official desktop app's decoder):
+Two frame layouts share the port. Protocol 3.5 devices (e.g. the Battletron
+strip) send ``6699`` frames, reverse engineered from the official desktop
+app's decoder:
 
     0..4    header  ``00006699``
     4..10   version/reserved + sequence
     10..14  frame type (``00000013`` = presence announcement)
     14..18  id/length (not authenticated)
     18..30  GCM nonce (12 bytes)
-    30..-20 AES-128-GCM ciphertext (JSON ``{"gwId": "..."}``)
+    30..-20 AES-128-GCM ciphertext: 4-byte return code, then JSON
     -20..-4 16 byte GCM auth tag
     -4..    tail  ``00009966``
 
-The AES key is a Tuya-embedded constant (byte-exact from the app binary).
+Protocol 3.3 and 3.4 devices (most LSC plugs and bulbs) send ``55AA`` frames:
+
+    0..4    header  ``000055aa``
+    4..8    sequence
+    8..12   command (``0x13`` from 3.3, ``0x23`` from 3.4 devices)
+    12..16  length of everything after this field
+    16..20  return code
+    20..-8  AES-128-ECB ciphertext (PKCS#7 padded JSON)
+    -8..-4  CRC32
+    -4..    tail  ``0000aa55``
+
+Both use the same AES key, a Tuya-embedded constant (byte-exact from the app
+binary; it is md5 of a public string). The JSON carries ``gwId``.
 """
 
 from __future__ import annotations
 
 import json
 import socket
+import struct
 import threading
 import time
 from contextlib import contextmanager
 from typing import Callable, Dict, Iterator, List, Optional
 
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from ..utils.logging import get_logger
@@ -43,6 +59,10 @@ PRESENCE_FRESH_AFTER = 25.0  # seconds; mirrors the app's 20 s plus margin
 _HEADER = bytes.fromhex("00006699")
 _TAIL = bytes.fromhex("00009966")
 _FRAME_TYPE = bytes.fromhex("00000013")
+_HEADER_55AA = bytes.fromhex("000055aa")
+_TAIL_55AA = bytes.fromhex("0000aa55")
+# Announcement commands: 0x13 (UDP_NEW, 3.3 firmware), 0x23 (3.4 firmware).
+_ANNOUNCE_COMMANDS = (0x13, 0x23)
 _KEY = bytes(
     [108, 30, 200, 226, 187, 155, 181, 154, 181, 11, 13, 175, 100, 155, 65, 10]
 )
@@ -160,33 +180,29 @@ class TuyaPresenceListener:
                 if self._stop.is_set():
                     break
                 continue
-            self.handle_datagram(data, address)
+            try:
+                self.handle_datagram(data, address)
+            except Exception as exc:
+                # Anyone on the LAN can send to 6667, and the frame key is a
+                # public constant: one hostile or malformed beat must not end
+                # the listener while ``started`` still says it runs.
+                logger.debug("Ignored an unreadable presence datagram: %s", exc)
 
     def handle_datagram(self, data: bytes, address: tuple = ()) -> None:
         """Decode one presence frame; broadcast frames carry no device state."""
         if not isinstance(data, (bytes, bytearray)):
             return
         packet = bytes(data)
-        if len(packet) < 50 or not packet.startswith(_HEADER):
+        if packet.startswith(_HEADER):
+            plaintext = _open_gcm_frame(packet)
+        elif packet.startswith(_HEADER_55AA):
+            plaintext = _open_ecb_frame(packet)
+        else:
             return
-        if not packet.endswith(_TAIL):
-            return
-        if packet[10:14] != _FRAME_TYPE:
-            return
-        nonce = packet[18:30]
-        ciphertext = packet[30:-20]
-        tag = packet[-20:-4]
-        aad = packet[4:18]
-        try:
-            plaintext = AESGCM(_KEY).decrypt(nonce, ciphertext + tag, aad)
-        except Exception:
+        if plaintext is None:
             return  # An unparseable frame is simply not a presence beat.
-        try:
-            payload = json.loads(plaintext.decode("utf-8", "ignore").strip())
-        except json.JSONDecodeError:
-            return
-        device_id = payload.get("gwId") if isinstance(payload, dict) else None
-        if not device_id or not isinstance(device_id, str):
+        device_id = _announced_device_id(plaintext)
+        if device_id is None:
             return
         self.registry.note_seen(device_id, address=address[0] if address else None)
         callback = self._on_seen
@@ -195,6 +211,57 @@ class TuyaPresenceListener:
                 callback(device_id, address[0] if address else "")
             except Exception:
                 pass
+
+
+def _open_gcm_frame(packet: bytes) -> Optional[bytes]:
+    """Plaintext of a ``6699`` (protocol 3.5) announcement, or None."""
+    if len(packet) < 50 or not packet.endswith(_TAIL) or packet[10:14] != _FRAME_TYPE:
+        return None
+    try:
+        return AESGCM(_KEY).decrypt(packet[18:30], packet[30:-20] + packet[-20:-4], packet[4:18])
+    except Exception:
+        return None
+
+
+def _open_ecb_frame(packet: bytes) -> Optional[bytes]:
+    """Plaintext of a ``55AA`` (protocol 3.3/3.4) announcement, or None."""
+    if len(packet) < 36 or not packet.endswith(_TAIL_55AA):
+        return None
+    _sequence, command, length = struct.unpack(">III", packet[4:16])
+    if command not in _ANNOUNCE_COMMANDS or length != len(packet) - 16:
+        return None
+    body = packet[16:-8]  # drop the CRC32 and the tail
+    # Device frames lead with a 4-byte return code; old firmware announces in
+    # clear text instead of encrypting.
+    for start in (0, 4):
+        if body[start:start + 1] == b"{":
+            return body[start:]
+    if len(body) % 16 == 4:
+        body = body[4:]
+    if not body or len(body) % 16:
+        return None
+    decryptor = Cipher(algorithms.AES(_KEY), modes.ECB()).decryptor()
+    padded = decryptor.update(body) + decryptor.finalize()
+    pad = padded[-1]
+    if not 1 <= pad <= 16 or padded[-pad:] != bytes([pad]) * pad:
+        return None
+    return padded[:-pad]
+
+
+def _announced_device_id(plaintext: bytes) -> Optional[str]:
+    """The ``gwId`` an announcement carries, or None for anything else."""
+    text = plaintext
+    if text[:1] != b"{" and text[4:5] == b"{":
+        text = text[4:]  # 3.5 frames put a 4-byte return code before the JSON
+    text = text.rstrip(b"\x00")
+    try:
+        payload = json.loads(text.decode("utf-8", "ignore").strip())
+    except (ValueError, RecursionError):
+        return None  # not JSON, or nested deep enough to exhaust the parser
+    device_id = payload.get("gwId") if isinstance(payload, dict) else None
+    if not device_id or not isinstance(device_id, str):
+        return None
+    return device_id
 
 
 # Process-wide singletons: one registry, one listener per process.

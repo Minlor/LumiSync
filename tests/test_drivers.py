@@ -23,7 +23,7 @@ from lumisync.drivers.idotmatrix_ble import (
     screen_to_pixels,
 )
 from lumisync.drivers.registry import create_adapter
-from lumisync.drivers import tuya_aoi, tuya_presence
+from lumisync.drivers import tuya_aoi, tuya_lan, tuya_presence
 from lumisync.drivers.tuya_lan import (
     PAINT_MAX_PAYLOAD,
     TuyaLightAdapter,
@@ -106,9 +106,19 @@ class GoveeLanAdapterTests(unittest.TestCase):
 
     def test_begin_stream_enables_razer_mode(self):
         adapter = self._adapter()
+        adapter.RAZER_SWITCH_GAP_S = 0
         adapter.begin_stream()
-        self.assertEqual(len(adapter.server.sent), 1)
-        self.assertIn(b'"razer"', adapter.server.sent[0][0])
+        # Repeated: one lost UDP datagram must not leave the strip deaf.
+        self.assertEqual(len(adapter.server.sent), adapter.RAZER_SWITCH_REPEATS)
+        for packet in adapter.server.sent:
+            self.assertIn(b'"razer"', packet[0])
+
+    def test_keep_stream_alive_reasserts_razer_mode(self):
+        adapter = self._adapter()
+        adapter.keep_stream_alive()
+        payload = json.loads(adapter.server.sent[0][0])
+        blob = base64.b64decode(payload["msg"]["data"]["pt"])
+        self.assertEqual(blob[:5], bytes([0xBB, 0x00, 0x01, 0xB1, 0x01]))
 
     def test_end_stream_disables_razer_mode_with_b1_off(self):
         adapter = self._adapter()
@@ -608,6 +618,13 @@ class TuyaStatusDiscoveryTests(unittest.TestCase):
 
 @mock.patch.object(tuya_aoi, "AOI_FAST_STREAM", False)
 class TuyaAdapterTests(unittest.TestCase):
+    def setUp(self):
+        # Key refreshes are rate-limited and remembered per device id.
+        for state in (tuya_lan._key_refresh_attempts, tuya_lan._refreshed_keys):
+            patcher = mock.patch.dict(state, clear=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def _adapter(self, **extra):
         device = {"ip": "1.2.3.4", "device_id": "d", "local_key": "k", **extra}
         adapter = TuyaLightAdapter(device)
@@ -618,6 +635,64 @@ class TuyaAdapterTests(unittest.TestCase):
         a = self._adapter()
         a.set_power(True)
         self.assertEqual(a._dev.single, [(20, True)])
+
+    def test_power_reconnects_once_after_a_dead_session(self):
+        class DeadHandle:
+            def set_value(self, _dp, _value, nowait=False):
+                return {"Error": "Network Error: Device Unreachable", "Err": "905"}
+
+        a = self._adapter()
+        a._dev = FakeTinytuyaDevice("d")
+        live = FakeTuyaHandle()
+        with mock.patch.object(a, "_handle", side_effect=[DeadHandle(), live]):
+            a.set_power(True)
+
+        self.assertEqual(live.single, [(20, True)])
+
+    def test_power_reports_offline_after_the_reconnect_also_fails(self):
+        class DeadHandle:
+            def set_value(self, _dp, _value, nowait=False):
+                return {"Error": "Network Error: Device Unreachable", "Err": "905"}
+
+        a = self._adapter()
+        a._dev = FakeTinytuyaDevice("d")
+        with mock.patch.object(a, "_handle", side_effect=[DeadHandle(), DeadHandle()]):
+            with self.assertRaisesRegex(RuntimeError, "unreachable"):
+                a.set_power(True)
+
+    def test_key_or_protocol_error_is_reported_as_such(self):
+        with self.assertRaisesRegex(RuntimeError, "local key"):
+            TuyaLightAdapter._check_result(
+                {"Error": "Check device key or version", "Err": "914"}
+            )
+
+    def test_key_error_refreshes_the_local_key_from_the_account_once(self):
+        class DeadHandle:
+            def set_value(self, _dp, _value, nowait=False):
+                return {"Error": "Check device key or version", "Err": "914"}
+
+        a = self._adapter(account_id="acct")
+        a._dev = FakeTinytuyaDevice("d")
+        live = FakeTuyaHandle()
+        client = mock.Mock()
+        client.list_devices.return_value = [
+            {"device_id": "d", "local_key": "new-key"}
+        ]
+
+        with (
+            mock.patch.object(a, "_handle", side_effect=[DeadHandle(), live]),
+            mock.patch(
+                "lumisync.accounts.manager.account_manager.client_for",
+                return_value=client,
+            ),
+        ):
+            a.set_power(True)
+
+        self.assertEqual(live.single, [(20, True)])
+        self.assertEqual(a._local_key(), "new-key")
+        # The descriptor itself never gains a plaintext key.
+        self.assertEqual(a.device["local_key"], "k")
+        client.list_devices.assert_called_once_with()
 
     def test_color_sends_mode_and_colour_dps(self):
         a = self._adapter()

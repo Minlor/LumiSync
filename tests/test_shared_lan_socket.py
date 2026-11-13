@@ -1,8 +1,11 @@
 """All LAN callers share one UDP 4002 socket and receive replies."""
 
+import errno
 import socket
+import subprocess
 import time
 import unittest
+from unittest import mock
 
 from lumisync import connection
 
@@ -88,6 +91,86 @@ class SharedLanSocketTests(unittest.TestCase):
             self.assertIn("already in use", str(raised.exception))
         finally:
             holder.close()
+
+    def test_port_conflict_is_diagnosed_without_holding_the_registry_lock(self):
+        held = []
+        real = connection.describe_port_conflict
+
+        def describe(port=None, owner=None):
+            held.append(connection._lan_cores_lock.locked())
+            return real(port, owner="PID 1")
+
+        holder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        holder.bind(("", self.port))
+        try:
+            with mock.patch.object(connection, "describe_port_conflict", side_effect=describe):
+                with self.assertRaises(OSError):
+                    connection.create_lan_socket(bind_port=self.port)
+        finally:
+            holder.close()
+        self.assertEqual(held, [False])
+
+    def test_netstat_diagnosis_never_opens_a_console_window(self):
+        completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with mock.patch.object(connection.platform, "system", return_value="Windows"), \
+                mock.patch.object(connection.subprocess, "run", return_value=completed) as run:
+            connection._windows_udp_port_owner(4002)
+        self.assertEqual(
+            run.call_args.kwargs["creationflags"],
+            getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+    def _break_reader(self, server, error):
+        """Make the shared reader's next receive fail once with ``error``."""
+        core = server._core
+        real = core._socket
+
+        class Failing:
+            fired = False
+
+            def recvfrom(self, size):
+                if not Failing.fired:
+                    Failing.fired = True
+                    raise error
+                return real.recvfrom(size)
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+        core._socket = Failing()
+        time.sleep(0.6)  # past the reader's 0.25 s receive timeout
+        return core
+
+    def test_reader_survives_a_network_reset(self):
+        server = self.facade()
+        # WSAENETRESET: an OSError that is not ConnectionResetError.
+        core = self._break_reader(server, OSError(10052, "network reset"))
+
+        self.assertTrue(core._thread.is_alive())
+        self.assertIs(connection._lan_cores.get(self.port), core)
+        self.send(b"five")
+        self.assertEqual(server.recvfrom(64)[0], b"five")
+
+    def test_dead_socket_is_dropped_and_callers_rebind(self):
+        server = self.facade()
+        core = self._break_reader(server, OSError(errno.EBADF, "bad file descriptor"))
+
+        self.assertFalse(core._thread.is_alive())
+        self.assertTrue(core.dead)
+        self.assertIsNot(connection._lan_cores.get(self.port), core)
+        # A new caller binds a fresh socket and receives replies again.
+        fresh = self.facade()
+        self.assertIsNot(fresh._core, core)
+        self.send(b"six")
+        self.assertEqual(fresh.recvfrom(64)[0], b"six")
+        # The long-lived caller (a sync session) moves over on its next use.
+        receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.senders.append(receiver)
+        receiver.bind(("127.0.0.1", 0))
+        receiver.settimeout(1.0)
+        server.sendto(b"ping", receiver.getsockname())
+        self.assertEqual(receiver.recvfrom(64)[0], b"ping")
+        self.assertIs(server._core, fresh._core)
 
 
 if __name__ == "__main__":

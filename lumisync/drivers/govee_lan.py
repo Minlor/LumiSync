@@ -7,6 +7,7 @@ iDotMatrix look identical to the sync engine.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Optional
 
 from .. import connection, sku_catalog, utils
@@ -84,14 +85,13 @@ class GoveeLanAdapter(TransportAdapter):
             connection.set_color(self._socket(), self.device, int(r), int(g), int(b))
 
     def set_segments(self, colors: List[RGB]) -> None:
-        sku = self.device.get("sku") or self.device.get("model") or ""
+        # Every SKU, H608x included, streams zones through the standard B0
+        # razer frame. (0xB1 is the razer on/off command, not a colour frame:
+        # sending zone colours under it left H608x lights unchanged.)
         count = self.capabilities.segment_count
         fitted = utils.fit_colors_to_count(list(colors), count)
         mode = str(self.device.get("segment_mode", "standard")).lower()
-        if connection.is_h6080_sku(sku):
-            # H6080 devices use the binary segment frame (Phase 2)
-            connection.send_segment_frame(self._socket(), self.device, fitted)
-        elif mode == "multi_pack":
+        if mode == "multi_pack":
             connection.send_segment_frame_multi_pack(self._socket(), self.device, fitted)
         elif mode == "gradient":
             connection.send_segment_frame_gradient(self._socket(), self.device, fitted)
@@ -113,12 +113,33 @@ class GoveeLanAdapter(TransportAdapter):
         """Toggle the device's Razer/segment mode (needed before segment streams)."""
         connection.switch_razer(self._socket(), self.device, enabled)
 
+    # Razer on/off is one unacknowledged UDP datagram. A single lost packet
+    # used to leave the strip ignoring every frame of the session, so the
+    # switch is repeated a few times, ~50 ms apart.
+    RAZER_SWITCH_REPEATS = 3
+    RAZER_SWITCH_GAP_S = 0.05
+
+    def _switch_razer_reliably(self, on: bool) -> None:
+        for attempt in range(self.RAZER_SWITCH_REPEATS):
+            if attempt:
+                time.sleep(self.RAZER_SWITCH_GAP_S)
+            connection.switch_razer(self._socket(), self.device, on)
+
     def begin_stream(self) -> None:
         # Segment streams require Razer mode on Govee devices.
+        self._switch_razer_reliably(True)
+
+    def keep_stream_alive(self) -> None:
+        """Re-assert Razer mode during a long stream.
+
+        The device drops out of Razer mode after a reboot, after the Govee
+        app takes over, or after a pause longer than its timeout (PC sleep,
+        lock screen). The sync session calls this periodically.
+        """
         connection.switch_razer(self._socket(), self.device, True)
 
     def end_stream(self) -> None:
-        connection.switch_razer(self._socket(), self.device, False)
+        self._switch_razer_reliably(False)
 
     def query_status(self) -> Optional[Dict[str, Any]]:
         return connection.query_status(self._socket(), self.device)

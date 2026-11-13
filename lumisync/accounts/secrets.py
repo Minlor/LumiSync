@@ -12,6 +12,12 @@ from ..device import as_device
 from .errors import AccountError
 
 
+def _logger():
+    from ..utils.logging import get_logger
+
+    return get_logger(__name__)
+
+
 class CredentialVault:
     def __init__(self) -> None:
         self._session: dict[str, dict[str, Any]] = {}
@@ -73,10 +79,16 @@ class CredentialVault:
                 return
             try:
                 backend = self._backend()
+            except AccountError:
+                # Without an OS credential store nothing durable was ever saved
+                # under this key (put() refuses remember=True then), so there is
+                # nothing to remove. Disconnecting must still succeed.
+                _logger().info("Credential store unavailable; no saved credential to remove")
+                self._session.pop(key, None)
+                return
+            try:
                 if backend.get_password("LumiSync", key) is not None:
                     backend.delete_password("LumiSync", key)
-            except AccountError:
-                raise
             except Exception:
                 raise AccountError("Could not remove the saved credential from the system store.", "credential_store") from None
             self._session.pop(key, None)
@@ -93,6 +105,29 @@ def local_key_for(device: Mapping[str, Any]) -> str:
         return str(key)
     reference = typed.get("local_key_ref")
     return str(vault.get(str(reference)).get("local_key", "")) if reference else ""
+
+
+def replace_local_key(device: Mapping[str, Any], key: str) -> bool:
+    """Store a rotated local key under the device's existing vault reference.
+
+    The reference keeps its storage mode (system vault, or this session only),
+    so a refreshed key is never kept somewhere the original was not. Returns
+    False when the descriptor has no reference to update (a legacy plaintext
+    descriptor); raises :class:`AccountError` when the vault refuses the write.
+    """
+    reference = as_device(device).get("local_key_ref")
+    if not reference or not key:
+        return False
+    reference = str(reference)
+    with vault._lock:
+        remember = reference not in vault._session_only
+        try:
+            stored = vault.get(reference)
+        except AccountError:
+            stored = {}
+        stored["local_key"] = str(key)
+        vault.put(reference, stored, remember=remember)
+    return True
 
 
 def protect_device(device: Mapping[str, Any], *, remember: bool = True) -> dict[str, Any]:

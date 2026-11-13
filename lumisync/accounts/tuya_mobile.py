@@ -178,6 +178,12 @@ class TuyaMobileClient:
             self.credentials.pop("sid", None)
             self._changed()
             raise AccountError(f"Your {self.label} session has expired. Sign in again from Devices → Accounts.", "authentication")
+        if code in ("DEVICE_OFFLINE", "DEVICE_NOT_CONNECTED", "OFFLINE"):
+            raise AccountError(
+                "This device is offline. Check its power and Wi-Fi connection; "
+                "try again once it reconnects.",
+                "offline",
+            )
         if any(word in code for word in ("LIMIT", "FREQUENT", "TOO_MANY")):
             raise AccountError("The vendor rate limit was reached. Wait before trying again.", "rate_limit")
         if any(word in code for word in ("CAPTCHA", "RISK", "VALIDATE_CODE")):

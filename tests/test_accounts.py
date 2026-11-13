@@ -25,6 +25,7 @@ from lumisync.accounts.tuya import (
     normalize_devices,
 )
 from lumisync.drivers.cloud import CloudLightAdapter
+from lumisync.drivers.tuya_lan import build_color_command
 
 
 FUNCTIONS = {code: {"code": code, "values": json.dumps(values)} for code, values in (
@@ -363,6 +364,18 @@ class TuyaTests(unittest.TestCase):
                                             "temperature": 23, "colour": 24})
         self.assertEqual(colour_scale(device), 1000)
 
+    def test_lsc_wall_washer_local_colour_payload_uses_hsv_scale_1000(self):
+        # Regression for the 0.8.2 wall-washer rejection: the dd-family strip
+        # uses DP 24 with the 12-digit HSV payload, not the legacy RGB prefix.
+        device = normalize_device(
+            {"id": "washer", "name": "Wall Washer", "category": "djdd"},
+            LSC_STRIP_FUNCTIONS,
+        )
+        self.assertEqual(
+            build_color_command(device, 255, 0, 0),
+            {24: "000003e803e8", 21: "colour"},
+        )
+
     def test_legacy_bulb_layout_stays_v1(self):
         functions = {code: {"code": code, "dp_id": dp} for code, dp in (
             ("switch", 1), ("mode", 2), ("bright_value", 3), ("colour_data", 5))}
@@ -379,6 +392,44 @@ class TuyaTests(unittest.TestCase):
         device["dp_schema"] = "v1"  # as older releases saved it
         self.assertEqual(dp_layout(device), "v2")
         self.assertEqual(colour_scale(device), 1000)
+
+    def test_082_descriptor_gets_the_modern_colour_payload_before_any_status_poll(self):
+        # Issue #52: 0.8.2 saved dd-family strips with the mislabeled schema,
+        # code names without dp_id, and the DP ids only in dp_map.
+        saved = {"transport": "tuya", "device_id": "washer", "ip": "192.0.2.9",
+                 "dp_schema": "v1",
+                 "dp_map": {"power": 20, "mode": 21, "brightness": 22, "colour": 24},
+                 "tuya_functions": {"switch_led": {"type": "Boolean"},
+                                    "work_mode": {"type": "Enum"},
+                                    "bright_value": {"type": "Integer"},
+                                    "colour_data": {"type": "Json"}}}
+        self.assertEqual(dp_layout(saved), "v2")
+        self.assertEqual(build_color_command(saved, 255, 0, 0),
+                         {24: "000003e803e8", 21: "colour"})
+        # A genuine legacy bulb saved the same way keeps its legacy payload.
+        bulb = dict(saved, dp_map={"power": 1, "mode": 2, "colour": 5})
+        self.assertEqual(dp_layout(bulb), "v1")
+        self.assertEqual(build_color_command(bulb, 255, 0, 0),
+                         {5: "ff00000000ffff", 2: "colour"})
+
+    def test_account_colour_scale_follows_the_declared_spec(self):
+        functions = dict(LSC_STRIP_FUNCTIONS)
+        functions["colour_data"] = dict(functions["colour_data"], values=json.dumps(
+            {"h": {"min": 0, "max": 360}, "s": {"min": 0, "max": 255},
+             "v": {"min": 0, "max": 255}}))
+        device = normalize_device({"id": "washer", "category": "djdd"}, functions)
+        self.assertEqual(device["colour_format"], "hsv")  # local hex stays HSV/1000
+        self.assertEqual(colour_scale(device), 255)
+
+        client = Mock()
+        with patch("lumisync.drivers.cloud.account_manager.client_for", return_value=client):
+            CloudLightAdapter(device).set_color(255, 0, 0)
+        commands = client.send_commands.call_args.args[1]
+        self.assertEqual(json.loads(commands[1]["value"]), {"h": 0, "s": 255, "v": 255})
+        # A local hex readback (S/V in 1000ths) decodes in the same units.
+        colour = decode_status(device, {"work_mode": "colour", "colour_data": "007803e801f4"}, True)
+        self.assertEqual(colour["color"], (0, 128, 0))
+        self.assertEqual(colour["brightness"], 50)
 
     def test_lsc_strip_cloud_commands_send_hsv_units(self):
         client = Mock()
@@ -414,6 +465,72 @@ class TuyaTests(unittest.TestCase):
         with self.assertRaises(AccountError):
             client.finish_qr()
         self.assertNotIn("token_info", client.credentials)
+        client.close()
+
+
+class TuyaReplyCodeTests(unittest.TestCase):
+    """Only credential, token and permission codes may break an account."""
+
+    CREDENTIALS = {"region": "eu", "access_id": "access-id", "access_secret": "test-secret"}
+    TOKEN = {"success": True, "result": {"access_token": "test-token", "expire_time": 7200}}
+
+    def test_reply_codes_map_to_account_or_device_problems(self):
+        from lumisync.accounts.tuya import tuya_reply_error
+
+        cases = {"1010": "authentication", "1011": "authentication", "1106": "authentication",
+                 28841101: "authentication", "2001": "offline", "1110": "rate_limit", "28841004": "rate_limit",
+                 "500": "service", "2008": "service", None: "service"}
+        for code, expected in cases.items():
+            with self.subTest(code=code):
+                self.assertEqual(tuya_reply_error(code).code, expected)
+        self.assertNotIn("<", str(tuya_reply_error("<script>")))
+
+    def test_open_api_mints_a_new_token_once_when_the_server_drops_it(self):
+        session = Mock()
+        session.request.side_effect = [response(self.TOKEN), response({"success": False, "code": 1010}),
+                                       response(self.TOKEN), response({"success": True, "result": True})]
+        client = TuyaOpenApiClient(self.CREDENTIALS, session)
+        client.send_commands("device", [{"code": "switch_led", "value": True}])
+        self.assertEqual(session.request.call_count, 4)
+
+        session.request.reset_mock()
+        session.request.side_effect = [response({"success": False, "code": 1011}), response(self.TOKEN),
+                                       response({"success": False, "code": 1011})]
+        with self.assertRaises(AccountError) as caught:
+            client.send_commands("device", [{"code": "switch_led", "value": True}])
+        self.assertEqual(caught.exception.code, "authentication")
+        self.assertEqual(session.request.call_count, 3, "the token is refreshed once, not in a loop")
+
+    def test_open_api_offline_device_is_not_an_account_problem(self):
+        session = Mock()
+        session.request.side_effect = [response(self.TOKEN), response({"success": False, "code": 2001})]
+        client = TuyaOpenApiClient(self.CREDENTIALS, session)
+        with self.assertRaises(AccountError) as caught:
+            client.send_commands("device", [{"code": "switch_led", "value": True}])
+        self.assertEqual(caught.exception.code, "offline")
+
+    def test_sharing_status_errors_keep_their_meaning(self):
+        from tuya_sharing.exceptions import ApiRequestException
+
+        client = TuyaSharingClient()
+        manager = Mock()
+        client._manager = manager
+        device = {"device_id": "fixture-device"}
+        cases = [
+            (ApiRequestException(error_code="1010", error_message="token invalid"), None, "authentication"),
+            (ApiRequestException(error_code="2001", error_message="device offline"), None, "offline"),
+            (ApiRequestException(error_code="1110", error_message="too many requests"), None, "rate_limit"),
+            (requests.ConnectionError("fixture"), None, "network"),
+            (None, None, "service"),
+            (None, {"success": True, "result": []}, "response"),
+        ]
+        for error, reply, expected in cases:
+            with self.subTest(expected=expected):
+                manager.customer_api.get.side_effect = error
+                manager.customer_api.get.return_value = reply
+                with self.assertRaises(AccountError) as caught:
+                    client.query_status(device)
+                self.assertEqual(caught.exception.code, expected)
         client.close()
 
 

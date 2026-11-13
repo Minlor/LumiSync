@@ -206,6 +206,20 @@ def fit_normalized_mapping_to_count(
     ]
 
 
+def shift_mapping_start(mapping: Sequence[NormalizedRect], steps: int = 1) -> List[NormalizedRect]:
+    """Rotate which screen zone the first LED reads, keeping the zone order.
+
+    ``steps=1`` gives ``m[1:] + m[:1]`` (LED 1 takes zone 2's region) and
+    ``steps=-1`` the inverse. With Reverse Order this reaches every start
+    corner and direction a strip can be mounted in.
+    """
+    items = [dict(rect) for rect in mapping]
+    if not items:
+        return []
+    offset = int(steps) % len(items)
+    return items[offset:] + items[:offset]
+
+
 def load_mapping_from_settings(
     settings: Any,
     zone_count: int,

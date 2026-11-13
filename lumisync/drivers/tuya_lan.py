@@ -43,12 +43,32 @@ from typing import Any, Dict, List, Optional
 from ..device import DeviceLike
 from .base import RGB, DeviceCapabilities, TransportAdapter
 from . import tuya_aoi, tuya_presence
-from ..accounts.secrets import local_key_for
+from ..accounts.secrets import local_key_for, replace_local_key
 from ..accounts.tuya import code_for, dp_layout, paint_dp, value_range
 from ..utils.colors import resample_colors_to_count
 from ..utils.logging import get_logger
 
 logger = get_logger("lumisync_tuya")
+
+# tinytuya error codes (tinytuya.core.error_helper).
+_CONNECT_ERRORS = ("901", "905")  # the TCP session could not be opened
+_UNREACHABLE_ERRORS = ("901", "902", "905")  # ... or the device stopped answering
+
+# A rejected local key is looked up again through the linked vendor account at
+# most this often per device. Each lookup is several HTTPS calls; doing one per
+# failed sync frame ran into the account's rate limits.
+KEY_REFRESH_INTERVAL = 600.0
+_key_refresh_lock = threading.Lock()
+_key_refresh_attempts: Dict[str, float] = {}
+# device id -> (keys the device rejected, the key the account reported since).
+# A refreshed key is also written to the OS vault; this map covers descriptors
+# that still carry a plaintext key, and a vault that refused the write.
+_refreshed_keys: Dict[str, tuple[frozenset[str], str]] = {}
+
+# Sync frames to a device that does not answer back off instead of blocking
+# ~2 s per write: 1 s, doubling up to 30 s, reset by the next successful write.
+UNREACHABLE_BACKOFF_START = 1.0
+UNREACHABLE_BACKOFF_MAX = 30.0
 
 # Standard Tuya lighting data points (category "dj").
 #
@@ -490,13 +510,15 @@ def status_enrichment(dps: Dict[Any, Any]) -> Dict[str, Any]:
         result["colour_format"] = "hsv"
     # RGBIC paint DP: known candidates first, then any other DP whose current
     # value has the paint shape — a product numbering its paint DP differently
-    # still reports that DP in status every time.
+    # still reports that DP in status every time. A candidate id alone proves
+    # nothing (plenty of bulbs use DP 61 or 103 for scenes, timers or
+    # counters), so its value must carry the paint shape too.
     paint_dp_id, zones = None, None
     for candidate in PAINT_CANDIDATES:
         value = dps.get(str(candidate), dps.get(candidate))
-        if value is not None:
-            paint_dp_id = candidate
-            zones = paint_zone_hint(value)
+        hint = paint_zone_hint(value)
+        if hint is not None:
+            paint_dp_id, zones = candidate, hint
             break
     else:
         matches = [(int(dp), v) for dp, v in dps.items()
@@ -524,6 +546,55 @@ def _require_tinytuya():
             "'pip install tinytuya' to restore Tuya/LSC support."
         ) from exc
     return tinytuya
+
+
+_UNREACHABLE_MESSAGE = (
+    "The LSC/Tuya device is unreachable. Check that it has power and "
+    "is connected to Wi-Fi; LumiSync will reconnect when it returns."
+)
+_REJECTED_MESSAGE = (
+    "The LSC/Tuya device rejected the command. The local key or "
+    "protocol version may be out of date; refresh the device from "
+    "its account."
+)
+_RETIRED_MESSAGE = (
+    "This LSC/Tuya connection was replaced by a newer one. Restart sync to "
+    "continue with the current device settings."
+)
+
+
+class TuyaCommandError(RuntimeError):
+    """A command failure, with whether reconnecting is worth trying."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        key_error: bool = False,
+        code: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.key_error = key_error
+        self.code = str(code or "")
+
+    @property
+    def unreachable(self) -> bool:
+        """The device did not answer at all (offline, or no session)."""
+        return self.code in _UNREACHABLE_ERRORS
+
+    @property
+    def connect_failed(self) -> bool:
+        """The TCP session could not even be opened; retrying at once is moot."""
+        return self.code in _CONNECT_ERRORS
+
+
+def _result_code(result) -> str:
+    """tinytuya's error code in a command result, or '' for success."""
+    if not isinstance(result, dict):
+        return ""
+    return str(result.get("Err") or "")
 
 
 class _TuyaConnection:
@@ -566,6 +637,7 @@ class TuyaLightAdapter(TransportAdapter):
         # the switch), so every field needs a remembered value: otherwise the
         # UI flips to "unknown" or 0% after each write.
         self._last_colour: Optional[RGB] = None
+        self._last_hue_sat: Optional[tuple[float, float]] = None
         self._last_brightness: Optional[int] = None
         self._power_on: Optional[bool] = None
         self._streaming = False
@@ -574,6 +646,23 @@ class TuyaLightAdapter(TransportAdapter):
         # restore a visible colour instead of lighting nothing.
         self._base_black: Optional[bool] = None
         self._resume_colour: Optional[str] = None
+        # Last commanded or observed work mode ("colour" / "white" / ...):
+        # brightness rides the colour value channel while in colour mode.
+        self._work_mode: Optional[str] = None
+        # Set by the pool when a newer adapter replaced this one; a sync
+        # session still holding it must stop instead of reconnecting.
+        self._retired = False
+        # end_stream bumps this so a frame already waiting for the lock when
+        # sync stopped is dropped instead of repainting the cleared strip.
+        self._stream_closes = 0
+        self._stream_closed = False
+        # Sync-frame backoff while the device does not answer.
+        self._unreachable_until = 0.0
+        self._unreachable_backoff = 0.0
+        # tinytuya error code of the last failed status read (None: success).
+        self._last_status_error: Optional[str] = None
+        # The local key the current/last session was opened with.
+        self._handle_key: Optional[str] = None
 
     @property
     def _dev(self):
@@ -609,7 +698,33 @@ class TuyaLightAdapter(TransportAdapter):
             pass
         return seen
 
+    def _ensure_active(self) -> None:
+        if self._retired:
+            raise TuyaCommandError(_RETIRED_MESSAGE, retryable=True)
+
+    def _local_key(self) -> str:
+        """The descriptor's local key, or the one the account reported since."""
+        key = local_key_for(self.device)
+        identity = self._aoi_identity()
+        if identity:
+            with _key_refresh_lock:
+                replaced = _refreshed_keys.get(identity)
+            if replaced is not None and key in replaced[0]:
+                return replaced[1]
+        return key
+
+    def _mark_unreachable(self) -> None:
+        backoff = self._unreachable_backoff
+        backoff = min(UNREACHABLE_BACKOFF_MAX, backoff * 2) if backoff else UNREACHABLE_BACKOFF_START
+        self._unreachable_backoff = backoff
+        self._unreachable_until = time.monotonic() + backoff
+
+    def _mark_reachable(self) -> None:
+        self._unreachable_backoff = 0.0
+        self._unreachable_until = 0.0
+
     def _handle(self):
+        self._ensure_active()
         ip = self._address()
         if self._dev is not None:
             current = getattr(self._dev, "address", None)
@@ -621,7 +736,7 @@ class TuyaLightAdapter(TransportAdapter):
             self._last_frame = None
 
         dev_id = self.device.get("device_id") or self.device.get("devId")
-        local_key = local_key_for(self.device)
+        local_key = self._local_key()
         if not (ip and dev_id and local_key):
             raise RuntimeError(
                 "Tuya device needs ip, device_id and local_key. See "
@@ -644,6 +759,7 @@ class TuyaLightAdapter(TransportAdapter):
             pass
         dev.set_socketRetryLimit(1)
         self._dev = dev
+        self._handle_key = local_key
         return dev
 
     # -- capabilities -------------------------------------------------------
@@ -696,13 +812,16 @@ class TuyaLightAdapter(TransportAdapter):
 
     def set_power(self, on: bool) -> None:
         self._require_control("supports_power")
+        self._ensure_active()
         dp = dp_schema(self.device)
-        with self._lock:
-            handle = self._handle()
+
+        def send(handle) -> None:
             if on:
                 self._ensure_visible_base(handle)
             self._check_result(handle.set_value(dp["power"], bool(on)))
-            self._power_on = bool(on)
+
+        self._run_command(send)
+        self._power_on = bool(on)
 
     def _ensure_visible_base(self, handle) -> None:
         """Light the strip visibly when paint streaming left the base black.
@@ -742,13 +861,14 @@ class TuyaLightAdapter(TransportAdapter):
             colour = (round(r * 255), round(g * 255), round(b * 255))
         try:
             self._check_result(
-                handle.set_multiple_values(
-                    build_color_command(self.device, *colour)
+                self._write_multiple(
+                    handle, build_color_command(self.device, *colour)
                 )
             )
         except (RuntimeError, OSError, TypeError, ValueError):
             return  # Power-on still has to be attempted.
         self._remember_colour(colour)
+        self._work_mode = "colour"
         self._base_black = False
 
     def _colour_value(self, colour: str) -> int:
@@ -762,14 +882,15 @@ class TuyaLightAdapter(TransportAdapter):
 
     def set_brightness(self, percent: int) -> None:
         self._require_control("supports_brightness")
+        self._ensure_active()
         dp = dp_schema(self.device)
         schema = colour_schema(self.device)
         target = _clamp(percent, 0, 100)
+        rides = "tuya_functions" in self.device and not code_for(self.device, "brightness")
         with self._lock:
             handle = self._handle()
-            rides = "tuya_functions" in self.device and not code_for(self.device, "brightness")
             colour = self._last_colour
-            mode = None
+            mode = self._work_mode
             if colour is None and hasattr(handle, "status"):
                 dps = self._status_snapshot(1)
                 raw = dps.get(str(dp["colour"]), dps.get(dp["colour"])) if dps else None
@@ -778,35 +899,50 @@ class TuyaLightAdapter(TransportAdapter):
                         colour = decode_colour(raw, schema=schema)
                     except (ValueError, TypeError):
                         colour = None
-                mode = dps.get(str(dp["mode"]), dps.get(dp["mode"])) if dps else None
-            if colour is not None and (rides or mode == "colour"):
-                # The LSC dd-family strips carry no brightness DP at all (their
-                # cloud spec is switch/mode/colour + config only): brightness
-                # lives in the payload's value channel, in every work mode.
-                h, s, _ = colorsys.rgb_to_hsv(*(channel / 255 for channel in colour))
-                r, g, b = colorsys.hsv_to_rgb(h, s, target / 100)
-                self.set_color(round(r * 255), round(g * 255), round(b * 255))
-                return
-            if rides:
-                # Nothing colour-shaped to ride yet. Quietly succeed: a later
-                # colour button or sync frame carries the value channel, and an
-                # error toast here would just spam the status view.
-                return
-            low, high = value_range(self.device, "brightness", (25, 255) if schema == "legacy" else (10, 1000))
-            self._check_result(handle.set_value(dp["brightness"], round(low + (high - low) * target / 100)))
-            self._last_brightness = target
+                observed = dps.get(str(dp["mode"]), dps.get(dp["mode"])) if dps else None
+                if isinstance(observed, str):
+                    mode = self._work_mode = observed
+        if colour is not None and (rides or mode == "colour"):
+            # The LSC dd-family strips carry no brightness DP at all (their
+            # cloud spec is switch/mode/colour + config only): brightness
+            # lives in the payload's value channel, in every work mode. In
+            # colour mode the white brightness DP has no visible effect on
+            # any Tuya light, so ride the colour's value channel there too.
+            h, s, _ = colorsys.rgb_to_hsv(*(channel / 255 for channel in colour))
+            remembered = getattr(self, "_last_hue_sat", None)
+            if max(colour) == 0 and remembered is not None:
+                h, s = remembered
+            r, g, b = colorsys.hsv_to_rgb(h, s, target / 100)
+            self.set_color(round(r * 255), round(g * 255), round(b * 255))
+            return
+        if rides:
+            # Nothing colour-shaped to ride yet. Quietly succeed: a later
+            # colour button or sync frame carries the value channel, and an
+            # error toast here would just spam the status view.
+            return
+        low, high = value_range(self.device, "brightness", (25, 255) if schema == "legacy" else (10, 1000))
+        value = round(low + (high - low) * target / 100)
+        self._run_command(
+            lambda fresh: self._check_result(fresh.set_value(dp["brightness"], value))
+        )
+        self._last_brightness = target
 
     def set_color(self, r: int, g: int, b: int) -> None:
         self._require_control("supports_color")
+        self._ensure_active()
         r, g, b = (_clamp(channel, 0, 255) for channel in (r, g, b))
-        with self._lock:
-            self._check_result(self._handle().set_multiple_values(build_color_command(self.device, r, g, b)))
+        command = build_color_command(self.device, r, g, b)
+        self._run_command(
+            lambda handle: self._check_result(self._write_multiple(handle, command))
+        )
         self._remember_colour((r, g, b))
+        self._work_mode = "colour"
 
     def set_color_temperature(self, kelvin: int) -> None:
         cap = self.capabilities
         if not cap.supports_white:
             raise RuntimeError("This light has no tunable white control.")
+        self._ensure_active()
         dp = dp_schema(self.device)
         schema = colour_schema(self.device)
         low, high = value_range(self.device, "temperature", (0, 255) if schema == "legacy" else (0, 1000))
@@ -814,8 +950,26 @@ class TuyaLightAdapter(TransportAdapter):
         command: Dict[int, Any] = {dp["temperature"]: value}
         if "tuya_functions" not in self.device or code_for(self.device, "mode"):
             command[dp["mode"]] = "white"
-        with self._lock:
-            self._check_result(self._handle().set_multiple_values(command))
+        self._run_command(
+            lambda handle: self._check_result(self._write_multiple(handle, command))
+        )
+        self._work_mode = "white"
+
+    @staticmethod
+    def _write_multiple(handle, command: Mapping[int, Any]):
+        """Write several DPs at once, undoing tinytuya's one-at-a-time latch.
+
+        After a single failed multi-DP write tinytuya sets
+        ``max_simultaneous_dps = 1`` on the (persistent) handle for good, and
+        every later colour command is split into single writes one second
+        apart. The failure is usually a dropped session, not a device limit.
+        """
+        if len(command) > 1 and getattr(handle, "max_simultaneous_dps", 0):
+            try:
+                handle.max_simultaneous_dps = 0
+            except (AttributeError, TypeError):
+                pass
+        return handle.set_multiple_values(dict(command))
 
     def _aoi_identity(self) -> Optional[str]:
         return str(self.device.get("device_id") or self.device.get("devId") or "") or None
@@ -833,14 +987,14 @@ class TuyaLightAdapter(TransportAdapter):
             return False
         client = tuya_aoi.aoi()
         if not client.started.is_set():
-            client.learn_local_key(identity, local_key_for(self.device), self.device.get("ip"))
+            client.learn_local_key(identity, self._local_key(), self.device.get("ip"))
             if not client.start():
                 return False
         if not client.has_session(identity):
             # Mirrors the vendor app: business frames are skipped until the
             # consult succeeds; one bounded negotiation starts from here and
             # frames resume as soon as the session lands.
-            client.learn_local_key(identity, local_key_for(self.device), self.device.get("ip"))
+            client.learn_local_key(identity, self._local_key(), self.device.get("ip"))
             self._kick_aoi_negotiation(identity)
             return True
         count = self._zone_count()
@@ -894,60 +1048,108 @@ class TuyaLightAdapter(TransportAdapter):
         """
         if not colors:
             return
+        # Read before waiting for the lock: if end_stream runs while this
+        # frame waits, the frame is a straggler from the stopped sync.
+        closes_seen = self._stream_closes
+        self._ensure_active()
+        if time.monotonic() < self._unreachable_until:
+            # The device did not answer recently: skip this frame without
+            # touching the network (each attempt blocks ~2 s on a connect).
+            raise TuyaCommandError(_UNREACHABLE_MESSAGE, retryable=True, code="905")
+        failure: Optional[TuyaCommandError] = None
         with self._lock:
+            if self._stream_closes != closes_seen:
+                return
             if self._stream_via_aoi(colors):
                 return
-            handle = self._handle()
-            if not self._paint_probed:
-                self._paint_probed = True
-                self._probe_paint_dp(handle, colors)
-            if self._paint_dp is not None:
-                count = self._zone_count()
-                try:
-                    palette_limit = int(self.device.get("tuya_paint_palette") or 4)
-                except (TypeError, ValueError):
-                    palette_limit = 4
-                frame = resample_colors_to_count(list(colors), count)
-                # One write per distinct colour run: quantising to a handful of
-                # bands turns a 20-stroke gradient frame into ~4 strokes.
-                frame = reduce_palette(frame, max(1, palette_limit))
-                strokes = encode_paint_strokes(
-                    frame, zones=count, previous=self._last_frame,
-                    tolerance=PAINT_DELTA_TOLERANCE,
-                )
-                started = time.monotonic()
-                starting = self._last_frame is None
-                for stroke in strokes:
-                    # nowait: strokes stream back-to-back; each still ACKs but
-                    # waiting per write costs ~150 ms and lagged frames behind.
-                    # The gap lets the MCU drain writes.
-                    handle.set_value(self._paint_dp, stroke, nowait=True)
-                    time.sleep(PAINT_STROKE_DELAY)
-                elapsed = time.monotonic() - started
-                if elapsed > PAINT_SLOW_FRAME_SECONDS:
-                    # Writes stalled (session churn or an overloaded MCU):
-                    # back off instead of stacking more pressure on it.
-                    time.sleep(PAINT_COOLDOWN_SECONDS)
-                self._last_frame = advance_painted(
-                    frame, self._last_frame, zones=count,
-                    tolerance=PAINT_DELTA_TOLERANCE,
-                )
-                if starting:
-                    # Catch a dead session on the very first frame instead of
-                    # waiting for the periodic ping; a reconnect here forces a
-                    # full repaint on the next frame. begin_stream just set the
-                    # mode, so this pass only needs to check liveness.
-                    self._ensure_link_alive(handle, reassert_mode=False)
-                self._frames_since_check += 1
-                if self._frames_since_check >= PAINT_HEALTH_INTERVAL:
-                    self._frames_since_check = 0
-                    self._ensure_link_alive(handle)
-                return
-            n = len(colors)
-            r = sum(int(c[0]) for c in colors) // n
-            g = sum(int(c[1]) for c in colors) // n
-            b = sum(int(c[2]) for c in colors) // n
+            try:
+                painted = self._paint_frame(colors)
+            except TuyaCommandError as exc:
+                self._last_frame = None  # repaint every zone once it answers
+                if exc.unreachable:
+                    self._mark_unreachable()
+                elif exc.retryable and not self._retired:
+                    self.close()  # the next frame opens a fresh session
+                failure = exc
+            else:
+                if painted:
+                    self._mark_reachable()
+                    return
+        if failure is not None:
+            if failure.key_error:
+                # Outside the lock: the account lookup is several HTTPS calls.
+                # A refreshed key is used from the next frame on.
+                self._refresh_local_key()
+            raise failure
+        if self._stream_closes != closes_seen:
+            return
+        n = len(colors)
+        r = sum(int(c[0]) for c in colors) // n
+        g = sum(int(c[1]) for c in colors) // n
+        b = sum(int(c[2]) for c in colors) // n
+        try:
             self.set_color(r, g, b)
+        except TuyaCommandError as exc:
+            if exc.unreachable:
+                self._mark_unreachable()
+            raise
+        self._mark_reachable()
+
+    def _paint_frame(self, colors: List[RGB]) -> bool:
+        """Paint one frame through the paint DP; False when there is none.
+
+        Called with the lock held. Raises :class:`TuyaCommandError` when a
+        stroke is not delivered, so a dead device is never reported as sent.
+        """
+        handle = self._handle()
+        if not self._paint_probed:
+            self._paint_probed = True
+            self._probe_paint_dp(handle, colors)
+        if self._paint_dp is None:
+            return False
+        count = self._zone_count()
+        try:
+            palette_limit = int(self.device.get("tuya_paint_palette") or 4)
+        except (TypeError, ValueError):
+            palette_limit = 4
+        frame = resample_colors_to_count(list(colors), count)
+        # One write per distinct colour run: quantising to a handful of
+        # bands turns a 20-stroke gradient frame into ~4 strokes.
+        frame = reduce_palette(frame, max(1, palette_limit))
+        strokes = encode_paint_strokes(
+            frame, zones=count, previous=self._last_frame,
+            tolerance=PAINT_DELTA_TOLERANCE,
+        )
+        started = time.monotonic()
+        starting = self._last_frame is None
+        for stroke in strokes:
+            # nowait: strokes stream back-to-back; each still ACKs but
+            # waiting per write costs ~150 ms and lagged frames behind.
+            # The gap lets the MCU drain writes. A nowait write still
+            # reports a session that could not be opened (901/905): stop at
+            # the first one instead of blocking ~2 s on every stroke.
+            self._check_result(handle.set_value(self._paint_dp, stroke, nowait=True))
+            time.sleep(PAINT_STROKE_DELAY)
+        elapsed = time.monotonic() - started
+        if elapsed > PAINT_SLOW_FRAME_SECONDS:
+            # Writes stalled (session churn or an overloaded MCU):
+            # back off instead of stacking more pressure on it.
+            time.sleep(PAINT_COOLDOWN_SECONDS)
+        self._last_frame = advance_painted(
+            frame, self._last_frame, zones=count,
+            tolerance=PAINT_DELTA_TOLERANCE,
+        )
+        if starting:
+            # Catch a dead session on the very first frame instead of
+            # waiting for the periodic ping; a reconnect here forces a
+            # full repaint on the next frame. begin_stream just set the
+            # mode, so this pass only needs to check liveness.
+            self._ensure_link_alive(handle, reassert_mode=False)
+        self._frames_since_check += 1
+        if self._frames_since_check >= PAINT_HEALTH_INTERVAL:
+            self._frames_since_check = 0
+            self._ensure_link_alive(handle)
+        return True
 
     def _ensure_link_alive(self, handle, *, reassert_mode: bool = True) -> None:
         """Ping the strip periodically and recover a silently dropped session.
@@ -974,7 +1176,9 @@ class TuyaLightAdapter(TransportAdapter):
                 fresh = self._handle()
                 self._last_frame = None  # repaint every zone after a reconnect
                 if mode_known:
-                    fresh.set_value(dp["mode"], "colour", nowait=True)
+                    result = fresh.set_value(dp["mode"], "colour", nowait=True)
+                    if _result_code(result) in _CONNECT_ERRORS:
+                        self._mark_unreachable()
             except Exception:
                 pass
             return
@@ -1001,9 +1205,22 @@ class TuyaLightAdapter(TransportAdapter):
         if known.get("tuya_paint_dp"):
             self._stamp_paint(known["tuya_paint_dp"], known.get("tuya_paint_zones"))
             return
+        if self._last_status_error in _CONNECT_ERRORS:
+            # Offline: probing now would only block on every candidate and
+            # settle on "no paint DP" for the whole session. Probe again on
+            # the first frame after the device answers.
+            self._paint_probed = False
+            raise TuyaCommandError(
+                _UNREACHABLE_MESSAGE, retryable=True, code=self._last_status_error or ""
+            )
         for candidate in PAINT_CANDIDATES:
             try:
                 self._check_result(handle.set_value(candidate, probe, nowait=True))
+            except TuyaCommandError as exc:
+                if exc.unreachable or exc.key_error:
+                    self._paint_probed = False
+                    raise
+                continue  # Rejected out of hand; try the next candidate.
             except (RuntimeError, OSError):
                 continue  # Rejected out of hand; try the next candidate.
             if not hasattr(handle, "status"):
@@ -1023,10 +1240,13 @@ class TuyaLightAdapter(TransportAdapter):
 
     def _paint_echoes(self, handle, dp: int) -> bool:
         # Measured on a real Battletron strip: the paint write mirrors into
-        # status within ~1 s, as a change-only reply. Poll patiently.
+        # status within ~1 s, as a change-only reply. Poll patiently. Only a
+        # paint-shaped echo counts: a bulb that owns the DP id for something
+        # else (a scene number, a timer) also reports it in every status.
         for _ in range(8):
             dps = self._peek_status(handle)
-            if dps and (str(dp) in dps or dp in dps):
+            value = dps.get(str(dp), dps.get(dp)) if dps else None
+            if value is not None and paint_zone_hint(value) is not None:
                 return True
             time.sleep(0.25)
         return False
@@ -1056,10 +1276,14 @@ class TuyaLightAdapter(TransportAdapter):
 
     def begin_stream(self) -> None:
         self._require_control("supports_streaming")
+        self._ensure_active()
         # Ensure the light is in colour mode before a run of color frames. A
         # rejected command here (914: session churn / an overloaded MCU) must
         # not abort the whole sync: drop the dead session and retry once, then
         # carry on best-effort — the stream health watchdog keeps recovering.
+        # A device that cannot be reached at all is not retried: the second
+        # attempt would block on the same connect timeout, and sync frames
+        # back off until it answers.
         dp = dp_schema(self.device)
         schema = colour_schema(self.device)
         mode_known = "tuya_functions" not in self.device or code_for(self.device, "mode")
@@ -1075,6 +1299,11 @@ class TuyaLightAdapter(TransportAdapter):
                     dps = self._status_snapshot(1)
                 except Exception:
                     dps = None
+                if not dps and self._last_status_error in _CONNECT_ERRORS:
+                    raise TuyaCommandError(
+                        _UNREACHABLE_MESSAGE, retryable=True,
+                        code=self._last_status_error or "",
+                    )
                 raw = dps.get(str(dp["colour"]), dps.get(dp["colour"])) if dps else None
                 if isinstance(raw, str):
                     self._resume_colour = raw
@@ -1083,13 +1312,18 @@ class TuyaLightAdapter(TransportAdapter):
             if power_known:
                 # Sync output needs the strip on; the LSC app does the same
                 # when screen sync starts. Best-effort so a flaky MCU does not
-                # abort the run.
+                # abort the run — but a session that cannot even be opened is
+                # reported, not followed by more blocking writes.
                 try:
-                    handle.set_value(dp["power"], True)
+                    result = handle.set_value(dp["power"], True)
                 except (RuntimeError, OSError, TypeError):
-                    pass
+                    result = None
+                code = _result_code(result)
+                if code in _CONNECT_ERRORS:
+                    raise TuyaCommandError(_UNREACHABLE_MESSAGE, retryable=True, code=code)
             if mode_known:
                 self._check_result(handle.set_value(dp["mode"], "colour"))
+            self._work_mode = "colour"
             if self._paint_dp is not None:
                 # The paint layer sits on top of the strip's solid colour:
                 # cleared (screen-black) zones reveal whatever DP 24 holds, so
@@ -1097,18 +1331,31 @@ class TuyaLightAdapter(TransportAdapter):
                 self._check_result(handle.set_value(dp["colour"], base_black, nowait=True))
                 self._base_black = True
 
+        failure: Optional[RuntimeError] = None
         with self._lock:
+            self._stream_closed = False
             try:
                 setup(self._handle())
+                self._mark_reachable()
                 return
-            except RuntimeError:
-                pass
+            except TuyaCommandError as exc:
+                if exc.connect_failed:
+                    self._mark_unreachable()
+                    return
+                failure = exc
+            except RuntimeError as exc:
+                failure = exc
+        if isinstance(failure, TuyaCommandError) and failure.key_error:
+            # Outside the lock: the account lookup is several HTTPS calls.
+            self._refresh_local_key()
+        with self._lock:
             try:
                 self.close()
             except Exception:
                 pass
             try:
                 setup(self._handle())
+                self._mark_reachable()
             except Exception:
                 pass
 
@@ -1118,6 +1365,16 @@ class TuyaLightAdapter(TransportAdapter):
         self._closing_aoi = True
         try:
             with self._lock:
+                # A frame still waiting for the lock belongs to the sync that
+                # is stopping; it must not repaint the strip after this.
+                self._stream_closes += 1
+                self._stream_closed = True
+                if self._retired or time.monotonic() < self._unreachable_until:
+                    # Replaced, or not answering: nothing can be restored now,
+                    # and every write would block on the connect timeout.
+                    self._last_frame = None
+                    self._resume_colour = None
+                    return
                 handle = self._handle()
                 dp = dp_schema(self.device)
                 if self._paint_dp is not None:
@@ -1156,19 +1413,170 @@ class TuyaLightAdapter(TransportAdapter):
             self._last_frame = None
             self._resume_colour = None
 
+    def _run_control(self, operation):
+        """Run a command against the current session, reconnecting once.
+
+        Tuya closes idle TCP sessions without telling the peer. The cached
+        tinytuya handle can then look alive while every write times out. One
+        forced reconnect turns the next click into a successful command instead
+        of making the user wait for the app to be restarted.
+        """
+        try:
+            return operation(self._handle())
+        except TuyaCommandError as exc:
+            if not exc.retryable or self._retired:
+                raise
+            retry_reason = exc
+        except OSError as exc:
+            retry_reason = exc
+        logger.info(
+            "Tuya control failed for %s; reconnecting once: %s",
+            self._aoi_identity() or self.device.get("ip"),
+            retry_reason,
+        )
+        self.close()
+        return operation(self._handle())
+
+    def _run_command(self, operation):
+        """Run a control command; recover a rotated local key outside the lock.
+
+        Must be called without holding ``self._lock``: a key refresh asks the
+        linked account (several HTTPS calls), and holding the lock meanwhile
+        would stall sync frames and status reads for the whole lookup.
+        """
+        try:
+            with self._lock:
+                result = self._run_control(operation)
+        except TuyaCommandError as exc:
+            if not exc.key_error or not self._refresh_local_key():
+                raise
+            with self._lock:
+                result = operation(self._handle())
+        self._mark_reachable()
+        return result
+
+    def _refresh_local_key(self) -> bool:
+        """Re-read this device's local key from its linked vendor account.
+
+        LSC/Tuya devices can rotate their local key after a re-pair. The vendor
+        account still knows the current key, so a key rejection (914) is
+        recoverable without making the user delete and re-import the device.
+        The new key is saved under the device's existing vault reference, so
+        later sessions and a rebuilt pooled adapter use it too.
+
+        Returns True only when a different key is now in place. Account
+        lookups are rate-limited per device (:data:`KEY_REFRESH_INTERVAL`).
+        Call without holding ``self._lock``.
+        """
+        identity = self._aoi_identity()
+        if not identity or self._retired:
+            return False
+        rejected = self._handle_key
+        try:
+            current = self._local_key()
+        except Exception:
+            current = ""
+        if current and rejected and current != rejected:
+            # The descriptor already holds a newer key (a re-import, or another
+            # adapter refreshed it): reconnect with it, no account call needed.
+            with self._lock:
+                self.close()
+            return True
+        if not self.device.get("account_id"):
+            return False
+        now = time.monotonic()
+        with _key_refresh_lock:
+            last = _key_refresh_attempts.get(identity)
+            if last is not None and now - last < KEY_REFRESH_INTERVAL:
+                return False
+            _key_refresh_attempts[identity] = now
+        try:
+            from ..accounts.manager import account_manager
+
+            devices = account_manager.client_for(self.device).list_devices()
+        except Exception as exc:
+            logger.info(
+                "Local key refresh failed for %s (%s)", identity, type(exc).__name__
+            )
+            return False
+        match = next(
+            (
+                item
+                for item in devices
+                if str(item.get("device_id") or item.get("id") or "") == identity
+            ),
+            None,
+        )
+        fresh = str((match or {}).get("local_key") or "")
+        stale = {key for key in (rejected, current) if key}
+        if not fresh or fresh in stale:
+            logger.info("The linked account reports no newer local key for %s", identity)
+            return False
+        try:
+            stale.add(local_key_for(self.device))
+        except Exception:
+            pass
+        with _key_refresh_lock:
+            previous = _refreshed_keys.get(identity)
+            if previous is not None:
+                stale.update(previous[0])
+                stale.add(previous[1])
+            stale.discard("")
+            stale.discard(fresh)
+            _refreshed_keys[identity] = (frozenset(stale), fresh)
+        try:
+            replace_local_key(self.device, fresh)
+        except Exception as exc:
+            logger.info(
+                "Could not save the refreshed local key for %s (%s); "
+                "using it for this session",
+                identity,
+                type(exc).__name__,
+            )
+        with self._lock:
+            self.close()
+        logger.info("Refreshed the local key for %s from the linked account", identity)
+        return True
+
     def _require_control(self, flag: str) -> None:
         if not getattr(self.capabilities, flag):
             raise RuntimeError("This control is not supported by this light.")
 
     @staticmethod
     def _check_result(result) -> None:
-        if isinstance(result, dict) and ("Error" in result or "Err" in result or result.get("success") is False):
-            raise RuntimeError("Tuya did not accept the command. Check the local key, IP address, and protocol version.")
+        if not isinstance(result, dict):
+            return
+        error = result.get("Error")
+        code = str(result.get("Err") or "")
+        if not error and "Err" not in result and result.get("success") is not False:
+            return
+        if code in _UNREACHABLE_ERRORS:
+            raise TuyaCommandError(_UNREACHABLE_MESSAGE, retryable=True, code=code)
+        if code == "908":
+            # tinytuya's "Device22" answer: resend on a fresh session. Not a
+            # key problem, so no account lookup.
+            raise TuyaCommandError(
+                "The LSC/Tuya device did not take the command. Try again in a moment.",
+                retryable=True,
+                code=code,
+            )
+        if code == "904":
+            # An unreadable reply is usually a garbled or half-closed session:
+            # reconnect once; only a repeat points at the key or protocol.
+            raise TuyaCommandError(_REJECTED_MESSAGE, retryable=True, code=code)
+        if code == "914":
+            raise TuyaCommandError(_REJECTED_MESSAGE, key_error=True, code=code)
+        detail = error or code or "unknown error"
+        raise TuyaCommandError(f"Tuya did not accept the command ({detail}).", code=code)
 
     def _status_dps(self):
+        self._last_status_error = ""
         status = self._handle().status()
         if not isinstance(status, dict) or any(k in status for k in ("Error", "Err")):
+            self._last_status_error = _result_code(status)
             return None
+        self._last_status_error = None
+        self._mark_reachable()
         dps = status.get("dps")
         return dps if isinstance(dps, dict) and dps else None
 
@@ -1187,10 +1595,13 @@ class TuyaLightAdapter(TransportAdapter):
             DP_V1["power"], DP_V2["power"],
         }
         fallback = None
+        self._last_status_error = ""
         for _ in range(max(1, tries)):
             self._drain_echoes(self._handle())
             dps = self._status_dps()
             if not dps:
+                if self._last_status_error in _CONNECT_ERRORS:
+                    break  # no session could be opened; another try would block again
                 continue
             if fallback is None:
                 fallback = dps
@@ -1228,12 +1639,31 @@ class TuyaLightAdapter(TransportAdapter):
         if len(rgb) != 3:
             return
         self._last_colour = rgb
+        if max(rgb) > 0:
+            # Black has no hue: keep the last real hue so riding brightness
+            # back up from 0% restores the colour instead of white.
+            h, s, _ = colorsys.rgb_to_hsv(*(channel / 255 for channel in rgb))
+            self._last_hue_sat = (h, s)
         self._last_brightness = max(rgb) * 100 // 255
 
     def query_status(self) -> Optional[Dict[str, Any]]:
+        if self._retired:
+            return None
         try:
             with self._lock:
                 dps = self._status_snapshot()
+                if (
+                    not dps
+                    and not self._streaming
+                    and self._last_status_error not in _CONNECT_ERRORS
+                ):
+                    # A dead persistent socket can look connected until the
+                    # first read times out. Rebuild once so the next status
+                    # refresh does not keep reporting the stale session. Not
+                    # while sync streams (it owns the session and recovers it
+                    # itself), and not when no session could be opened at all.
+                    self.close()
+                    dps = self._status_snapshot(1)
         except Exception:
             return None
         if not dps:
@@ -1257,6 +1687,8 @@ class TuyaLightAdapter(TransportAdapter):
         brightness = value("brightness")
         mode = value("mode")
         colour = value("colour")
+        if isinstance(mode, str) and mode:
+            self._work_mode = mode
         try:
             if mode == "colour" and isinstance(colour, str):
                 try:

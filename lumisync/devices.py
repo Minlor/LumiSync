@@ -19,6 +19,7 @@ from .connection import connect, listen as connection_listen, parse
 from .config.options import CONNECTION
 from .device import Device, DeviceLike, as_device
 from .utils import write_json, get_logger
+from .utils.file_operations import replace_with_retry
 
 # Set up logger for devices module
 logger = get_logger('lumisync_devices')
@@ -26,8 +27,25 @@ logger = get_logger('lumisync_devices')
 # Store a global server socket that can be reused
 _global_server = None
 
+# Points the default settings.json somewhere else (tests, self-checks).
+SETTINGS_FILE_ENV = "LUMISYNC_SETTINGS_FILE"
+
 # One-shot warning for the GUI/CLI after a settings file was recovered.
 _settings_warning: Optional[str] = None
+
+# One-shot notice for the GUI after a write had to keep a device's saved key
+# form because the OS credential store is unavailable.
+_save_notice: Optional[str] = None
+_key_store_notice_given = False
+
+
+class SettingsUnavailable(OSError):
+    """settings.json exists but cannot be read right now.
+
+    Raised instead of returning an empty inventory: anything saved on top of
+    an empty read would erase the user's devices, accounts and groups. The
+    file is usually only locked for a moment (antivirus, backup, sync tools).
+    """
 
 
 def _empty_settings() -> Dict[str, Any]:
@@ -45,6 +63,23 @@ def consume_settings_warning() -> Optional[str]:
     global _settings_warning
     message, _settings_warning = _settings_warning, None
     return message
+
+
+def consume_save_notice() -> Optional[str]:
+    """Return (and clear) a one-time notice produced while saving settings."""
+    global _save_notice
+    message, _save_notice = _save_notice, None
+    return message
+
+
+def _settings_unavailable(path: Path, exc: OSError) -> SettingsUnavailable:
+    reason = exc.strerror or type(exc).__name__
+    message = (
+        f"Could not read settings from {path}: {reason}. LumiSync will not "
+        "save changes until it can read the file again."
+    )
+    _remember_settings_warning(message)
+    return SettingsUnavailable(message)
 
 
 def _read_settings_file(path: Path) -> Dict[str, Any]:
@@ -120,7 +155,7 @@ def _backup_good_settings(path: Path) -> None:
                 shutil.copyfileobj(source, output)
             output.flush()
             os.fsync(output.fileno())
-        os.replace(temporary, backup)
+        replace_with_retry(temporary, backup)
         temporary = None
     except OSError as exc:
         logger.warning("Could not back up settings to %s: %s", backup, exc)
@@ -186,8 +221,19 @@ def settings_path(filename: str | os.PathLike[str] = "settings.json") -> Path:
     Source checkouts keep the historical relative path so scripts and tests are
     unchanged. Frozen builds and installed wheels use the per-user application-
     data directory because their working directory is not stable or writable.
+    ``LUMISYNC_SETTINGS_FILE`` overrides the default file outright (the test
+    suite and self-checks use it so they never touch the user's settings).
     """
     requested = Path(filename)
+    if requested == Path("settings.json"):
+        override = os.environ.get(SETTINGS_FILE_ENV, "").strip()
+        if override:
+            target = Path(override)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                logger.warning("Could not create the settings folder %s: %s", target.parent, exc)
+            return target
     uses_user_data = _is_packaged_app() or not _is_source_checkout()
     if requested != Path("settings.json") or not uses_user_data:
         return requested
@@ -216,7 +262,8 @@ def _load_saved_settings(filename: str | os.PathLike[str] = "settings.json") -> 
 
     A damaged file is moved aside and the last good ``.bak`` is restored rather
     than silently returning an empty inventory that the next save would make
-    permanent.
+    permanent. A file that exists but cannot be read (locked, permissions)
+    raises :class:`SettingsUnavailable` for the same reason.
     """
     path = settings_path(filename)
     try:
@@ -230,8 +277,14 @@ def _load_saved_settings(filename: str | os.PathLike[str] = "settings.json") -> 
             return _empty_settings()
         try:
             data = _read_settings_file(backup_path)
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        except FileNotFoundError:
             return _empty_settings()
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            return _empty_settings()
+        except OSError as exc:
+            # The backup exists but is locked: the next save would start a
+            # fresh file and later rotate it over this good backup.
+            raise _settings_unavailable(backup_path, exc) from exc
         _remember_settings_warning(
             f"Your settings file was missing. LumiSync restored "
             f"{backup_path.name}."
@@ -239,8 +292,7 @@ def _load_saved_settings(filename: str | os.PathLike[str] = "settings.json") -> 
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
         data = _recover_saved_settings(path, str(exc))
     except OSError as exc:
-        _remember_settings_warning(f"Could not read settings from {path}: {exc}")
-        return _empty_settings()
+        raise _settings_unavailable(path, exc) from exc
 
     devices = data.get("devices")
     if not isinstance(devices, list):
@@ -367,7 +419,16 @@ def discover_lan_devices(
     When ``deep`` is set, a unicast subnet sweep runs alongside the multicast
     scan so devices are still found on networks that filter multicast.
     """
-    saved_settings = _load_saved_settings() if preserve_existing else _empty_settings()
+    saved_settings = _empty_settings()
+    if preserve_existing:
+        try:
+            saved_settings = _load_saved_settings()
+        except SettingsUnavailable:
+            if persist:
+                raise
+            # Nothing is written in this mode; the caller merges the results
+            # into its own inventory, so a locked file must not stop the scan.
+            saved_settings = _empty_settings()
     existing_devices = saved_settings.get("devices", [])
     if not isinstance(existing_devices, list):
         existing_devices = []
@@ -471,18 +532,103 @@ def parseMessages(messages: List[str]) -> Dict[str, Any]:
     logger.info(f"Found {len(devices)} device(s)")
     return settings
 
+def _saved_device_entries(path: Path) -> List[Dict[str, Any]]:
+    """Return the device entries currently on disk, or [] when unreadable."""
+    try:
+        data = _read_settings_file(path)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return []
+    saved = data.get("devices")
+    if not isinstance(saved, list):
+        return []
+    return [entry for entry in saved if isinstance(entry, dict)]
+
+
+def _keep_saved_key_form(
+    plain: Dict[str, Any], saved_entries: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Write *plain* with the key material its saved entry already has.
+
+    Used when the credential store is unavailable: a key that is on disk in
+    plaintext stays exactly as it was, but a key LumiSync has not saved
+    before is never newly written in plaintext.
+    """
+    result = dict(plain)
+    result.pop("local_key", None)
+    identities = set(_device_keys(plain))
+    saved = next(
+        (
+            entry
+            for entry in saved_entries
+            if identities & set(_device_keys(entry))
+        ),
+        None,
+    )
+    if saved is not None:
+        saved_form = as_device(saved).to_dict()
+        for field in ("local_key", "local_key_ref"):
+            if saved_form.get(field):
+                result[field] = saved_form[field]
+    return result
+
+
+def _note_key_store_unavailable(count: int) -> None:
+    global _save_notice, _key_store_notice_given
+    if _key_store_notice_given:
+        logger.debug("Kept the saved key form for %d device(s)", count)
+        return
+    _key_store_notice_given = True
+    logger.warning(
+        "Secure credential storage is unavailable; kept the saved key form "
+        "for %d device(s)",
+        count,
+    )
+    _save_notice = (
+        "Secure credential storage is unavailable, so local device keys were "
+        "left as they were saved before. Enable your system's credential "
+        "service to protect them."
+    )
+
+
+def _protect_for_disk(device_list: Any, path: Path) -> List[Dict[str, Any]]:
+    """Return descriptors with plaintext local keys moved into the OS vault."""
+    from .accounts.errors import AccountError
+    from .accounts.secrets import protect_device
+
+    saved_entries: Optional[List[Dict[str, Any]]] = None
+    kept = 0
+    result: List[Dict[str, Any]] = []
+    for device in device_list or []:
+        plain = as_device(device).to_dict()
+        try:
+            protected = protect_device(plain)
+        except AccountError as exc:
+            if getattr(exc, "code", None) != "credential_store":
+                raise
+            # One unprotectable legacy key must not make every save fail.
+            if saved_entries is None:
+                saved_entries = _saved_device_entries(path)
+            protected = _keep_saved_key_form(plain, saved_entries)
+            kept += 1
+        result.append(protected)
+    if kept:
+        _note_key_store_unavailable(kept)
+    return result
+
+
 def writeJSON(settings: Dict[str, Any]) -> None:
-    """Write settings to a JSON file, keeping the last good copy as ``.bak``."""
+    """Write settings to a JSON file, keeping the last good copy as ``.bak``.
+
+    Plaintext Tuya local keys are moved into the OS credential vault; the
+    input is not modified. When the credential store is unavailable a device
+    keeps the key form it already has on disk instead of failing the write.
+    """
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     logger.info("Writing settings to %s", path)
-    from .accounts.secrets import protect_device
 
     protected = dict(settings)
-    protected["devices"] = [
-        protect_device(as_device(device).to_dict())
-        for device in settings.get("devices", [])
-    ]
+    protected["devices"] = _protect_for_disk(settings.get("devices", []), path)
     backup = path.with_name(path.name + ".bak")
     _backup_good_settings(path)
     write_json(protected, str(path))

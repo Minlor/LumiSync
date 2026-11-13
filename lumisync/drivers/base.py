@@ -119,6 +119,16 @@ class TransportAdapter(abc.ABC):
         matrix display may switch to its DIY/pixel mode. Default is a no-op.
         """
 
+    def keep_stream_alive(self) -> None:
+        """Re-arm the stream mode :meth:`begin_stream` enabled, cheaply.
+
+        The sync session calls this about every ten seconds and right before
+        the first frame after a pause of more than two seconds, so a device
+        that dropped out of its stream mode (lost packet, reboot, timeout)
+        picks the stream up again. It must stay cheap and must not redo a
+        heavy :meth:`begin_stream`. Default is a no-op.
+        """
+
     def end_stream(self) -> None:
         """Tear down after a segment stream. Default is a no-op."""
 

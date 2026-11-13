@@ -79,31 +79,28 @@ def average_zone_colors(
     """
     if frame is None or frame.size == 0:
         return [(0, 0, 0) for _ in mapping]
+    if not mapping:
+        return []
 
-    order = str(channel_order or "RGB").upper()
+    # A reversed channel view reads BGRA as RGB without copying, so each zone
+    # is one strided slice. The per-zone means are converted back to sRGB in
+    # one batched call instead of a handful of tiny NumPy calls per zone.
+    channels = slice(2, None, -1) if str(channel_order or "RGB").upper() == "BGRA" else slice(0, 3)
     height, width = frame.shape[:2]
-    colors: List[RGB] = []
-    for rect in mapping:
+    means = np.empty((len(mapping), 3), dtype=np.float32 if gamma_correct else np.float64)
+    for index, rect in enumerate(mapping):
         x1, y1, x2, y2 = _zone_bounds(rect, width, height)
-        sub = frame[y1:y2, x1:x2, :3]
-
-        step_y = max(1, sub.shape[0] // _MAX_SAMPLES_PER_AXIS)
-        step_x = max(1, sub.shape[1] // _MAX_SAMPLES_PER_AXIS)
-        sub = sub[::step_y, ::step_x]
-        if order == "BGRA":
-            sub = sub[..., [2, 1, 0]]
-        sub = sub.reshape(-1, 3)
-
+        step_y = max(1, (y2 - y1) // _MAX_SAMPLES_PER_AXIS)
+        step_x = max(1, (x2 - x1) // _MAX_SAMPLES_PER_AXIS)
+        sub = frame[y1:y2:step_y, x1:x2:step_x, channels]
         if gamma_correct:
-            linear = _SRGB_TO_LINEAR[sub]
-            mean_linear = linear.mean(axis=0)
-            srgb = _linear_to_srgb(mean_linear) * 255.0
+            means[index] = _SRGB_TO_LINEAR[sub].reshape(-1, 3).mean(axis=0)
         else:
-            srgb = sub.mean(axis=0)
+            means[index] = sub.reshape(-1, 3).mean(axis=0)
 
-        rgb = np.clip(np.rint(srgb), 0, 255).astype(int)
-        colors.append((int(rgb[0]), int(rgb[1]), int(rgb[2])))
-    return colors
+    srgb = _linear_to_srgb(means) * 255.0 if gamma_correct else means
+    rgb = np.clip(np.rint(srgb), 0, 255).astype(int)
+    return [(int(r), int(g), int(b)) for r, g, b in rgb.tolist()]
 
 
 def apply_saturation(colors: Sequence[RGB], factor: float) -> List[RGB]:
@@ -140,6 +137,52 @@ def apply_brightness(colors: Sequence[RGB], factor: float) -> List[RGB]:
         )
         for color in colors
     ]
+
+
+def boost_curve(peak: float, factor: float) -> float:
+    """Soft-knee tone curve for a zone's brightest channel (both 0..255).
+
+    ``t * k / (1 + (k - 1) * t)`` rises with slope ``k`` from black, maps full
+    scale to full scale and is strictly increasing, so dark zones are lifted
+    while highlights keep their gradation instead of all clipping to 255.
+    """
+    factor = float(factor)
+    t = max(0.0, min(1.0, float(peak) / 255.0))
+    if factor <= 1.0:
+        return t * 255.0
+    return t * factor / (1.0 + (factor - 1.0) * t) * 255.0
+
+
+def apply_brightness_boost(colors: Sequence[RGB], factor: float) -> List[RGB]:
+    """Lift midtones without exceeding the LED's per-channel ceiling.
+
+    A plain ``r * factor, g * factor, b * factor`` clips the strongest channel
+    first, which pulls saturated colors toward white. This runs each zone's
+    brightest channel through :func:`boost_curve` and scales all three channels
+    by the same amount, so the hue is preserved and highlights stay graded.
+
+    Apply it before :func:`apply_brightness`: the brightness slider is the
+    ceiling, and boosting afterwards would push a capped frame back to 255.
+    """
+    factor = float(factor)
+    if factor <= 1.0:
+        return [(int(color[0]), int(color[1]), int(color[2])) for color in colors]
+
+    result: List[RGB] = []
+    for color in colors:
+        peak = max(color[0], color[1], color[2])
+        if peak <= 0:
+            result.append((0, 0, 0))
+            continue
+        scale = boost_curve(peak, factor) / float(peak)
+        result.append(
+            (
+                max(0, min(255, int(round(color[0] * scale)))),
+                max(0, min(255, int(round(color[1] * scale)))),
+                max(0, min(255, int(round(color[2] * scale)))),
+            )
+        )
+    return result
 
 
 def colors_changed(

@@ -33,7 +33,7 @@ from lumisync.gui.controllers.sync_controller import SyncController
 from lumisync.gui.dialogs.accounts_dialog import AccountsDialog
 from lumisync.gui.views.draw_view import DrawView
 from lumisync.gui.views.modes_view import ModesView
-from lumisync.gui.widgets.device_card import DeviceCard
+from lumisync.gui.widgets.device_card import DeviceCard, describe_device_status
 from lumisync.gui.widgets.device_inspector import DeviceInspector
 from lumisync.utils.file_operations import write_json
 
@@ -100,7 +100,7 @@ class TuyaLanTests(unittest.TestCase):
         adapter = TuyaLightAdapter({})
         adapter._dev = Mock()
         adapter._dev.set_value.return_value = {"Err": "914", "Error": "wrong key"}
-        with self.assertRaisesRegex(RuntimeError, "did not accept"):
+        with self.assertRaisesRegex(RuntimeError, "local key"):
             adapter.set_power(True)
 
     def test_imported_white_light_does_not_send_colour_or_mode_dps(self):
@@ -272,10 +272,12 @@ class QtIntegrationTests(unittest.TestCase):
         state = controller.get_device_state_at(0)
         self.assertFalse(state["power_on"])
         self.assertEqual(state["status_source"], "error")
-        self.assertEqual(DeviceInspector._status_copy(state), ("Command failed", "warning", "Command rejected"))
+        status = describe_device_status(state)
+        self.assertEqual((status.text, status.tone, status.tooltip), ("Command failed", "warning", "Command rejected"))
         card = DeviceCard(0, device)
         card.set_state(state)
-        self.assertEqual(card.state_detail_label.text(), "Command failed")
+        self.assertEqual(card.status_label.text(), "Command failed")
+        self.assertEqual(card.status_label.toolTip(), "Command rejected")
         card.deleteLater()
 
     def test_failed_zone_save_keeps_the_in_memory_layout(self):
@@ -576,7 +578,7 @@ class QtIntegrationTests(unittest.TestCase):
         self.assertTrue(inspector.color_controls.isHidden())
         self.assertTrue(inspector.default_button.isHidden())
         self.assertTrue(inspector.energy.isHidden())
-        self.assertEqual(inspector.brightness_value.text(), "Not reported")
+        self.assertEqual(inspector.brightness_value.text(), "—")
         self.assertEqual(inspector.zones_value.text(), "Light switch · power control")
         self.assertIn("manual controls", inspector.connection_combo.itemText(0))
         card.deleteLater()

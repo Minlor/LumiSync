@@ -108,6 +108,15 @@ def dp_layout(device: Mapping[str, Any], default: str = "v2") -> str:
             for dp, mapped in (device.get("dp_codes") or {}).items():
                 if mapped == code and str(dp).isdigit():
                     ids.append(int(dp))
+    # Descriptors saved by 0.8.x keep the DP ids only in ``dp_map`` (role ->
+    # id) next to the mislabeled ``dp_schema``; those ids are just as
+    # authoritative, so an upgraded strip gets the modern payload right away
+    # instead of after its first status poll.
+    dp_map = device.get("dp_map")
+    if isinstance(dp_map, Mapping):
+        for role, dp in dp_map.items():
+            if role in ROLES and str(dp).isdigit():
+                ids.append(int(dp))
     if any(dp_id >= 18 for dp_id in ids):
         return "v2"
     if any(0 < dp_id <= 8 for dp_id in ids):
@@ -148,8 +157,39 @@ def value_range(device: Mapping[str, Any], role: str, default: tuple[int, int]) 
     return (low, high) if high > low else default
 
 
+def declared_colour_scale(device: Mapping[str, Any]) -> int | None:
+    """S/V maximum the product's own colour function spec declares, if any.
+
+    Tuya specs describe ``colour_data`` as ``{"h": {"max": 360}, "s": {"max":
+    255}, "v": {"max": 255}}`` (or 1000 for most modern products). The
+    account API takes colour JSON in exactly those units.
+    """
+    specification = functions_for(device).get(code_for(device, "colour") or "", {})
+    values = specification.get("values") if isinstance(specification, Mapping) else None
+    if isinstance(values, str):
+        try:
+            values = json.loads(values)
+        except ValueError:
+            return None
+    if not isinstance(values, Mapping):
+        return None
+    maxima = []
+    for channel in ("s", "v"):
+        spec = values.get(channel)
+        if not isinstance(spec, Mapping):
+            return None
+        try:
+            maxima.append(int(spec.get("max", 0)))
+        except (TypeError, ValueError):
+            return None
+    if maxima[0] != maxima[1] or maxima[0] <= 0:
+        return None
+    return maxima[0]
+
+
 def colour_scale(device: Mapping[str, Any]) -> int:
-    return 1000 if colour_format(device) == "hsv" else 255
+    """Units of the S and V channels in account-API colour JSON."""
+    return declared_colour_scale(device) or (1000 if colour_format(device) == "hsv" else 255)
 
 
 def colour_hsv_from_hex(value, fmt: str) -> tuple[int, int, int] | None:
@@ -173,7 +213,14 @@ def colour_values(device: Mapping[str, Any], value) -> tuple[int, int, int] | No
         try:
             value = json.loads(value)
         except ValueError:
-            hsv = colour_hsv_from_hex(value, colour_format(device))
+            fmt = colour_format(device)
+            hsv = colour_hsv_from_hex(value, fmt)
+            native, scale = (1000 if fmt == "hsv" else 255), colour_scale(device)
+            if hsv is not None and native != scale:
+                # Hex strings carry their own units; report them in the same
+                # units as the JSON values so callers can mix the two.
+                h, s, v = hsv
+                hsv = (h, round(s * scale / native), round(v * scale / native))
     if isinstance(value, dict):
         scale = colour_scale(device)
         try:
@@ -264,6 +311,46 @@ def normalize_device(raw: dict, functions: dict, dp_codes: dict | None = None) -
     return devices[0] if devices else None
 
 
+# Tuya cloud reply codes, mapped conservatively. Only codes that mean the
+# credentials, token or project permissions are at fault become
+# "authentication" (the account must be reconnected). A device that is
+# offline or unsupported, a rate limit or a server error is not an account
+# problem and must not ask the user to sign in again.
+TUYA_AUTH_CODES = frozenset({
+    "1001",      # secret invalid
+    "1002",      # access_token is null
+    "1004",      # sign invalid
+    "1005",      # client id invalid
+    "1010",      # token invalid
+    "1011",      # token expired
+    "1106",      # permission denied
+    "28841002",  # cloud development subscription expired
+    "28841101",  # project not authorized for this API
+    "28841105",  # project not authorized for this API
+})
+TUYA_TOKEN_CODES = frozenset({"1010", "1011"})
+TUYA_OFFLINE_CODES = frozenset({"2001"})  # device is offline
+TUYA_RATE_LIMIT_CODES = frozenset({"1110", "28841004"})
+_OPEN_API_AUTH_MESSAGE = ("Tuya rejected the request (code {code}). Check the project credentials, data center, "
+                          "linked account, and API subscription.")
+_SHARING_AUTH_MESSAGE = "Your Tuya authorization has expired (code {code}). Reconnect the account from Devices → Accounts."
+
+
+def tuya_reply_error(code: object, auth_message: str = _OPEN_API_AUTH_MESSAGE) -> AccountError:
+    """The AccountError for an unsuccessful Tuya cloud reply."""
+    text = str(code if code is not None else "unknown")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,24}", text):
+        text = "unknown"
+    if text in TUYA_AUTH_CODES:
+        return AccountError(auth_message.format(code=text), "authentication")
+    if text in TUYA_OFFLINE_CODES:
+        return AccountError("This device is offline. Check its power and Wi-Fi connection; "
+                            "try again once it reconnects.", "offline")
+    if text in TUYA_RATE_LIMIT_CODES:
+        return AccountError("Tuya's request limit was reached. Wait a moment and try again.", "rate_limit")
+    return AccountError(f"Tuya could not complete this request (code {text}). Try again later.", "service")
+
+
 class TuyaOpenApiClient:
     """Project credentials authorize only devices linked to that project."""
 
@@ -278,7 +365,8 @@ class TuyaOpenApiClient:
         self._expires = 0.0
         self._lock = threading.RLock()
 
-    def _request(self, method: str, path: str, body=None, *, token_request: bool = False) -> dict:
+    def _request(self, method: str, path: str, body=None, *, token_request: bool = False,
+                 retried: bool = False) -> dict:
         with self._lock:
             if not token_request and time.monotonic() >= self._expires:
                 info = self._request("GET", "/v1.0/token?grant_type=1", token_request=True)
@@ -299,9 +387,12 @@ class TuyaOpenApiClient:
                                  **({"data": content.encode()} if content else {}))
             if reply.get("success") is not True:
                 code = str(reply.get("code", "unknown"))
-                if not re.fullmatch(r"[A-Za-z0-9_-]{1,24}", code):
-                    code = "unknown"
-                raise AccountError(f"Tuya rejected the request (code {code}). Check the project credentials, data center, linked account, and API subscription.", "authentication")
+                if code in TUYA_TOKEN_CODES and not token_request and not retried:
+                    # The server dropped the project token early. The project
+                    # secret can always mint a new one: retry once with it.
+                    self._expires = 0.0
+                    return self._request(method, path, body, retried=True)
+                raise tuya_reply_error(code)
             return reply.get("result", {})
 
     def list_devices(self) -> list[dict]:
@@ -448,9 +539,21 @@ class TuyaSharingClient:
             reply = self._handle().customer_api.get("/v1.0/m/life/ha/devices/detail", {"devIds": device["device_id"]})
         except requests.RequestException:
             raise AccountError("Could not reach Tuya. Check your connection and try again.", "network") from None
+        except Exception as exc:
+            # The SDK raises ApiRequestException(error_code=...) for an
+            # unsuccessful reply; map its code like the OpenAPI client does.
+            code = getattr(exc, "error_code", None)
+            if code is None:
+                raise
+            raise tuya_reply_error(code, _SHARING_AUTH_MESSAGE) from None
+        if not isinstance(reply, dict):
+            # The SDK returns None for an HTTP error status (e.g. 5xx).
+            raise AccountError("Tuya did not answer. Try again in a moment.", "service")
         raw = reply.get("result", []) if reply.get("success") else []
         if not isinstance(raw, list) or not raw:
-            raise AccountError("Tuya did not return device state. Reconnect the account if authorization has expired.", "authentication")
+            # The session worked; this device just was not in the reply.
+            raise AccountError("Tuya did not return this device's state. It may be offline or no longer in your home.",
+                               "response")
         return raw[0]
 
     @staticmethod

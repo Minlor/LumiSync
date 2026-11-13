@@ -240,6 +240,10 @@ class _BleLoop:
             raise RuntimeError("Bluetooth operation timed out. Check the panel connection and try again.") from None
 
 
+CLOSE_LOCK_TIMEOUT = 1.0  # seconds close() waits for an in-flight write
+CLOSE_DISCONNECT_TIMEOUT = 3.0
+
+
 def looks_like_idotmatrix(name: Optional[str]) -> bool:
     """Heuristic match on a BLE advertised name for an iDotMatrix panel."""
     n = (name or "").strip().lower()
@@ -278,10 +282,13 @@ class IDotMatrixBleAdapter(TransportAdapter):
         size_key = str(device.get("matrix_size", "")).lower()
         self._size = KNOWN_SIZES.get(size_key, DEFAULT_SIZE)
         self._address = device.get("ble_address") or device.get("mac")
-        self._client = None
+        self._client: Any = None
         self._mtu = 512
         self._last_response = None
         self._write_lock = threading.RLock()
+        # Bumped by close(); a connect that started earlier must not install
+        # its client afterwards.
+        self._generation = 0
 
     @property
     def capabilities(self) -> DeviceCapabilities:
@@ -305,6 +312,15 @@ class IDotMatrixBleAdapter(TransportAdapter):
         address = self._address
         if not address:
             raise RuntimeError("iDotMatrix device has no BLE address to connect to.")
+        stale, self._client = self._client, None
+        if stale is not None:
+            # A dropped link can leave the old client half-open (the OS still
+            # holds the connection); release it before opening another one.
+            try:
+                _BleLoop.instance().run(stale.disconnect(), timeout=CLOSE_DISCONNECT_TIMEOUT)
+            except Exception:
+                pass
+        generation = self._generation
 
         async def _connect():
             client = bleak.BleakClient(str(address))
@@ -320,8 +336,17 @@ class IDotMatrixBleAdapter(TransportAdapter):
                 await client.disconnect()
                 raise
 
-        self._client = _BleLoop.instance().run(_connect(), timeout=20.0)
-        return self._client
+        connected = _BleLoop.instance().run(_connect(), timeout=20.0)
+        if generation != self._generation:
+            # close() ran while this connect was in flight (it could not wait
+            # for the write lock): do not leave a live link behind it.
+            try:
+                _BleLoop.instance().run(connected.disconnect(), timeout=CLOSE_DISCONNECT_TIMEOUT)
+            except Exception:
+                pass
+            raise RuntimeError("The iDotMatrix connection was closed.")
+        self._client = connected
+        return connected
 
     def _on_notify(self, _sender, data: bytearray) -> None:
         # Responses are logged for debugging / future status parsing.
@@ -438,7 +463,22 @@ class IDotMatrixBleAdapter(TransportAdapter):
         return _BleLoop.instance().run(_scan(), timeout=timeout + 8.0)
 
     def close(self) -> None:
-        with self._write_lock:
+        """Disconnect without freezing the caller (often the GUI thread).
+
+        A write in flight can hold the lock for its whole 10-20 s Bluetooth
+        timeout. Wait briefly, then disconnect best-effort anyway; the
+        generation bump stops a connect that is still in flight from
+        installing its client afterwards.
+        """
+        acquired = self._write_lock.acquire(timeout=CLOSE_LOCK_TIMEOUT)
+        try:
+            self._generation += 1
             client, self._client = self._client, None
             if client is not None:
-                _BleLoop.instance().run(client.disconnect(), timeout=5.0)
+                try:
+                    _BleLoop.instance().run(client.disconnect(), timeout=CLOSE_DISCONNECT_TIMEOUT)
+                except Exception:
+                    pass
+        finally:
+            if acquired:
+                self._write_lock.release()

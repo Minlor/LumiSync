@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any, Dict, Iterable
+import hashlib
 import threading
 
 from ..device import DeviceLike, as_device
@@ -39,26 +40,61 @@ _pool_lock = threading.RLock()
 
 
 def _tuya_connection_key(raw_device):
+    """Connection identity of a Tuya descriptor.
+
+    A vault reference stands for its key: the key behind it can be refreshed
+    (rotated by the device, re-read from the account) without the descriptor
+    — or the identity — changing. Only legacy plaintext descriptors fall
+    back to the key itself, as a digest so the tuple never carries a secret.
+    """
     device = as_device(raw_device)
+    reference = str(device.get("local_key_ref") or "")
+    plaintext = "" if reference else str(device.get("local_key") or "")
+    digest = hashlib.sha256(plaintext.encode("utf-8")).hexdigest()[:16] if plaintext else ""
     return (
         device.device_id,
         device.ip,
         device.protocol_version,
-        device.get("local_key_ref"),
-        device.get("local_key"),
+        reference,
+        digest,
     )
 
 
-def _same_connection_target(stored, incoming) -> bool:
+def _same_connection_target(adapter, incoming) -> bool:
     """Whether a pooled adapter still targets the same physical connection.
 
     Comparing whole device dicts made every discovery stamp (paint DP, colour
     format, zone grid) recycle the adapter — reopening the Tuya session on the
     next slider tick. Only connection-relevant fields matter for reuse.
+
+    A Tuya adapter also updates its own descriptor copy (it follows a device
+    to its new DHCP address); callers keep the saved descriptor. Either the
+    identity the adapter was created with or its live one counts as a match,
+    so neither a followed address nor a refreshed key recycles the session.
     """
+    stored = getattr(adapter, "device", None)
     if str(incoming.get("transport", "")).lower() == "tuya":
-        return _tuya_connection_key(stored) == _tuya_connection_key(incoming)
+        wanted = _tuya_connection_key(incoming)
+        created = getattr(adapter, "_pool_identity", None)
+        live = _tuya_connection_key(stored) if isinstance(stored, Mapping) else None
+        return wanted in (created, live)
     return stored == incoming
+
+
+def _retire(adapter: TransportAdapter) -> None:
+    """Close a replaced adapter for good (outside the pool lock).
+
+    A sync session may still hold it; ``_retired`` makes a Tuya adapter stop
+    instead of reconnecting next to its replacement.
+    """
+    try:
+        setattr(adapter, "_retired", True)
+    except Exception:
+        pass
+    try:
+        adapter.close()
+    except Exception:
+        pass
 
 
 def acquire(device: DeviceLike, server=None) -> TransportAdapter:
@@ -70,19 +106,29 @@ def acquire(device: DeviceLike, server=None) -> TransportAdapter:
     if is_pooled(device):
         key = _ble_key(device)
         device = as_device(device).copy()
+        replaced = None
         with _pool_lock:
             adapter = _pooled_adapters.get(key)
-            if adapter is not None and not _same_connection_target(adapter.device, device):
-                adapter.close()
+            if adapter is not None and not _same_connection_target(adapter, device):
+                # Close it after releasing the lock: closing waits for any
+                # in-flight command, which must not stall every other device.
+                replaced = _pooled_adapters.pop(key)
                 adapter = None
             if adapter is None:
                 adapter = create_adapter(device)
                 if device.transport == "tuya":
+                    identity = _tuya_connection_key(device)
+                    try:
+                        setattr(adapter, "_pool_identity", identity)
+                    except Exception:
+                        pass
                     for other in _pooled_adapters.values():
-                        if as_device(other.device).transport == "tuya" and _tuya_connection_key(other.device) == _tuya_connection_key(device):
+                        if as_device(other.device).transport == "tuya" and _same_connection_target(other, device):
                             adapter.share_connection(other)
                             break
                 _pooled_adapters[key] = adapter
+        if replaced is not None:
+            _retire(replaced)
         return adapter
     return create_adapter(device, server)
 

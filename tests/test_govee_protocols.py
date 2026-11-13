@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 from lumisync import connection
 from lumisync.accounts.errors import AccountError
 from lumisync.drivers.cloud import CloudLightAdapter
+from lumisync.drivers.govee_lan import GoveeLanAdapter
 
 
 class FakeSocket:
@@ -142,6 +143,37 @@ class SegmentFrameTests(unittest.TestCase):
             blob = base64.b64decode(payload["msg"]["data"]["pt"])
             self.assertEqual(blob[0:3], bytes([0xBB, 0, 1]))
             self.assertIn(blob[3], (0xB2, 0xB3))
+
+
+class H608xStreamingTests(unittest.TestCase):
+    """H608x lights stream zones through the same B0 razer frame as every SKU."""
+
+    def sent_blob(self, sku):
+        server = FakeSocket()
+        adapter = GoveeLanAdapter(
+            {"ip": "192.0.2.10", "model": sku, "segment_count_override": 2}, server
+        )
+        adapter.set_segments([(1, 2, 3), (4, 5, 6)])
+        self.assertEqual(len(server.sent), 1)
+        payload = json.loads(server.sent[0][0])
+        self.assertEqual(payload["msg"]["cmd"], "razer")
+        return base64.b64decode(payload["msg"]["data"]["pt"])
+
+    def test_h608x_sync_frame_is_the_standard_b0_razer_frame(self):
+        blob = self.sent_blob("H6080")
+        # BB, data length 2 + 2*3 = 8, B0, stretch flag, zone count, RGB...
+        body = bytes([0xBB, 0x00, 0x08, 0xB0, 0x01, 0x02, 1, 2, 3, 4, 5, 6])
+        self.assertEqual(blob, body + bytes([checksum(body)]))
+        self.assertEqual(blob, self.sent_blob("H619C"))
+
+    def test_h608x_power_and_colour_keep_their_json_commands(self):
+        server = FakeSocket()
+        adapter = GoveeLanAdapter({"ip": "192.0.2.10", "model": "H6086"}, server)
+        adapter.set_power(True)
+        adapter.set_color(1, 2, 3)
+        commands = [json.loads(data)["msg"] for data, _address in server.sent]
+        self.assertEqual([c["cmd"] for c in commands], ["turn", "colorwc"])
+        self.assertTrue(all(c["data"]["lightType"] == 1 for c in commands))
 
 
 class ApplianceControlTests(unittest.TestCase):

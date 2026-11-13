@@ -47,6 +47,7 @@ SYNC = SimpleNamespace(
     smoothing=0.55,          # EMA factor 0..1 (higher = snappier, lower = smoother)
     gamma_correct=True,      # average zone pixels in linear light for accurate color
     saturation=1.15,         # >1 makes ambient color pop like DreamView; 1.0 disables
+    monitor_boost=1.0,       # 1.0-1.5; brightens midtones with hue-preserving gain
     delta_threshold=3,       # skip a UDP send when no channel moved more than this
     # Music sync
     music_fps=60,            # cap on how often music frames are emitted
