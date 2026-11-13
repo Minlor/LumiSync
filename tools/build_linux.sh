@@ -6,7 +6,10 @@
 # dist/LumiSync-x86_64.AppImage.
 #
 # Env vars:
-#   PYTHON=python3.12   interpreter to build with (default: python3)
+#   PYTHON=3.12         interpreter or version for uv to build with (default:
+#                       $UV_PYTHON, else 3.12; uv downloads it if missing).
+#                       Not plain python3: Ubuntu 22.04 ships 3.10, and the
+#                       project needs 3.11+.
 #   RUN_TESTS=1         run the unit suite (offscreen Qt) before packaging
 #
 # Build on the oldest Ubuntu you want to support — the resulting AppImage is
@@ -18,7 +21,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-PYTHON="${PYTHON:-python3}"
+PYTHON="${PYTHON:-${UV_PYTHON:-3.12}}"
 DIST="$ROOT/dist"
 BUILD="$ROOT/build/linux"
 VENV="$BUILD/venv"
