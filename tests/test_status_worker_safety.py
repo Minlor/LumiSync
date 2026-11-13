@@ -54,6 +54,54 @@ class StatusWorkerSafetyTests(unittest.TestCase):
         self.assertEqual(updates[0]["learned"]["tuya_paint_dp"], 61)
         self.assertEqual(updates[0]["learned"]["tuya_paint_zones"], 20)
 
+    def test_local_tuya_status_falls_back_to_the_cloud_when_lan_is_down(self):
+        device = {
+            "transport": "tuya",
+            "device_id": "battletron",
+            "mac": "tuya:battletron",
+            "ip": "192.0.2.44",
+            "local_key": "k",
+            "cloud_transport": "tuya_cloud",
+            "account_id": "acct",
+        }
+        worker = DeviceStatusWorker([(0, device)])
+        local = Mock()
+        local.query_status.return_value = None
+        local.device = device
+        cloud = Mock()
+        cloud.query_status.return_value = {
+            "online": True,
+            "power_on": True,
+            "brightness": 80,
+        }
+        updates = []
+        worker.state_updated.connect(lambda _index, state: updates.append(state))
+
+        with (
+            patch(
+                "lumisync.gui.controllers.discovery.tuya_presence.presence_age",
+                return_value=None,
+            ),
+            patch(
+                "lumisync.gui.controllers.discovery.pool.acquire",
+                return_value=local,
+            ),
+            patch(
+                "lumisync.gui.controllers.discovery.pool.is_pooled",
+                return_value=True,
+            ),
+            patch(
+                "lumisync.gui.controllers.discovery.create_adapter",
+                return_value=cloud,
+            ) as created,
+        ):
+            worker.run()
+
+        self.assertEqual(updates[0]["status_source"], "confirmed")
+        self.assertTrue(updates[0]["online"])
+        self.assertTrue(updates[0]["power_on"])
+        self.assertEqual(created.call_args.args[0]["transport"], "tuya_cloud")
+
     def test_reply_is_resolved_by_identity_after_reordering(self):
         controller = self.controller()
         controller.devices = [{"mac": "second"}, {"mac": "first"}]

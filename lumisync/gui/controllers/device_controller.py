@@ -5,7 +5,8 @@ This module handles device discovery and management with PySide6 signals.
 
 import socket
 import time
-from typing import Any, Dict, List, Optional, Sequence
+import weakref
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from PySide6.QtCore import QObject, Signal, Slot, QThread, QTimer, Qt
 
@@ -17,15 +18,59 @@ from ...drivers.registry import create_adapter, is_cloud, capabilities_for_devic
 from .background import start_task
 from .command_queue import CoalescingCommandQueue
 from .device_admin import DeviceAdminMixin
-from .device_store import DeviceStore
+from .device_store import DeviceStore, SettingsReloaded
 from .discovery import (
+    ACCOUNT_BROKEN_CODES,
     DISCOVERY_KEYS,
+    AccountFailure,
     BleScanWorker,
     DeviceDiscoveryWorker,
     DeviceStatusWorker,
+    has_account_fallback,
 )
 
 logger = get_logger(__name__)
+
+SETTINGS_UNREADABLE_STARTUP = (
+    "LumiSync can't read its settings file right now (another program may be "
+    "using it). Saved devices appear once it can; nothing is saved until then."
+)
+SETTINGS_UNREADABLE = (
+    "LumiSync can't read its settings file right now (another program may be "
+    "using it), so the change was not saved. Try again in a moment."
+)
+SETTINGS_UNWRITABLE = (
+    "Check that the settings folder is writable and not locked by another "
+    "program, then try again."
+)
+
+# Notice kinds (the toast styles the main window shows).
+NOTICE_INFO = "info"
+NOTICE_SUCCESS = "success"
+NOTICE_ERROR = "error"
+
+PROVIDER_DISPLAY_NAMES = {
+    "govee_account": "Govee Home", "govee_api": "Govee API", "tuya_account": "Tuya Smart",
+    "lsc_account": "LSC Smart Connect", "tuya_qr": "Tuya / Smart Life", "tuya_project": "Tuya cloud project",
+}
+_PROVIDER_SHORT_NAMES = {"govee_account": "Govee", "govee_api": "Govee", "tuya_account": "Tuya",
+                         "lsc_account": "LSC", "tuya_qr": "Tuya / Smart Life", "tuya_project": "Tuya project"}
+
+CONTROL_UNREACHABLE = "The device didn't respond. Check that it has power and is on the same network."
+
+
+def _control_error_text(exc: BaseException, device: Dict[str, Any]) -> str:
+    """User-facing text for a failed manual control (never raw socket text)."""
+    from ...accounts.errors import AccountError
+
+    if isinstance(exc, AccountError):
+        return str(exc)
+    if is_cloud(device):
+        return "The account could not complete this command. Reconnect the account and try again."
+    if isinstance(exc, (OSError, TimeoutError, ConnectionError)):
+        return CONTROL_UNREACHABLE
+    text = str(exc).strip()
+    return text if text and len(text) <= 160 else CONTROL_UNREACHABLE
 
 
 class DeviceController(DeviceAdminMixin, QObject):
@@ -36,8 +81,24 @@ class DeviceController(DeviceAdminMixin, QObject):
     # during paint streaming, so one empty poll is not proof of absence.
     STATUS_MISS_TOLERANCE = 3
 
+    # Account status reads go to vendor servers that rate-limit sessions. The
+    # bulk account pass runs at most this often however many times the views
+    # ask for a refresh; reads for one device the user is acting on (a command
+    # confirmation, the energy panel, a refresh button) are not held back.
+    ACCOUNT_STATUS_INTERVAL = 60.0
+    # Upper bound for one status pass, so neither pass can hold its thread
+    # (and app shutdown) for long. Devices it did not reach go first next time.
+    STATUS_PASS_BUDGET = 20.0
+
     # Signals
+    # Status bar + log only. Never shown as a toast.
     status_updated = Signal(str)  # Status message
+    # Something the user should see now (a toast): message, kind
+    # (NOTICE_INFO / NOTICE_SUCCESS / NOTICE_ERROR). Also sent as a status.
+    notice = Signal(str, str)
+    # Account id -> "<account label>: <reason>" for accounts that need the
+    # user (sign-in expired, refresh failed). Emitted whenever the set changes.
+    account_issues_changed = Signal(dict)
     devices_discovered = Signal(list)  # List of Device descriptors
     device_selected = Signal(object)  # Selected Device descriptor
     device_added = Signal(object)  # Newly added Device descriptor
@@ -74,16 +135,54 @@ class DeviceController(DeviceAdminMixin, QObject):
         super().__init__()
 
         self._store = DeviceStore()
+        # Weak: a store -> controller reference cycle would keep a discarded
+        # controller (and its presence subscription) alive until the next GC.
+        owner = weakref.ref(self)
+
+        def on_reloaded() -> None:
+            controller = owner()
+            if controller is not None:
+                controller._on_settings_reloaded()
+
+        def on_notice(message: str) -> None:
+            controller = owner()
+            if controller is not None:
+                controller._notify(message, NOTICE_INFO)
+
+        self._store.on_reloaded = on_reloaded
+        self._store.on_notice = on_notice
         self.discovery_thread: Optional[QThread] = None
         self.discovery_worker: Optional[DeviceDiscoveryWorker] = None
+        # Local pass (LAN / Tuya LAN). Never waits on a vendor server.
         self.status_thread: Optional[QThread] = None
         self.status_worker: Optional[DeviceStatusWorker] = None
+        # Account pass (vendor servers), independent of the local pass.
+        self.account_status_thread: Optional[QThread] = None
+        self.account_status_worker: Optional[DeviceStatusWorker] = None
+        # Device key -> ask the account first (True) or use the device's own
+        # transport (False), for the next account pass.
+        self._account_status_queue: dict[str, bool] = {}
+        # Devices with a read requested for them specifically; their account
+        # read is not held back by ACCOUNT_STATUS_INTERVAL.
+        self._status_targets: set[str] = set()
+        self._last_account_pass = float("-inf")
+        self._account_pass_timer = QTimer(self)
+        self._account_pass_timer.setSingleShot(True)
+        self._account_pass_timer.timeout.connect(self._start_account_pass)
+        # Devices a pass skipped when its budget ran out; read first next time.
+        self._unvisited_status_keys: list[str] = []
         self._ble_scan_thread: Optional[QThread] = None
         self._ble_scan_worker: Optional[BleScanWorker] = None
         self._combined_search_active = False
         self._search_pending: set[str] = set()
         self._search_results: Dict[str, Dict[str, Any]] = {}
+        # Identity keys of every device known when the current search began,
+        # so the outcome can say how many devices are actually new.
+        self._search_known_keys: Optional[set[str]] = None
+        self._search_has_network = True
         self._account_refresh_tasks = {}
+        # Account id -> (account label, user-facing reason).
+        self._account_issues: Dict[str, tuple[str, str]] = {}
         self._tuya_scan_results = []
         self._refresh_all_pending = False
         self._refresh_keys_pending: dict[str, None] = {}
@@ -97,6 +196,14 @@ class DeviceController(DeviceAdminMixin, QObject):
         self._requested_power = self._commands.requested_power
         self._confirmation_timers = {}
         self._confirmation_delays = {}
+        # Devices whose LAN path recently failed but whose cloud path works.
+        # Manual controls skip the local timeout for this short cooldown; a
+        # fresh UDP presence beat or local status clears it immediately.
+        self._cloud_preferred_until: dict[str, float] = {}
+        # Devices the local pass handed to the account pass because their LAN
+        # read failed. Only such a read (or an inline fallback) may start the
+        # cooldown above; an account-first poll never tried the LAN at all.
+        self._lan_failed_keys: set[str] = set()
         self._tuya_task = None
         self._closing = False
         # LSC/Tuya lights announce their current address on UDP 6667; follow
@@ -111,7 +218,17 @@ class DeviceController(DeviceAdminMixin, QObject):
     def _init_devices(self):
         """Initialize with existing devices from settings."""
         try:
-            self._store.load(refresh=False)
+            settings = self._store.load(refresh=False)
+        except devices.SettingsUnavailable:
+            # Nothing is saved until a later read succeeds (DeviceStore).
+            self._notify(SETTINGS_UNREADABLE_STARTUP, NOTICE_ERROR)
+            return
+        except Exception:
+            logger.warning("Saved devices could not be loaded", exc_info=True)
+            self._notify("LumiSync couldn't load your saved devices. Check the log for details.", NOTICE_ERROR)
+            return
+        self._prune_session_accounts(settings.get("accounts"))
+        try:
             if self.devices:
                 self.status_updated.emit(f"Found {len(self.devices)} device(s)")
                 self.devices_discovered.emit(self.devices)
@@ -122,8 +239,84 @@ class DeviceController(DeviceAdminMixin, QObject):
                     self.status_updated.emit(
                         f"Selected device: {device.get('model', 'Unknown')}"
                     )
-        except Exception as e:
-            self.status_updated.emit(f"Error loading devices: {str(e)}")
+        except Exception:
+            logger.warning("Saved devices could not be shown", exc_info=True)
+            self._notify("LumiSync couldn't load your saved devices. Check the log for details.", NOTICE_ERROR)
+
+    # ------------------------------------------------------------------ notices
+
+    def _notify(self, message: str, kind: str = NOTICE_INFO) -> None:
+        """Show *message* now (toast) and keep it in the status bar/log."""
+        self.status_updated.emit(message)
+        self.notice.emit(message, kind)
+
+    def _device_name(self, device: Optional[Dict[str, Any]]) -> str:
+        if not device:
+            return "Device"
+        return str(device.get("name") or device.get("model") or "Device")
+
+    # ------------------------------------------------------------------ account issues
+
+    @property
+    def account_issues(self) -> Dict[str, str]:
+        """Account id -> ``"<label>: <reason>"`` for accounts needing attention."""
+        return {account_id: f"{label}: {reason}" for account_id, (label, reason) in self._account_issues.items()}
+
+    def account_issue(self, account_id: str) -> Optional[tuple[str, str]]:
+        """``(account label, reason)`` for one account, or None when it is fine."""
+        return self._account_issues.get(str(account_id))
+
+    def account_label(self, account: Any) -> str:
+        """The label the Accounts dialog shows for an account (email masked)."""
+        from ...accounts.privacy import mask_account_label
+
+        metadata = account if isinstance(account, dict) else None
+        if metadata is None:
+            metadata = next((saved for saved in self.get_accounts() if isinstance(saved, dict)
+                             and saved.get("id") == account), {})
+        provider = str(metadata.get("provider") or "")
+        label = metadata.get("label") or PROVIDER_DISPLAY_NAMES.get(provider) or "Linked account"
+        return mask_account_label(str(label))
+
+    def set_account_issue(self, account: Any, reason: str) -> None:
+        """Record that an account needs the user (refresh or sign-in failed)."""
+        metadata = account if isinstance(account, dict) else {"id": account}
+        account_id = str(metadata.get("id") or "")
+        if not account_id:
+            return
+        label = self.account_label(metadata if metadata.get("provider") or metadata.get("label") else account_id)
+        reason = " ".join(str(reason or "").split()) or "The account could not be refreshed. Reconnect it in Accounts."
+        entry = (label, reason)
+        if self._account_issues.get(account_id) == entry:
+            return
+        self._account_issues[account_id] = entry
+        logger.info("Account needs attention (%s)", metadata.get("provider") or "account")
+        self.account_issues_changed.emit(self.account_issues)
+
+    def record_account_failure(self, account: Any, failure: AccountFailure, *,
+                               network: Optional[bool] = None) -> bool:
+        """Record an account issue only when the sign-in itself is broken.
+
+        Rate limits, server errors, timeouts and offline devices are logged
+        once and otherwise left alone: they fix themselves and must not ask
+        the user to reconnect. Nothing is recorded without a local network
+        (every account looks broken then). Returns whether an issue was set.
+        """
+        if not failure.breaks_account:
+            logger.info("Account refresh failed (%s); not treated as an account problem",
+                        failure.code or "transient")
+            return False
+        if network is None:
+            network = self._local_network_available()
+        if not network:
+            logger.info("Account refresh failed without a local network; not recorded")
+            return False
+        self.set_account_issue(account, failure.message)
+        return True
+
+    def clear_account_issue(self, account_id: Any) -> None:
+        if self._account_issues.pop(str(account_id or ""), None) is not None:
+            self.account_issues_changed.emit(self.account_issues)
 
     def _discovery_running(self) -> bool:
         """Safe check that handles a stale Python ref to a deleted QThread."""
@@ -192,6 +385,93 @@ class DeviceController(DeviceAdminMixin, QObject):
             self._refresh_all_pending = False
             QTimer.singleShot(0, self.refresh_device_states)
 
+    def _account_status_running(self) -> bool:
+        if self.account_status_thread is None:
+            return False
+        try:
+            self.account_status_thread.isRunning()
+            return True  # Keep ownership until the native thread has joined.
+        except RuntimeError:
+            self.account_status_thread = None
+            self.account_status_worker = None
+            return False
+
+    @Slot()
+    def _clear_account_status_refs(self) -> None:
+        sender = self.sender()
+        thread = self.account_status_thread
+        if isinstance(sender, QThread) and sender is not thread:
+            return
+        if thread is not None and not thread.wait(0):
+            # Same native-join guard as _clear_status_refs.
+            QTimer.singleShot(1, self._clear_account_status_refs)
+            return
+        self.account_status_worker = None
+        self.account_status_thread = None
+        if thread is not None:
+            thread.deleteLater()
+        if self._closing:
+            self._account_status_queue.clear()
+            return
+        if self._account_status_queue:
+            QTimer.singleShot(0, self._start_account_pass)
+
+    @Slot(list)
+    def _on_status_unvisited(self, keys: List[str]) -> None:
+        if self._closing or not keys:
+            return
+        logger.info("Status pass reached its time budget; %d device(s) go first next time", len(keys))
+        self._unvisited_status_keys = list(dict.fromkeys([*keys, *self._unvisited_status_keys]))
+
+    @Slot(list)
+    def _on_account_status_needed(self, keys: List[str]) -> None:
+        """Queue devices whose local read failed for the account pass."""
+        if self._closing:
+            return
+        for key in keys:
+            if self._index_for_key(key) >= 0:
+                self._lan_failed_keys.add(key)
+                self._queue_account_status(key, prefer_account=True)
+        self._start_account_pass()
+
+    def _queue_account_status(self, key: str, *, prefer_account: bool) -> None:
+        self._account_status_queue[key] = (
+            self._account_status_queue.get(key, False) or prefer_account
+        )
+
+    @Slot()
+    def _start_account_pass(self) -> None:
+        """Start the account pass, at most once per ACCOUNT_STATUS_INTERVAL.
+
+        Devices in :attr:`_status_targets` (a read the user is waiting on)
+        are read at once; everything else waits for the next window.
+        """
+        if self._closing or not self._account_status_queue or self._account_status_running():
+            return
+        positions = {self._device_key(device): index for index, device in enumerate(self.devices)}
+        queue = {key: prefer for key, prefer in self._account_status_queue.items() if key in positions}
+        self._account_status_queue = queue
+        if not queue:
+            return
+        now = time.monotonic()
+        wait = self._last_account_pass + self.ACCOUNT_STATUS_INTERVAL - now
+        if wait > 0:
+            keys = [key for key in queue if key in self._status_targets]
+            if len(keys) < len(queue) and not self._account_pass_timer.isActive():
+                self._account_pass_timer.start(max(1, int(wait * 1000) + 1))
+            if not keys:
+                return
+        else:
+            keys = list(queue)
+            self._last_account_pass = now
+            self._account_pass_timer.stop()
+        prefer_keys = {key for key in keys if queue[key]}
+        for key in keys:
+            queue.pop(key, None)
+            self._status_targets.discard(key)
+        indexed = [(positions[key], self.devices[positions[key]]) for key in keys]
+        self._launch_status_worker(indexed, account=True, prefer_keys=prefer_keys)
+
     def _flush_discovery(self) -> None:
         """Persist fields the devices taught the last status pass.
 
@@ -240,7 +520,8 @@ class DeviceController(DeviceAdminMixin, QObject):
 
     @Slot(str)
     def _on_status_error(self, message: str) -> None:
-        self.status_updated.emit(f"Status refresh error: {message}")
+        # Status passes run every few seconds; a failure is for the log.
+        logger.info("Status refresh error: %s", message)
 
     def _ble_scan_running(self) -> bool:
         if self._ble_scan_thread is None:
@@ -253,20 +534,33 @@ class DeviceController(DeviceAdminMixin, QObject):
             self._ble_scan_worker = None
             return False
 
-    @staticmethod
-    def _local_network_available() -> bool:
-        """Return whether Windows exposes a usable non-loopback IPv4 address."""
-        try:
-            addresses = socket.getaddrinfo(
-                socket.gethostname(), None, socket.AF_INET, socket.SOCK_DGRAM
-            )
-        except OSError:
-            return False
-        return any(
-            address and not address.startswith("127.") and address != "0.0.0.0"
-            for *_, sockaddr in addresses
-            for address in [sockaddr[0]]
-        )
+    # Route probes for _local_network_available: the Govee discovery group
+    # (multicast routes exist even on LANs without a gateway) and TEST-NET-1
+    # (RFC 5737; reached through the default route). Nothing is sent.
+    NETWORK_PROBE_TARGETS = (("239.255.255.250", 4001), ("192.0.2.1", 9))
+
+    @classmethod
+    def _local_network_available(cls) -> bool:
+        """Return whether a non-loopback IPv4 route exists, without DNS.
+
+        This runs on the GUI thread. ``getaddrinfo(gethostname())`` can block
+        for seconds on Linux when the resolver is slow; connecting a UDP socket
+        only asks the routing table which local address would be used.
+        """
+        for target in cls.NETWORK_PROBE_TARGETS:
+            probe = None
+            try:
+                probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                probe.connect(target)
+                address = str(probe.getsockname()[0])
+            except OSError:
+                continue
+            finally:
+                if probe is not None:
+                    probe.close()
+            if address and not address.startswith("127.") and address != "0.0.0.0":
+                return True
+        return False
 
     def find_devices(self) -> None:
         """Refresh linked accounts, scan locally, then update all saved states."""
@@ -281,6 +575,8 @@ class DeviceController(DeviceAdminMixin, QObject):
             return
 
         has_network = self._local_network_available()
+        self._search_has_network = has_network
+        self._search_known_keys = self._identity_keys(self.devices)
         accounts = list({account["id"]: dict(account) for account in self.get_accounts()
                          if account.get("id") and account.get("provider")}.values())
         self._combined_search_active = True
@@ -309,9 +605,7 @@ class DeviceController(DeviceAdminMixin, QObject):
             self._search_results["tuya"] = {"available": None, "found": 0, "error": None}
 
         self.device_search_started.emit()
-        self.status_updated.emit(
-            "Finding devices and refreshing linked accounts…"
-        )
+        self.status_updated.emit("Searching for devices…")
 
         for metadata in accounts:
             def callback(value, error, account=metadata):
@@ -335,32 +629,50 @@ class DeviceController(DeviceAdminMixin, QObject):
             self._finish_search_transport("bluetooth")
 
     @staticmethod
-    def _list_account_devices(metadata: dict) -> list[dict]:
+    def _list_account_devices(metadata: dict) -> list[dict] | AccountFailure:
+        from ...accounts.errors import AccountError
         from ...accounts.manager import account_manager
 
-        client = account_manager.client_for({"account_id": metadata["id"]})
-        return account_manager.descriptors(metadata, client.list_devices())
+        try:
+            client = account_manager.client_for({"account_id": metadata["id"]})
+            return account_manager.descriptors(metadata, client.list_devices())
+        except AccountError as exc:
+            # Returned, not raised: start_task would reduce it to text and
+            # lose the code that says whether the sign-in itself is broken.
+            return AccountFailure.from_error(exc)
 
     def _on_account_refresh_finished(self, metadata, descriptors, error) -> None:
         self._account_refresh_tasks.pop(metadata["id"], None)
         if self._closing or not self._combined_search_active:
             return
+        failure: AccountFailure | None = None
+        if isinstance(descriptors, AccountFailure):
+            failure, descriptors = descriptors, None
+        elif error:
+            failure = AccountFailure(str(error))
         result = self._search_results["accounts"]
         current = next((account for account in self.get_accounts() if account.get("id") == metadata["id"]), None)
-        if current is not None and not error:
+        if current is not None and failure is None:
             try:
-                self.import_account_devices(current, descriptors or [])
-                if self._tuya_scan_results:
+                saved = bool(self.import_account_devices(current, descriptors or []))
+                if saved and self._tuya_scan_results:
                     self._on_tuya_scan_finished(self._tuya_scan_results, None)
             except Exception:
-                error = "Could not save refreshed account devices. Try Find Devices again."
-            else:
+                logger.warning("Saving refreshed account devices failed", exc_info=True)
+                saved = False
+            if saved:
                 result["refreshed"] += 1
                 result["found"] += len(descriptors or [])
-        if error and current is not None:
-            name = {"govee_account": "Govee", "govee_api": "Govee", "tuya_account": "Tuya",
-                    "lsc_account": "LSC", "tuya_qr": "Tuya / Smart Life", "tuya_project": "Tuya project"}.get(metadata["provider"], "Account")
-            result["errors"].append(f"{name}: {error}")
+            else:
+                # The save failure was already reported once (settings
+                # notice); it says nothing about the account itself.
+                failure = AccountFailure("Could not save refreshed account devices. Try Find devices again.",
+                                         "storage")
+        if failure is not None and current is not None:
+            name = _PROVIDER_SHORT_NAMES.get(metadata["provider"], "Account")
+            result["errors"].append(f"{name}: {failure.message}")
+            if failure.code != "storage":
+                self.record_account_failure(current, failure, network=self._search_has_network)
         result["available"] = result["refreshed"] > 0 or not result["errors"]
         self._finish_search_transport("account:" + metadata["id"])
 
@@ -442,8 +754,8 @@ class DeviceController(DeviceAdminMixin, QObject):
 
         try:
             self._store.save()
-        except Exception:
-            self.status_updated.emit("Could not save the device search results.")
+        except Exception as exc:
+            self._report_settings_failure(exc, "Could not save the device search results.")
 
         if self._combined_search_active:
             self._search_results["lan"].update(
@@ -562,6 +874,8 @@ class DeviceController(DeviceAdminMixin, QObject):
             return
         index = resolved
         device = self.devices[index]
+        updates = dict(updates)
+        self._note_account_health(device, updates)
 
         learned = updates.pop("learned", None)
         if isinstance(learned, dict):
@@ -575,6 +889,13 @@ class DeviceController(DeviceAdminMixin, QObject):
                 and updates["query_started_at"] < (state.get("last_command_at") or 0)):
             return  # A read begun before the last write cannot confirm it.
         updates = dict(updates)
+        self._remember_status_origin(key, device, updates)
+        if updates.get("status_origin") == "local" and updates.get("status_source") == "confirmed":
+            # The read someone was waiting for arrived; a later fallback for
+            # this device is ordinary bulk work again.
+            self._status_targets.discard(key)
+            # The device answers locally again: drop the "via account" note.
+            updates.setdefault("command_route", None)
         if updates.get("status_source") == "confirmed":
             state["readback_seen"] = True
             state["status_misses"] = 0
@@ -608,6 +929,22 @@ class DeviceController(DeviceAdminMixin, QObject):
         state["device_key"] = key
         self.device_states[key] = state
         self.device_state_updated.emit(index, dict(state))
+
+    def _note_account_health(self, device: Dict[str, Any], updates: Dict[str, Any]) -> None:
+        """Turn account status reads into account issues (and clear them).
+
+        Only errors that mean the account itself is broken (sign-in expired,
+        credentials unreadable) are recorded; an unreachable device is not an
+        account problem.
+        """
+        code = updates.pop("account_error_code", None)
+        account_id = device.get("account_id")
+        if not account_id:
+            return
+        if code in ACCOUNT_BROKEN_CODES:
+            self.record_account_failure(str(account_id), AccountFailure(str(updates.get("last_error") or ""), code))
+        elif updates.get("status_origin") == "cloud" and updates.get("status_source") == "confirmed":
+            self.clear_account_issue(str(account_id))
 
     def _record_command_state(
         self,
@@ -714,9 +1051,15 @@ class DeviceController(DeviceAdminMixin, QObject):
                 return
 
     def refresh_device_states(self) -> None:
-        """Refresh current state for all known devices."""
+        """Refresh current state for all known devices.
+
+        Local devices are read at once. Account devices join the account
+        pass, which runs at most once per ``ACCOUNT_STATUS_INTERVAL`` however
+        often this is called (the Devices page calls it on every show).
+        """
         if self._closing:
             return
+        self._retry_settings_load()
         if self._status_running():
             self._refresh_all_pending = True
             return
@@ -724,23 +1067,29 @@ class DeviceController(DeviceAdminMixin, QObject):
         self._start_status_refresh(indexes)
 
     def refresh_device_state_at(self, index: int) -> None:
-        """Refresh current state for one device."""
+        """Refresh current state for one device, without waiting for a window."""
         device = self._device_at(index)
         if self._closing or not device or self._is_ble(device):
             return
+        key = self._device_key(device)
+        self._status_targets.add(key)
         if self._status_running():
-            self._refresh_keys_pending[self._device_key(device)] = None
+            self._refresh_keys_pending[key] = None
             return
         self._start_status_refresh([index])
 
     def refresh_local_device_states(self) -> None:
         """Poll local-network devices so their online indicator stays current.
 
-        Called periodically by the Devices page. Account (cloud) devices are
-        skipped: their status costs an API round-trip and the vendor sessions
-        are rate-limited, while LAN/Tuya/BLE devices are cheap to probe.
+        Called periodically by the Devices page. Account devices are skipped:
+        their status costs a vendor round-trip and the sessions are
+        rate-limited, while LAN/Tuya/BLE devices are cheap to probe. A running
+        account pass never delays this.
         """
-        if self._closing or self._status_running():
+        if self._closing:
+            return
+        self._retry_settings_load()
+        if self._status_running():
             return
         indexes = [
             index
@@ -748,9 +1097,43 @@ class DeviceController(DeviceAdminMixin, QObject):
             if str(device.get("transport") or "lan").lower() in ("", "lan", "tuya")
             and not self._is_ble(device)
             and not is_cloud(device)
+            and not self._cloud_preferred(device)
         ]
         if indexes:
             self._start_status_refresh(indexes)
+
+    def refresh_account_device_states(self) -> None:
+        """Poll account-linked devices on a slower cadence.
+
+        The Devices page polls cheap LAN devices every 15 s. Account status
+        is also available for imported devices and for local Tuya devices
+        whose LAN path is unreachable, so a slower pass keeps power/colour
+        state in sync without hammering the vendor session. It runs on its
+        own thread, rate-limited by ``ACCOUNT_STATUS_INTERVAL``.
+
+        A local Tuya device whose LAN works stays on the local poll: reading
+        it through the account here would only add vendor traffic, and used
+        to keep it marked cloud-only for good (each read renewed the mark,
+        and marked devices skip the local poll that could clear it).
+        """
+        if self._closing:
+            return
+        indexes = []
+        for index, device in enumerate(self.devices):
+            if not device.get("account_id") or self._is_ble(device):
+                continue
+            if is_cloud(device):
+                # Imported account-only devices, with or without a recorded
+                # cloud_transport: the account is their only status source.
+                indexes.append(index)
+            elif (
+                str(device.get("transport") or "").lower() == "tuya"
+                and has_account_fallback(device)
+                and self._cloud_preferred(device)
+            ):
+                indexes.append(index)
+        if indexes:
+            self._start_status_refresh(indexes, prefer_cloud=True)
 
     def _schedule_status_refresh(self, index: int) -> None:
         """Restart one identity-bound confirmation sequence after each write."""
@@ -790,8 +1173,17 @@ class DeviceController(DeviceAdminMixin, QObject):
             self._confirmation_timers.pop(key, None)
             timer.deleteLater()
 
-    def _start_status_refresh(self, indexes: List[int]) -> None:
-        if self._closing or self._status_running():
+    def _start_status_refresh(
+        self, indexes: List[int], *, prefer_cloud: bool = False
+    ) -> None:
+        """Read the given devices: local ones now, account ones via the queue.
+
+        ``prefer_cloud`` sends every device to the account pass and asks the
+        account first. Otherwise devices on an account transport, and local
+        devices currently reached through their account, go to the account
+        pass; everything else is read by the local pass.
+        """
+        if self._closing:
             return
 
         indexed_devices = []
@@ -812,8 +1204,18 @@ class DeviceController(DeviceAdminMixin, QObject):
                         },
                     )
                 continue
-            indexed_devices.append((idx, device))
-        if not indexed_devices:
+            key = self._device_key(device)
+            if prefer_cloud:
+                self._queue_account_status(key, prefer_account=True)
+            elif is_cloud(device):
+                self._queue_account_status(key, prefer_account=False)
+            elif self._cloud_preferred(device) and has_account_fallback(device):
+                # Its LAN path just failed; skip the doomed local timeout.
+                self._queue_account_status(key, prefer_account=True)
+            else:
+                indexed_devices.append((idx, device))
+        self._start_account_pass()
+        if not indexed_devices or self._status_running():
             return
 
         # Capture the discovery fields before the pass; anything the devices
@@ -822,23 +1224,58 @@ class DeviceController(DeviceAdminMixin, QObject):
             self._device_key(device): {k: device.get(k) for k in DISCOVERY_KEYS}
             for _, device in indexed_devices
         }
+        self._launch_status_worker(indexed_devices, account=False)
+
+    def _launch_status_worker(
+        self,
+        indexed_devices: List[tuple[int, Dict[str, Any]]],
+        *,
+        account: bool,
+        prefer_keys: Sequence[str] | set[str] = (),
+    ) -> None:
+        """Start one status pass on its own thread (local or account)."""
+        if self._unvisited_status_keys:
+            # Devices a previous pass ran out of time for go first, so a few
+            # slow devices at the top of the list cannot starve the rest.
+            order = {key: rank for rank, key in enumerate(self._unvisited_status_keys)}
+            indexed_devices = sorted(
+                indexed_devices,
+                key=lambda item: order.get(self._device_key(item[1]), len(order)),
+            )
+            launched = {self._device_key(device) for _, device in indexed_devices}
+            self._unvisited_status_keys = [
+                key for key in self._unvisited_status_keys if key not in launched
+            ]
 
         thread = QThread(self)
-        worker = DeviceStatusWorker(indexed_devices)
+        worker = DeviceStatusWorker(
+            indexed_devices,
+            prefer_account_keys=prefer_keys,
+            defer_account_fallback=not account,
+            budget=self.STATUS_PASS_BUDGET,
+        )
         worker.moveToThread(thread)
 
         thread.started.connect(worker.run, Qt.ConnectionType.QueuedConnection)
         worker.state_updated.connect(self._merge_device_state, Qt.ConnectionType.QueuedConnection)
         worker.error.connect(self._on_status_error, Qt.ConnectionType.QueuedConnection)
+        worker.unvisited.connect(self._on_status_unvisited, Qt.ConnectionType.QueuedConnection)
         worker.finished.connect(thread.quit, Qt.ConnectionType.DirectConnection)
         thread.finished.connect(worker.deleteLater)
-        # Before _clear_status_refs: queued slots run in connection order, and
-        # the flush needs self.status_thread still set for its sender guard.
-        thread.finished.connect(self._flush_discovery, Qt.ConnectionType.QueuedConnection)
-        thread.finished.connect(self._clear_status_refs, Qt.ConnectionType.QueuedConnection)
-
-        self.status_thread = thread
-        self.status_worker = worker
+        if account:
+            thread.finished.connect(self._clear_account_status_refs, Qt.ConnectionType.QueuedConnection)
+            self.account_status_thread = thread
+            self.account_status_worker = worker
+        else:
+            worker.account_needed.connect(
+                self._on_account_status_needed, Qt.ConnectionType.QueuedConnection
+            )
+            # Before _clear_status_refs: queued slots run in connection order, and
+            # the flush needs self.status_thread still set for its sender guard.
+            thread.finished.connect(self._flush_discovery, Qt.ConnectionType.QueuedConnection)
+            thread.finished.connect(self._clear_status_refs, Qt.ConnectionType.QueuedConnection)
+            self.status_thread = thread
+            self.status_worker = worker
         thread.start()
 
     def select_device(self, index: int):
@@ -853,14 +1290,20 @@ class DeviceController(DeviceAdminMixin, QObject):
         previous = self.selected_device_index
         self.selected_device_index = index
 
-        try:
-            if previous != index:
-                # Clicking the same card repeatedly (e.g. to refresh) used to
-                # rewrite the whole settings file every time — a needless
-                # micro-stutter on every click.
+        if previous != index:
+            # Clicking the same card repeatedly (e.g. to refresh) used to
+            # rewrite the whole settings file every time — a needless
+            # micro-stutter on every click.
+            try:
                 self._store.save(selected=index)
+            except Exception as exc:
+                # The selection still applies for this session.
+                self._report_settings_failure(exc, "Could not remember the selected device.")
 
+        try:
             device = self.get_selected_device()
+            if device is None:
+                return
             self.device_selected.emit(device)
             self.status_updated.emit(
                 f"Selected device: {device.get('model', 'Unknown')}"
@@ -885,6 +1328,57 @@ class DeviceController(DeviceAdminMixin, QObject):
     def _is_ble(self, device: Dict[str, Any]) -> bool:
         return str(device.get("transport", "")).lower() == "ble"
 
+    @staticmethod
+    def _cloud_fallback_device(device: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Return a cloud-transport copy for a local Tuya device, if available."""
+        if str(device.get("cloud_transport", "")).lower() != "tuya_cloud":
+            return None
+        if not device.get("account_id"):
+            return None
+        fallback = dict(device)
+        fallback["transport"] = "tuya_cloud"
+        return fallback
+
+    def _cloud_preferred(self, device: Dict[str, Any]) -> bool:
+        until = self._cloud_preferred_until.get(self._device_key(device), 0.0)
+        if until <= time.time():
+            self._cloud_preferred_until.pop(self._device_key(device), None)
+            return False
+        return True
+
+    def is_cloud_preferred(self, device: Dict[str, Any]) -> bool:
+        """Whether a local device is temporarily using its cloud connection."""
+        return self._cloud_preferred(device)
+
+    def _remember_status_origin(
+        self, key: str, device: Dict[str, Any], updates: Dict[str, Any]
+    ) -> None:
+        # The worker's marker is bookkeeping, never device state.
+        lan_failed = bool(updates.pop("lan_failed", False))
+        # Only local Tuya devices have the expensive LAN timeout this cache
+        # avoids. Govee LAN status is cheap and stays on its 15 s local poll.
+        if str(device.get("transport") or "").lower() != "tuya":
+            self._lan_failed_keys.discard(key)
+            return
+        origin = updates.get("status_origin")
+        if origin == "cloud":
+            lan_failed = lan_failed or key in self._lan_failed_keys
+            self._lan_failed_keys.discard(key)
+            if lan_failed and updates.get("online"):
+                # The LAN read just failed and the account answered: give the
+                # cloud path a two-minute head start so the 15 s local poll
+                # and manual controls don't keep paying the LAN timeout. A
+                # read that went to the account first proves nothing about
+                # the LAN, so it neither starts nor renews this.
+                self._cloud_preferred_until[key] = time.time() + 120.0
+        elif origin == "local" and updates.get("status_source") in (
+            "confirmed",
+            "commanded",
+            "seen",
+        ):
+            self._cloud_preferred_until.pop(key, None)
+            self._lan_failed_keys.discard(key)
+
     def _run_adapter(self, device: Dict[str, Any], action) -> str:
         """Run a control action through the device's transport adapter.
 
@@ -893,8 +1387,39 @@ class DeviceController(DeviceAdminMixin, QObject):
         action, matching the previous behavior.
         """
         if pool.is_pooled(device):
-            action(pool.acquire(device))
-            return "BLE" if self._is_ble(device) else "LAN"
+            fallback = self._cloud_fallback_device(device)
+            if fallback is not None and self._cloud_preferred(device):
+                adapter = create_adapter(fallback)
+                try:
+                    action(adapter)
+                finally:
+                    try:
+                        adapter.close()
+                    except Exception:
+                        pass
+                return "Wi-Fi cloud"
+            try:
+                action(pool.acquire(device))
+                self._cloud_preferred_until.pop(self._device_key(device), None)
+                return "BLE" if self._is_ble(device) else "LAN"
+            except Exception as local_error:
+                if fallback is None:
+                    raise
+                logger.info(
+                    "Local control failed for %s; trying the cloud path: %s",
+                    device.get("name") or device.get("device_id"),
+                    local_error,
+                )
+                adapter = create_adapter(fallback)
+                try:
+                    action(adapter)
+                finally:
+                    try:
+                        adapter.close()
+                    except Exception:
+                        pass
+                self._cloud_preferred_until[self._device_key(device)] = time.time() + 120.0
+                return "Wi-Fi cloud"
 
         if not self._can_try_lan(device) and not is_cloud(device):
             raise RuntimeError(
@@ -939,30 +1464,38 @@ class DeviceController(DeviceAdminMixin, QObject):
                         "output": output, "error": None}
             except Exception as exc:
                 from ...accounts.errors import AccountError
-                message = (
-                    str(exc)
-                    if isinstance(exc, AccountError) or not is_cloud(device)
-                    else "The account could not complete this command. Reconnect the account and try again."
-                )
-                return {"key": key, "error": message}
+                logger.info("Control %s failed for %s (%s)", method, self._device_name(device), type(exc).__name__)
+                return {"key": key, "error": _control_error_text(exc, device),
+                        "account_error_code": exc.code if isinstance(exc, AccountError) else None}
 
         self._commands.tasks[key] = start_task(action, self._on_control_finished)
 
     @Slot(object, object)
     def _on_control_finished(self, result, error) -> None:
         if result is None:
-            self.status_updated.emit(error or "Device control failed.")
+            self._notify(error or "Device control failed.", NOTICE_ERROR)
             return
         key = result["key"]
         self._commands.tasks.pop(key, None)
         index = next((i for i, d in enumerate(self.devices) if self._device_key(d) == key), -1)
         if index >= 0 and not self._closing:
+            device = self.devices[index]
             if result.get("error"):
                 self._merge_device_state(index, {"last_error": result["error"], "stale": True, "status_source": "error"})
-                self.status_updated.emit(result["error"])
+                if result.get("account_error_code") in ACCOUNT_BROKEN_CODES and device.get("account_id"):
+                    self.record_account_failure(str(device["account_id"]),
+                                                AccountFailure(str(result["error"]), result["account_error_code"]))
+                # Failures name the device; successes stay silent (the card
+                # and inspector already show the new state).
+                self._notify(f"{self._device_name(device)}: {result['error']}", NOTICE_ERROR)
             else:
-                self._record_command_state(index, result["updates"], output=result.get("output"))
-                self.status_updated.emit(f"{self.devices[index].get('name') or self.devices[index].get('model', 'Device')}: command sent via {result['transport']}")
+                updates = dict(result.get("updates") or {})
+                via_account = result.get("transport") == "Wi-Fi cloud"
+                if not is_cloud(device):
+                    updates["command_route"] = "account" if via_account else "local"
+                self._record_command_state(index, updates, output=result.get("output"))
+                if via_account and device.get("account_id"):
+                    self.clear_account_issue(str(device["account_id"]))
                 self._schedule_status_refresh(index)
         pending = self._commands.pop_next(key)
         if pending is not None and index >= 0 and not self._closing:
@@ -1057,7 +1590,7 @@ class DeviceController(DeviceAdminMixin, QObject):
                 {"available": False, "found": 0, "error": message}
             )
         else:
-            self.status_updated.emit(f"Bluetooth search unavailable: {message}")
+            self.status_updated.emit("Bluetooth search unavailable. Check that Bluetooth is on.")
         self.ble_scan_finished.emit()
         if self._combined_search_active:
             self._finish_search_transport("bluetooth")
@@ -1160,9 +1693,13 @@ class DeviceController(DeviceAdminMixin, QObject):
         if self._search_pending or not self._combined_search_active:
             return
 
+        known = self._search_known_keys
+        self._search_known_keys = None
+        new_devices = self._count_new_devices(known)
         summary = {
             name: dict(result) for name, result in self._search_results.items()
         }
+        summary["new_devices"] = new_devices
         self._combined_search_active = False
         self.device_search_finished.emit(summary)
 
@@ -1172,72 +1709,45 @@ class DeviceController(DeviceAdminMixin, QObject):
         accounts = summary.get("accounts", {})
         issues = []
         if not lan.get("available"):
-            issues.append("local network unavailable")
+            issues.append("no local network")
         if not bluetooth.get("available"):
             issues.append("Bluetooth unavailable")
         if tuya and not tuya.get("available"):
             issues.append("Tuya LAN search unavailable")
         if accounts.get("errors"):
-            issues.append("some accounts could not refresh; open Accounts to reconnect if needed")
+            issues.append(f"{len(accounts['errors'])} account(s) couldn't refresh")
 
-        found = int(lan.get("found", 0)) + int(bluetooth.get("found", 0)) + int(tuya.get("found", 0)) + int(accounts.get("found", 0))
+        # One outcome only. New devices get a single success notice; problems
+        # are shown by the Devices page as InfoBars; a quiet search says
+        # nothing beyond the status bar.
+        if new_devices:
+            self.notice.emit(
+                f"Found {new_devices} new device{'s' if new_devices != 1 else ''}", NOTICE_SUCCESS
+            )
         if issues:
-            self.status_updated.emit(
-                "Device search complete. " + "; ".join(issues) + ". Updating saved device readings."
-            )
-        elif found:
-            self.status_updated.emit(
-                f"Device search complete. Updating {len(self.devices)} saved "
-                f"device{'s' if len(self.devices) != 1 else ''}."
-            )
+            self.status_updated.emit("Device search finished: " + "; ".join(issues) + ".")
+        elif not new_devices:
+            self.status_updated.emit("Device search finished. No new devices.")
         else:
             self.status_updated.emit(
-                "Device search complete. No new supported devices found. Updating saved device readings."
+                f"Device search finished. Found {new_devices} new device{'s' if new_devices != 1 else ''}."
             )
         self.refresh_device_states()
 
-    def check_firmware_at(self, index: int) -> None:
-        """Read a cloud-linked device's firmware version from its account."""
-        device = self._device_at(index)
-        if not device or self._closing:
-            return
-        if not device.get("account_id"):
-            self.status_updated.emit("Connect the device's vendor account to check firmware.")
-            return
-        from ...accounts.manager import account_manager
+    @staticmethod
+    def _identity_keys(device_list) -> set[str]:
+        keys: set[str] = set()
+        for device in device_list or ():
+            keys.update(devices._device_keys(device))
+            keys.add(groups.device_key(device))
+        keys.discard("")
+        return keys
 
-        def action():
-            client = account_manager.client_for(device)
-            getter = getattr(client, "firmware_info", None)
-            if getter is None:
-                raise RuntimeError(
-                    "Firmware checks need the LSC email/password account connection."
-                )
-            return getter(device)
-
-        name = device.get("name") or device.get("model") or "Device"
-
-        def done(value, error) -> None:
-            if error:
-                self.status_updated.emit(f"{name}: {error}")
-                return
-            if not value:
-                self.status_updated.emit(f"{name}: no firmware information reported.")
-                return
-            pending = [module for module in value if module.get("upgrade_available")]
-            if pending:
-                versions = ", ".join(str(module.get("version")) for module in pending)
-                self.status_updated.emit(f"{name}: firmware update available ({versions}).")
-                return
-            main = next(
-                (module for module in value if module.get("module") == "Main Module"),
-                value[0],
-            )
-            self.status_updated.emit(
-                f"{name}: firmware {main.get('version', 'unknown')} · up to date"
-            )
-
-        start_task(action, done)
+    def _count_new_devices(self, known: Optional[set[str]]) -> int:
+        """Devices that share no identity with anything known before the search."""
+        if known is None:
+            return 0
+        return sum(1 for device in self.devices if not (self._identity_keys([device]) & known))
 
     def set_zone_count_at(self, index: int, zone_count: Optional[int]) -> bool:
         """Set or clear a per-device LED/zone count override."""
@@ -1246,10 +1756,10 @@ class DeviceController(DeviceAdminMixin, QObject):
             return False
 
         if str(device.get("transport", "lan")).lower() not in ("lan", "tuya") or not self.get_capabilities_at(index).supports_segments:
-            self.status_updated.emit("This device does not support configurable LED zones.")
+            self._notify("This device does not support configurable LED zones.", NOTICE_ERROR)
             return False
         if self.is_device_busy(device):
-            self.status_updated.emit("Finish the current output before changing this device's zone count.")
+            self._notify("Finish the current output before changing this device's zone count.", NOTICE_ERROR)
             return False
 
         try:
@@ -1266,14 +1776,11 @@ class DeviceController(DeviceAdminMixin, QObject):
 
             updated = list(self.devices)
             updated[index] = device
-            try:
-                settings = devices.get_data(refresh=False)
-            except Exception:
-                settings = {"devices": [], "selectedDevice": self.selected_device_index, "time": 0}
-
-            settings["devices"] = updated
-            settings["selectedDevice"] = self.selected_device_index
-            devices.writeJSON(settings)
+            if not self._write_settings(
+                {"devices": updated, "selectedDevice": self.selected_device_index},
+                failure="Could not save the zone count.",
+            ):
+                return False
             self.devices = updated
 
             self.device_updated.emit(index, dict(device))
@@ -1283,8 +1790,12 @@ class DeviceController(DeviceAdminMixin, QObject):
                 self.device_selected.emit(selected)
             self.status_updated.emit(message)
             return True
-        except Exception as e:
-            self.status_updated.emit(f"Error: {str(e)}")
+        except ValueError as e:
+            self._notify(str(e), NOTICE_ERROR)
+            return False
+        except Exception:
+            logger.warning("Zone count change failed", exc_info=True)
+            self._notify("Could not change the zone count.", NOTICE_ERROR)
             return False
 
     def turn_on_off(self, on: bool = True):
@@ -1392,7 +1903,12 @@ class DeviceController(DeviceAdminMixin, QObject):
         moved = []
         for index, device in enumerate(self.devices):
             typed = as_device(device)
-            if typed.transport != "tuya" or typed.device_id != device_id or typed.ip == address:
+            if typed.transport != "tuya" or typed.device_id != device_id:
+                continue
+            # A live LAN beat means the local path is healthy again; stop
+            # preferring cloud for this device immediately.
+            self._cloud_preferred_until.pop(self._device_key(device), None)
+            if typed.ip == address:
                 continue
             if self.is_device_busy(device):
                 continue
@@ -1404,10 +1920,10 @@ class DeviceController(DeviceAdminMixin, QObject):
         if updated is None:
             return
         try:
-            settings = self._load_settings_safe()
-            settings["devices"] = updated
-            devices.writeJSON(settings)
-        except Exception:
+            self._store.write({"devices": updated})
+        except Exception as exc:
+            # The adapters already follow the beat; the next beat retries.
+            logger.warning("Could not save a moved device address (%s)", type(exc).__name__)
             return
         self.devices = updated
         self.devices_discovered.emit(self.devices)
@@ -1438,12 +1954,11 @@ class DeviceController(DeviceAdminMixin, QObject):
                         device["transport"] = "tuya"
         try:
             if matched:
-                settings = self._load_settings_safe()
-                settings["devices"] = updated
-                devices.writeJSON(settings)
+                self._store.write({"devices": updated})
                 self.devices = updated
                 self.devices_discovered.emit(self.devices)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Could not save local Tuya connections (%s)", type(exc).__name__)
             error = "Could not save the local Tuya connections."
         if self._combined_search_active:
             self._search_results["tuya"] = {"available": not bool(error), "found": matched, "seen": len(found), "error": error}
@@ -1461,8 +1976,15 @@ class DeviceController(DeviceAdminMixin, QObject):
             timer.deleteLater()
         self._confirmation_timers.clear()
         self._confirmation_delays.clear()
+        self._account_pass_timer.stop()
+        self._account_status_queue.clear()
         running = False
-        for thread in (self.discovery_thread, self.status_thread, self._ble_scan_thread):
+        for thread in (
+            self.discovery_thread,
+            self.status_thread,
+            self.account_status_thread,
+            self._ble_scan_thread,
+        ):
             if thread is not None:
                 try:
                     thread.requestInterruption()
@@ -1474,20 +1996,85 @@ class DeviceController(DeviceAdminMixin, QObject):
 
     # --- Sync groups -------------------------------------------------------
 
+    # --- Settings persistence ----------------------------------------------
+
     def _load_settings_safe(self) -> Dict[str, Any]:
+        """Settings for display only (accounts, groups); never saved back."""
         return self._store.load_safe()
+
+    @staticmethod
+    def _settings_failure_text(exc: BaseException, failure: str) -> str:
+        if isinstance(exc, SettingsReloaded):
+            return str(exc)
+        if isinstance(exc, devices.SettingsUnavailable):
+            return SETTINGS_UNREADABLE
+        return f"{failure} {SETTINGS_UNWRITABLE}"
+
+    def _report_settings_failure(self, exc: BaseException, failure: str) -> None:
+        # Exception type only: the GUI shows a friendly message instead of
+        # raw OS text, and the log never needs more than the kind of failure.
+        logger.warning("Settings were not saved (%s): %s", type(exc).__name__, failure)
+        self._notify(self._settings_failure_text(exc, failure), NOTICE_ERROR)
+
+    def _write_settings(self, updates, *, failure: str) -> bool:
+        """Save *updates* (top-level keys, or a function of the fresh file).
+
+        Returns False after reporting a friendly status message instead of
+        letting a write error reach a button slot.
+        """
+        try:
+            self._store.write(updates)
+        except Exception as exc:
+            self._report_settings_failure(exc, failure)
+            return False
+        return True
+
+    def _retry_settings_load(self) -> None:
+        """Retry a startup load that failed because settings.json was locked."""
+        if self._store.needs_reload:
+            self._store.retry_load()
+
+    def _on_settings_reloaded(self) -> None:
+        # Called from inside a store read; announce from the event loop so
+        # views never rebuild in the middle of the operation that triggered it.
+        QTimer.singleShot(0, self._announce_reloaded_settings)
+
+    def _announce_reloaded_settings(self) -> None:
+        if self._closing:
+            return
+        logger.info("Settings are readable again; loaded %d saved device(s)", len(self.devices))
+        self.devices_discovered.emit(self.devices)
+        device = self.get_selected_device()
+        if device:
+            self.device_selected.emit(device)
+        self.groups_changed.emit(self.get_groups())
+        self._notify(
+            f"Settings are readable again. Loaded {len(self.devices)} saved device(s).", NOTICE_INFO
+        )
+        self._prune_session_accounts(self._load_settings_safe().get("accounts"))
 
     def get_groups(self) -> List[Dict[str, Any]]:
         """Return the saved sync groups."""
         return groups.list_groups(self._load_settings_safe())
 
-    def _persist_groups(self, updated: List[Dict[str, Any]]) -> None:
-        settings = self._load_settings_safe()
-        settings["devices"] = self.devices
-        settings["selectedDevice"] = self.selected_device_index
-        settings["groups"] = updated
-        devices.writeJSON(settings)
-        self.groups_changed.emit(updated)
+    def _persist_groups(
+        self, change: Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]
+    ) -> bool:
+        """Apply *change* to the groups as saved on disk right now and save.
+
+        Returns False (after a status message) when settings could not be
+        read or written; nothing else in settings.json is touched.
+        """
+        result: Dict[str, List[Dict[str, Any]]] = {}
+
+        def update(settings: Dict[str, Any]) -> Dict[str, Any]:
+            result["groups"] = change(groups.list_groups(settings))
+            return {"groups": result["groups"]}
+
+        if not self._write_settings(update, failure="Could not save the sync groups."):
+            return False
+        self.groups_changed.emit(result["groups"])
+        return True
 
     def save_group(self, name: str, indices: List[int]) -> bool:
         """Create or replace a group from the given device indices."""
@@ -1495,17 +2082,17 @@ class DeviceController(DeviceAdminMixin, QObject):
         members = [self.devices[i] for i in indices if 0 <= i < len(self.devices)
                    and capabilities_for_device(self.devices[i]).supports_streaming]
         if not name or not members:
-            self.status_updated.emit("Group needs a name and at least one device.")
+            self._notify("Group needs a name and at least one device.", NOTICE_ERROR)
             return False
-        existing = self.get_groups()
-        updated = groups.upsert_group(existing, groups.make_group(name, members))
-        self._persist_groups(updated)
+        group = groups.make_group(name, members)
+        if not self._persist_groups(lambda existing: groups.upsert_group(existing, group)):
+            return False
         self.status_updated.emit(f"Saved group '{name}' ({len(members)} device(s))")
         return True
 
     def delete_group(self, name: str) -> bool:
-        updated = groups.remove_group(self.get_groups(), name)
-        self._persist_groups(updated)
+        if not self._persist_groups(lambda existing: groups.remove_group(existing, name)):
+            return False
         self.status_updated.emit(f"Deleted group '{name}'")
         return True
 

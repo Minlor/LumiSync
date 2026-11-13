@@ -3,6 +3,7 @@ Sync controller for the LumiSync GUI.
 This module handles synchronization functionality with PySide6 signals.
 """
 
+import sys
 import threading
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -12,8 +13,9 @@ from ... import connection, devices, led_mapping
 from ...config.options import BRIGHTNESS, SYNC
 from ...config.sync_settings import SYNC_SETTINGS_KEYS, SyncSettings
 from ...device import Device, DeviceLike, as_device
-from ...sync import audio
+from ...sync import audio, monitor
 from ...sync.session import SyncSession
+from ..app_settings import app_settings
 
 
 # Capture the real class before tests or integrations monkeypatch QSettings.
@@ -45,6 +47,7 @@ def _apply_legacy_options(settings: SyncSettings) -> None:
         setattr(SYNC, name, getattr(settings, name))
     BRIGHTNESS.monitor = settings.monitor_brightness
     BRIGHTNESS.music = settings.music_brightness
+    SYNC.monitor_boost = settings.monitor_boost
 
 
 def load_sync_settings(settings: QSettings, *, shared: bool = False) -> SyncSettings:
@@ -74,7 +77,7 @@ def get_led_mapping_from_settings(
     aspect_ratio: float = led_mapping.DEFAULT_ASPECT_RATIO,
 ) -> List[led_mapping.NormalizedRect]:
     """Load the monitor LED mapping from QSettings."""
-    settings = QSettings("Minlor", "LumiSync")
+    settings = app_settings()
     return led_mapping.load_mapping_from_settings(settings, segment_count, aspect_ratio)
 
 
@@ -105,6 +108,74 @@ def sample_region_color(
     return screen.getpixel(point)
 
 
+def windows_display_device(screen: Any) -> str:
+    """Return the GDI device name (``\\\\.\\DISPLAYn``) showing a QScreen, or "".
+
+    Qt 6 names Windows screens after the monitor model ("Odyssey G5"), while
+    dxcam knows outputs only by their GDI device name. Qt keeps a screen's
+    top-left corner in native pixels, so the monitor under the screen's
+    centre identifies it.
+    """
+    if sys.platform != "win32":
+        return ""
+    import ctypes
+    from ctypes import wintypes
+
+    class MONITORINFOEXW(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("rcMonitor", wintypes.RECT),
+            ("rcWork", wintypes.RECT),
+            ("dwFlags", wintypes.DWORD),
+            ("szDevice", wintypes.WCHAR * 32),
+        ]
+
+    try:
+        geometry = screen.geometry()
+        ratio = float(screen.devicePixelRatio() or 1.0)
+        x = geometry.x() + int(geometry.width() * ratio) // 2
+        y = geometry.y() + int(geometry.height() * ratio) // 2
+        # A private handle so argtypes never clash with other ctypes users.
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+        user32.MonitorFromPoint.restype = wintypes.HMONITOR
+        user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFOEXW)]
+        user32.GetMonitorInfoW.restype = wintypes.BOOL
+        monitor_handle = user32.MonitorFromPoint(wintypes.POINT(x, y), 0)  # MONITOR_DEFAULTTONULL
+        if not monitor_handle:
+            return ""
+        info = MONITORINFOEXW()
+        info.cbSize = ctypes.sizeof(MONITORINFOEXW)
+        if not user32.GetMonitorInfoW(monitor_handle, ctypes.byref(info)):
+            return ""
+        return str(info.szDevice or "")
+    except Exception:
+        return ""
+
+
+def screen_name_for_index(display_index: int) -> str:
+    """Return the capture name of a Settings display index, or "".
+
+    The stored setting is an index into Qt's screen list (primary first). The
+    name (the GDI device name on Windows, else ``QScreen.name()``) is what
+    lets capture find the same display among every graphics adapter's
+    outputs. GUI thread only.
+    """
+    try:
+        from PySide6.QtGui import QGuiApplication
+
+        if not isinstance(QGuiApplication.instance(), QGuiApplication):
+            return ""
+        screens = QGuiApplication.screens()
+        index = int(display_index)
+        if 0 <= index < len(screens):
+            screen = screens[index]
+            return windows_display_device(screen) or str(screen.name() or "")
+    except Exception:
+        pass
+    return ""
+
+
 def _worker_settings(settings, controller=None) -> SyncSettings:
     """Accept a typed settings object, or the legacy controller test double."""
     if isinstance(settings, SyncSettings):
@@ -114,6 +185,9 @@ def _worker_settings(settings, controller=None) -> SyncSettings:
         getter = getattr(controller, "get_monitor_brightness", None)
         if getter is not None:
             resolved.monitor_brightness = max(0.1, min(1.0, float(getter())))
+        getter = getattr(controller, "get_monitor_boost", None)
+        if getter is not None:
+            resolved.monitor_boost = max(1.0, min(1.5, float(getter())))
         getter = getattr(controller, "get_music_brightness", None)
         if getter is not None:
             resolved.music_brightness = max(0.1, min(1.0, float(getter())))
@@ -128,6 +202,7 @@ class MonitorSyncWorker(QObject):
 
     status_updated = Signal(str)
     error_occurred = Signal(str)
+    streaming_started = Signal(int)  # devices that opened their stream
     finished = Signal()
 
     def __init__(self, server, devices, stop_event, settings, controller=None):
@@ -147,6 +222,7 @@ class MonitorSyncWorker(QObject):
             mapping_provider=get_led_mapping_from_settings,
             on_status=self.status_updated.emit,
             on_error=self.error_occurred.emit,
+            on_started=self.streaming_started.emit,
         )
         try:
             session.run()
@@ -160,6 +236,7 @@ class MusicSyncWorker(QObject):
     status_updated = Signal(str)
     error_occurred = Signal(str)
     auto_state_changed = Signal(str, object)  # reaction key, representative RGB
+    streaming_started = Signal(int)  # devices that opened their stream
     finished = Signal()
 
     def __init__(self, server, devices, stop_event, settings, controller=None):
@@ -179,6 +256,7 @@ class MusicSyncWorker(QObject):
             on_status=self.status_updated.emit,
             on_error=self.error_occurred.emit,
             on_music_auto_state=self.auto_state_changed.emit,
+            on_started=self.streaming_started.emit,
         )
         try:
             session.run()
@@ -194,6 +272,7 @@ class SyncController(QObject):
     sync_started = Signal(str)  # mode: "monitor" or "music"
     sync_stopped = Signal()
     brightness_changed = Signal(str, float)  # mode, value
+    monitor_boost_changed = Signal(float)  # 1.0-1.5 tone-map gain
     sync_error = Signal(str)
     music_auto_state_changed = Signal(str, object)
 
@@ -216,9 +295,10 @@ class SyncController(QObject):
         # Keep mode-specific brightness stable across launches. The dataclass is
         # the one object workers receive; the legacy option namespaces are only
         # mirrored for external integrations.
-        self._settings = QSettings("Minlor", "LumiSync")
+        self._settings = app_settings()
         self.sync_settings = load_sync_settings(self._settings, shared=True)
         self.monitor_brightness = self.sync_settings.monitor_brightness
+        self.monitor_boost = self.sync_settings.monitor_boost
         self.music_brightness = self.sync_settings.music_brightness
         self.monitor_display_index = self.sync_settings.monitor_display
 
@@ -228,9 +308,28 @@ class SyncController(QObject):
 
     def _apply_settings_to_options(self) -> None:
         self.monitor_brightness = self.sync_settings.monitor_brightness
+        self.monitor_boost = self.sync_settings.monitor_boost
         self.music_brightness = self.sync_settings.music_brightness
         self.monitor_display_index = self.sync_settings.monitor_display
+        self._resolve_monitor_display_name()
         _apply_legacy_options(self.sync_settings)
+
+    def _resolve_monitor_display_name(self) -> None:
+        """Pair the stored display index with that screen's name for capture."""
+        self.sync_settings.monitor_display_name = screen_name_for_index(
+            self.sync_settings.monitor_display
+        )
+
+    def monitor_capture_supported(self) -> Tuple[bool, str]:
+        """Whether this session can capture the screen, and the message if not.
+
+        Wayland has no direct screen grab; the GUI can use this to disable the
+        Monitor start button up front.
+        """
+        try:
+            return monitor.capture_supported()
+        except Exception as exc:
+            return False, f"Screen capture is unavailable: {exc}"
 
     def flush_sync_settings(self) -> None:
         """Write the live settings to QSettings and the shared JSON file."""
@@ -264,6 +363,17 @@ class SyncController(QObject):
         self._schedule_sync_persist()
         self.brightness_changed.emit("monitor", self.sync_settings.monitor_brightness)
 
+    def set_monitor_boost(self, value: float):
+        """Set the hue-preserving tone-map boost for monitor sync (1.0-1.5)."""
+        self.sync_settings.monitor_boost = max(1.0, min(1.5, float(value)))
+        self._apply_settings_to_options()
+        self._settings.setValue(
+            SYNC_SETTINGS_KEYS["monitor_boost"],
+            self.sync_settings.monitor_boost,
+        )
+        self._schedule_sync_persist()
+        self.monitor_boost_changed.emit(self.sync_settings.monitor_boost)
+
     def set_monitor_display(self, display_index: int) -> None:
         """Select which display to use for monitor sync (0-based)."""
         self.sync_settings.monitor_display = max(0, int(display_index))
@@ -290,6 +400,10 @@ class SyncController(QObject):
     def get_monitor_brightness(self) -> float:
         """Get brightness for monitor sync mode."""
         return self.sync_settings.monitor_brightness
+
+    def get_monitor_boost(self) -> float:
+        """Get the hue-preserving tone-map boost for monitor sync."""
+        return self.sync_settings.monitor_boost
 
     def get_music_brightness(self) -> float:
         """Get brightness for music sync mode."""
@@ -380,6 +494,12 @@ class SyncController(QObject):
         if not selected:
             self.status_updated.emit("No devices selected. Please select at least one device first.")
             return
+        if mode == "monitor":
+            # Refuse before any device is switched into its stream mode.
+            supported, reason = self.monitor_capture_supported()
+            if not supported:
+                self.status_updated.emit(reason)
+                return
 
         if self.sync_thread is not None:
             # Never block the GUI waiting for a Bluetooth/Tuya connect to time
@@ -392,14 +512,10 @@ class SyncController(QObject):
             self.stop_sync(announce=False)
             return
 
+        worker_cls = MonitorSyncWorker if mode == "monitor" else MusicSyncWorker
         if mode == "monitor":
-            worker_cls = MonitorSyncWorker
-            brightness = self.sync_settings.monitor_brightness
-            display_mode = "Monitor"
-        else:
-            worker_cls = MusicSyncWorker
-            brightness = self.sync_settings.music_brightness
-            display_mode = "Music"
+            # Screens may have been plugged in or out since the last change.
+            self._resolve_monitor_display_name()
 
         # The CLI reads settings.json, so publish the current live values
         # before a session starts. Tests with a temporary QSettings file are
@@ -428,6 +544,9 @@ class SyncController(QObject):
         self.sync_thread.started.connect(self.sync_worker.run)
         self.sync_worker.status_updated.connect(self.status_updated.emit)
         self.sync_worker.error_occurred.connect(self.sync_error.emit)
+        streaming_started = getattr(self.sync_worker, "streaming_started", None)
+        if streaming_started is not None:
+            streaming_started.connect(self._on_streaming_started)
         if hasattr(self.sync_worker, "finished"):
             self.sync_worker.finished.connect(self.sync_thread.quit)
         if isinstance(self.sync_worker, MusicSyncWorker):
@@ -439,9 +558,24 @@ class SyncController(QObject):
 
         self.sync_thread.start()
         self.sync_started.emit(mode)
-        device_word = "device" if len(selected) == 1 else "devices"
+        # "Started" is reported by _on_streaming_started once devices opened.
+
+    @Slot(int)
+    def _on_streaming_started(self, opened: int) -> None:
+        """Report a started sync only after its devices accepted the stream."""
+        worker = self.sender()
+        mode = self.current_sync_mode
+        if mode is None or (worker is not None and worker is not self.sync_worker):
+            return
+        selected = list(self.active_devices)
+        opened = max(0, int(opened))
+        brightness = self.sync_settings.brightness_for(mode)
+        if 0 < opened < len(selected):
+            devices_text = f"{opened} of {len(selected)} devices"
+        else:
+            devices_text = f"{opened} {'device' if opened == 1 else 'devices'}"
         self.status_updated.emit(
-            f"{display_mode} sync started with {len(selected)} {device_word} "
+            f"{mode.capitalize()} sync started with {devices_text} "
             f"at {int(brightness * 100)}% brightness"
         )
         zone_hint = self._zone_hint_for(selected)

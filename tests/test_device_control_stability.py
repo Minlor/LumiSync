@@ -65,6 +65,72 @@ class DeviceControlStabilityTests(unittest.TestCase):
             self.assertIsNone(getattr(controller, thread_field))
             thread.deleteLater.assert_called_once_with()
 
+    def test_local_tuya_failure_falls_back_to_the_cloud_when_available(self):
+        controller = self.controller()
+        device = {
+            "transport": "tuya",
+            "device_id": "battletron",
+            "ip": "192.0.2.10",
+            "local_key": "k",
+            "cloud_transport": "tuya_cloud",
+            "account_id": "account",
+            "name": "Battletron",
+        }
+        local = Mock()
+        local.set_power.side_effect = RuntimeError("device unreachable")
+        cloud = Mock()
+
+        with patch(
+            "lumisync.gui.controllers.device_controller.pool.is_pooled",
+            return_value=True,
+        ), patch(
+            "lumisync.gui.controllers.device_controller.pool.acquire",
+            return_value=local,
+        ), patch(
+            "lumisync.gui.controllers.device_controller.create_adapter",
+            return_value=cloud,
+        ):
+            transport = controller._run_adapter(
+                device, lambda adapter: adapter.set_power(True)
+            )
+
+        self.assertEqual(transport, "Wi-Fi cloud")
+        cloud.set_power.assert_called_once_with(True)
+        cloud.close.assert_called_once_with()
+
+    def test_cloud_preferred_control_skips_the_local_timeout(self):
+        controller = self.controller()
+        device = {
+            "transport": "tuya",
+            "device_id": "battletron",
+            "ip": "192.0.2.10",
+            "local_key": "k",
+            "cloud_transport": "tuya_cloud",
+            "account_id": "account",
+            "name": "Battletron",
+        }
+        controller._cloud_preferred_until[controller._device_key(device)] = time.time() + 60
+        local = Mock()
+        cloud = Mock()
+
+        with patch(
+            "lumisync.gui.controllers.device_controller.pool.is_pooled",
+            return_value=True,
+        ), patch(
+            "lumisync.gui.controllers.device_controller.pool.acquire",
+            return_value=local,
+        ), patch(
+            "lumisync.gui.controllers.device_controller.create_adapter",
+            return_value=cloud,
+        ):
+            transport = controller._run_adapter(
+                device, lambda adapter: adapter.set_power(True)
+            )
+
+        self.assertEqual(transport, "Wi-Fi cloud")
+        local.set_power.assert_not_called()
+        cloud.set_power.assert_called_once_with(True)
+
     def test_rapid_input_keeps_only_the_latest_pending_value_for_each_control(self):
         controller = self.controller()
         key = controller._device_key(controller.devices[0])

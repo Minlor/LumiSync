@@ -23,7 +23,12 @@ class FindDevicesRefreshTests(unittest.TestCase):
 
     def controller(self):
         with patch("lumisync.gui.controllers.device_controller.devices.get_data", return_value={"devices": [], "selectedDevice": 0}):
-            return DeviceController()
+            controller = DeviceController()
+        # Each controller subscribes to the process-wide Tuya presence feed.
+        # Leaving it subscribed lets a later test's beat reach this unpatched
+        # controller, which then saves its fixture over settings.json.
+        self.addCleanup(controller.shutdown)
+        return controller
 
     def start_search(self, controller, accounts):
         tasks = []
@@ -251,14 +256,20 @@ class FindDevicesRefreshTests(unittest.TestCase):
             QTest.qWait(240)
             self.assertFalse(view.main_column.isHidden())
             self.assertTrue(view.inspector_scroll.isVisible())
+            # The old per-transport status panel is gone; problems are InfoBars.
+            self.assertFalse(hasattr(view, "accounts_status"))
+            self.assertFalse(hasattr(view, "search_status"))
+            controller.set_account_issue({"id": "lsc", "provider": "lsc_account",
+                                          "label": "LSC Smart Connect · m•••@•••.com"}, "Sign in again.")
             view._on_search_finished({"accounts": {"total": 3, "refreshed": 2, "found": 4, "errors": ["LSC: Sign in again."]}})
-            self.assertIn("2 of 3", view.accounts_status.text())
-            self.assertIn("Sign in again", view.accounts_status.toolTip())
+            self.assertFalse(view.account_info_bar.isHidden())
+            self.assertIn("LSC Smart Connect", view.account_info_bar.title())
+            self.assertEqual(view.account_info_bar.message(), "Sign in again.")
             view._stop_inspector_animation()
             view.close()
             view.deleteLater()
 
-    def test_refresh_reordering_preserves_the_open_device_and_group_choices(self):
+    def test_refresh_reordering_preserves_the_open_device(self):
         controller = self.controller()
         first = {"model": "Same model", "device_id": "first", "transport": "lan", "ip": "192.0.2.1"}
         second = {"model": "Same model", "device_id": "second", "transport": "lan", "ip": "192.0.2.2"}
@@ -271,16 +282,13 @@ class FindDevicesRefreshTests(unittest.TestCase):
             view.show()
             self.app.processEvents()
             view._open_inspector(1)
-            view._selected = {1}
             controller.devices = [second, first]
             view._rebuild_cards()
             self.assertEqual(view._inspected_index, 0)
-            self.assertEqual(view._selected, {0})
             self.assertEqual(view.inspector._device["device_id"], "second")
             controller.devices = [first]
             view._rebuild_cards()
             self.assertEqual(view._inspected_index, -1)
-            self.assertFalse(view._selected)
             self.assertTrue(view.main_column.isVisible())
             view.close()
             view.deleteLater()
