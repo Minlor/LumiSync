@@ -107,7 +107,7 @@ class DailyEnergyChart(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self.hasFocus():
-            painter.setPen(QPen(qcolor("accent_bright"), 1.5))
+            painter.setPen(QPen(qcolor("fl_text"), 1.5))
             painter.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 6, 6)
         if not self._days:
             return
@@ -131,7 +131,7 @@ class DailyEnergyChart(QWidget):
                 continue
             height = max(2, value / maximum * (plot.height() - 6)) if maximum > 0 else 2
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(qcolor("accent_bright" if index == self._selected else "accent"))
+            painter.setBrush(qcolor("fl_accent_hover" if index == self._selected else "fl_accent"))
             painter.drawRoundedRect(QRectF(x, plot.bottom() - height, width, height), min(2, width / 3), 2)
         painter.setPen(qcolor("text_dim"))
         for index, alignment in ((0, Qt.AlignmentFlag.AlignLeft), (len(self._days) - 1, Qt.AlignmentFlag.AlignRight)):

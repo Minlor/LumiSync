@@ -67,9 +67,13 @@ _DWMWA_BORDER_COLOR = 34
 _DWMWA_CAPTION_COLOR = 35
 _DWMWA_TEXT_COLOR = 36
 
-_TITLEBAR_CAPTION = QColor("#242430")
-_TITLEBAR_TEXT = QColor("#F3F4F8")
-_TITLEBAR_BORDER = QColor("#555267")
+# Neutral WinUI dark chrome: the caption matches the solid window
+# background (fl_base) so title bar and content read as one surface.
+_TITLEBAR_CAPTION = QColor("#1C1C1C")
+_TITLEBAR_TEXT = QColor("#FFFFFF")
+_TITLEBAR_BORDER = QColor("#3A3A3A")
+# DWMWA_COLOR_DEFAULT: let DWM draw the caption (with the system backdrop).
+_DWM_COLOR_DEFAULT = 0xFFFFFFFF
 
 
 def _colorref(color: QColor | str) -> int:
@@ -82,11 +86,15 @@ def _colorref(color: QColor | str) -> int:
 def set_windows_titlebar_colors(
     hwnd: int,
     *,
-    caption: QColor | str = _TITLEBAR_CAPTION,
+    caption: QColor | str | None = _TITLEBAR_CAPTION,
     text: QColor | str = _TITLEBAR_TEXT,
     border: QColor | str = _TITLEBAR_BORDER,
 ) -> bool:
-    """Make native Windows chrome part of LumiSync's visual foundation."""
+    """Make native Windows chrome part of LumiSync's visual foundation.
+
+    ``caption=None`` hands the caption back to DWM, so a Mica or Acrylic
+    window shows its material behind the title as well.
+    """
 
     if not _IS_WINDOWS:
         return False
@@ -98,7 +106,7 @@ def set_windows_titlebar_colors(
             (_DWMWA_TEXT_COLOR, text),
             (_DWMWA_BORDER_COLOR, border),
         ):
-            value = DWORD(_colorref(color))
+            value = DWORD(_DWM_COLOR_DEFAULT if color is None else _colorref(color))
             hr = dwmapi.DwmSetWindowAttribute(
                 HWND(hwnd),
                 DWORD(attribute),
@@ -129,8 +137,12 @@ def enable_windows_rounded_corners(hwnd: int) -> bool:
         return False
 
 
-def enable_dark_titlebar(hwnd: int) -> bool:
-    """Ask DWM to draw this window's titlebar in dark mode."""
+def enable_dark_titlebar(hwnd: int, *, material: bool = False) -> bool:
+    """Ask DWM to draw this window's titlebar in dark mode.
+
+    With ``material`` the caption keeps the system backdrop instead of the
+    solid caption colour.
+    """
 
     if not _IS_WINDOWS:
         return False
@@ -156,7 +168,10 @@ def enable_dark_titlebar(hwnd: int) -> bool:
         except Exception:
             return False
     if applied:
-        set_windows_titlebar_colors(hwnd)
+        if material:
+            set_windows_titlebar_colors(hwnd, caption=None)
+        else:
+            set_windows_titlebar_colors(hwnd)
         enable_windows_rounded_corners(hwnd)
     return applied
 
@@ -175,7 +190,8 @@ class _DarkTitlebarFilter(QObject):
             and obj.isWindow()
         ):
             try:
-                enable_dark_titlebar(int(obj.winId()))
+                material = str(obj.property("backdrop") or "") in ("mica", "acrylic")
+                enable_dark_titlebar(int(obj.winId()), material=material)
             except Exception:
                 pass
         return super().eventFilter(obj, event)
@@ -338,6 +354,11 @@ def _restore_solid_background(
     auto_fill: bool,
 ) -> None:
     window.setProperty("backdrop", "")
+    if _IS_WINDOWS and window.testAttribute(Qt.WidgetAttribute.WA_WState_Created):
+        try:
+            set_windows_titlebar_colors(int(window.winId()))
+        except Exception:
+            pass
     window.setPalette(palette)
     window.setAutoFillBackground(auto_fill)
     window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
@@ -408,7 +429,7 @@ def _apply_windows_system_backdrop(
         window.setAutoFillBackground(False)
 
         hwnd = int(window.winId())
-        enable_dark_titlebar(hwnd)
+        enable_dark_titlebar(hwnd, material=True)
         if not enable_windows_backdrop(hwnd, backdrop):
             restore_opaque_fallback()
             return False

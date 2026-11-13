@@ -55,8 +55,8 @@ class ResponsiveAppUiTests(unittest.TestCase):
             '"Segoe UI Variable", "Inter", "Segoe UI", sans-serif', '"Segoe UI"'))
         self.config = (dict(vars(SYNC)), dict(vars(BRIGHTNESS)))
         self.patches = [
-            patch("lumisync.gui.views.modes_view.QSettings", return_value=self.settings),
-            patch("lumisync.gui.controllers.sync_controller.QSettings", return_value=self.settings),
+            patch("lumisync.gui.views.modes_view.app_settings", return_value=self.settings),
+            patch("lumisync.gui.controllers.sync_controller.app_settings", return_value=self.settings),
         ]
         for item in self.patches:
             item.start()
@@ -124,6 +124,13 @@ class ResponsiveAppUiTests(unittest.TestCase):
         self.assertLessEqual(origin.x() + widget.width(), container.width())
         self.assertLessEqual(origin.y() + widget.height(), container.height())
 
+    def assert_scrolls_into_view(self, widget, scroll):
+        """The page is one scrolling column: a control counts as reachable
+        when scrolling brings it fully into the viewport."""
+        scroll.ensureWidgetVisible(widget, 0, 0)
+        self.app.processEvents()
+        self.assert_reachable(widget, scroll.viewport())
+
     def test_short_sync_pages_keep_targets_brightness_and_start_stop_reachable(self):
         for mode in ("monitor", "music"):
             with self.subTest(mode=mode):
@@ -132,7 +139,7 @@ class ResponsiveAppUiTests(unittest.TestCase):
                 button = getattr(page, mode + "_start_button")
                 slider = getattr(page, mode + "_brightness_slider")
                 self.assert_reachable(button, page)
-                self.assert_reachable(slider, page.scroll.viewport())
+                self.assert_scrolls_into_view(slider, page.scroll)
                 self.click(button)
                 getattr(controller, "start_" + mode + "_sync").assert_called_once_with([PANEL])
                 controller.is_syncing = Mock(return_value=True)
@@ -155,8 +162,9 @@ class ResponsiveAppUiTests(unittest.TestCase):
         self.app.processEvents()
         self.assertTrue(page.music_reaction_combo.isVisible())
         self.assertTrue(page._reaction_picker.isHidden())
-        self.assert_reachable(page.music_palette_combo, page.scroll.viewport())
-        self.assert_reachable(page.music_auto_gain_check, page.scroll.viewport())
+        self.assert_scrolls_into_view(page.music_palette_combo, page.scroll)
+        self.assert_scrolls_into_view(page.music_auto_gain_check, page.scroll)
+        self.assertEqual(page.scroll.horizontalScrollBar().maximum(), 0)
         page.music_reaction_combo.setFocus()
         QTest.keyClick(page.music_reaction_combo, Qt.Key.Key_Home)
         self.assertEqual(page.controller.get_music_reaction(), audio.REACTIONS[0])
@@ -177,6 +185,50 @@ class ResponsiveAppUiTests(unittest.TestCase):
             self.click(page.music_zones_button)
             zones.assert_called_once_with(page.music_chips)
 
+    def test_start_lives_in_the_header_and_the_hint_only_speaks_when_blocked(self):
+        for mode in ("monitor", "music"):
+            with self.subTest(mode=mode):
+                page = self.show(ModesView(self.sync(), self.devices(), mode=mode), 1020, 760)
+                button = getattr(page, mode + "_start_button")
+                self.assertIs(button.parentWidget(), page.header)
+                self.assertFalse(page.scroll.widget().isAncestorOf(button))
+                self.assertIsNone(page.findChild(QWidget, "SyncActionBar"))
+                self.assertTrue(page.action_hint.isHidden())
+                chips = getattr(page, mode + "_chips")
+                self.click(chips._target_buttons[0])
+                self.assertFalse(button.isEnabled())
+                self.assertFalse(page.action_hint.isHidden())
+                self.assertIn("Select at least one light", page.action_hint.text())
+                page.close()
+
+    def test_account_only_lights_are_explained_under_the_targets(self):
+        devices = self.devices([
+            dict(PANEL),
+            {"name": "Fixture desk lamp", "model": "H6008", "transport": "govee_account",
+             "device_id": "fixture-lamp", "account_id": "fixture"},
+            {"name": "Fixture plug", "transport": "tuya_cloud", "device_kind": "smart_plug",
+             "device_id": "fixture-plug", "account_id": "fixture"},
+        ])
+        page = self.show(ModesView(self.sync(), devices, mode="music"), 1020, 760)
+        note = page.account_only_note
+        self.assertFalse(note.isHidden())
+        self.assertIn("\u201cFixture desk lamp\u201d is connected through an account only", note.text())
+        self.assertIn("Find devices", note.text())
+        self.assertNotIn("Fixture plug", note.toolTip())
+        self.assertEqual(page.music_chips.row_names(), [PANEL["model"]])
+        devices.devices[:] = [dict(PANEL)]
+        page._refresh_chip_strips()
+        self.assertTrue(note.isHidden())
+
+    def test_monitor_display_picker_persists_and_reaches_the_sync_controller(self):
+        controller = self.sync()
+        page = self.show(ModesView(controller, self.devices(), mode="monitor"), 1020, 760)
+        page.display_combo.addItem("Fixture second display", 1)
+        page.display_combo.setFocus()
+        QTest.keyClick(page.display_combo, Qt.Key.Key_End)
+        self.assertEqual(int(self.settings.value("sync/monitor_display")), 1)
+        self.assertEqual(controller.get_monitor_display(), 1)
+
     def test_target_group_and_mapping_actions_preserve_selection_and_keyboard_swaps(self):
         devices = self.devices()
         page = self.show(ModesView(self.sync(), devices, mode="monitor"), 1020, 760)
@@ -191,6 +243,7 @@ class ResponsiveAppUiTests(unittest.TestCase):
             self.click(page.mapping_toggle_button)
             QTest.qWait(250)
             self.assertTrue(page.led_mapping_container.isVisible())
+            self.assertTrue(page.mapping_toggle_button.isChecked())
             preview = page.led_mapping_widget.screen_preview
             original = page.led_mapping_widget.get_mapping()
             preview.setFocus()
@@ -202,6 +255,7 @@ class ResponsiveAppUiTests(unittest.TestCase):
             self.click(page.mapping_toggle_button)
             QTest.qWait(320)
             self.assertTrue(page.led_mapping_container.isHidden())
+            self.assertFalse(page.mapping_toggle_button.isChecked())
         self.click(page.monitor_chips._target_buttons[0])
         self.assertFalse(page.monitor_start_button.isEnabled())
         self.assertFalse(page.monitor_group_button.isEnabled())
@@ -301,8 +355,11 @@ class ResponsiveAppUiTests(unittest.TestCase):
     def test_settings_sections_preferences_and_wrapped_switches_are_usable(self):
         with patch("lumisync.gui.utils.autostart.is_enabled", return_value=False):
             page = self.show(SettingsPage(self.settings))
-        self.assertTrue(page.section_picker.isVisible())
-        self.assertTrue(page.section_nav.isHidden())
+        # One scrolling page of groups, like Windows 11 Settings.
+        self.assertFalse(hasattr(page, "section_nav"))
+        self.assertEqual([group.header_label.text() for group in page.groups()],
+                         ["General", "Monitor tuning", "Music tuning", "Groups", "Updates", "About"])
+        self.assertEqual(page.scroll.horizontalScrollBar().maximum(), 0)
         before = page.tray_check.isChecked()
         page.tray_check.setFocus()
         QTest.keyClick(page.tray_check, Qt.Key.Key_Space)
@@ -316,16 +373,12 @@ class ResponsiveAppUiTests(unittest.TestCase):
         page.window_material_combo.setFocus()
         QTest.keyClick(page.window_material_combo, Qt.Key.Key_End)
         self.assertEqual(self.settings.value("ui/window_material"), "solid")
-        for index in range(page.section_stack.count()):
-            page.section_picker.setCurrentIndex(index)
-            self.assertEqual(page.section_stack.currentIndex(), index)
-            scroll = page.section_stack.currentWidget()
-            self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
+        for group in page.groups():
+            self.assert_scrolls_into_view(group.header_label, page.scroll)
+            self.assertEqual(page.scroll.horizontalScrollBar().maximum(), 0)
         page.resize(1020, 760)
         self.app.processEvents()
-        self.assertTrue(page.section_nav.isVisible())
-        page.section_nav.setCurrentRow(1)
-        self.assertEqual(page.section_picker.currentIndex(), 1)
+        self.assertEqual(page.scroll.horizontalScrollBar().maximum(), 0)
         page.smoothing_slider.setFocus()
         QTest.keyClick(page.smoothing_slider, Qt.Key.Key_Home)
         self.assertAlmostEqual(float(self.settings.value(SYNC_SETTINGS_KEYS["smoothing"])), 0.05)
@@ -347,34 +400,25 @@ class ResponsiveAppUiTests(unittest.TestCase):
             page = self.show(SettingsPage(self.settings, host), 1020, 760)
             self.click(page.autostart_check)
             startup.assert_called_once_with(True)
-        for section, controls in (
-            (1, ((page.smoothing_slider, "smoothing"), (page.saturation_slider, "saturation"),
-                 (page.fps_slider, "monitor_fps"))),
-            (2, ((page.gain_slider, "music_gain"), (page.music_smoothing_slider, "music_smoothing"))),
-        ):
-            page.section_nav.setCurrentRow(section)
-            self.app.processEvents()
-            for control, key in controls:
-                control.setFocus()
-                QTest.keyClick(control, Qt.Key.Key_End)
-                self.assertIsNotNone(self.settings.value(SYNC_SETTINGS_KEYS[key]))
-        page.section_nav.setCurrentRow(1)
-        self.app.processEvents()
+        for control, key in ((page.smoothing_slider, "smoothing"), (page.saturation_slider, "saturation"),
+                             (page.fps_slider, "monitor_fps"), (page.gain_slider, "music_gain"),
+                             (page.music_smoothing_slider, "music_smoothing")):
+            self.assert_scrolls_into_view(control, page.scroll)
+            control.setFocus()
+            QTest.keyClick(control, Qt.Key.Key_End)
+            self.assertIsNotNone(self.settings.value(SYNC_SETTINGS_KEYS[key]))
         before = page.gamma_check.isChecked()
         self.click(page.gamma_check)
         self.assertEqual(self.settings.value(SYNC_SETTINGS_KEYS["gamma_correct"]), not before)
-        page.display_combo.addItem("Fixture second display", 1)
-        page.display_combo.setFocus()
-        QTest.keyClick(page.display_combo, Qt.Key.Key_End)
-        self.assertEqual(self.settings.value("sync/monitor_display"), 1)
-        page.section_nav.setCurrentRow(3)
-        self.app.processEvents()
+        self.assertFalse(hasattr(page, "display_combo"))
         delete = next(button for button in page.findChildren(QPushButton) if button.text() == "Delete")
         with patch("lumisync.gui.views.settings_page.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
             self.click(delete)
         host.device_controller.delete_group.assert_called_once_with("Fixture desk group")
-        page.section_nav.setCurrentRow(4)
-        self.app.processEvents()
+        auto_before = page.auto_update_toggle.isChecked()
+        self.click(page.auto_update_toggle)
+        self.assertEqual(page.auto_update_toggle.isChecked(), not auto_before)
+        self.assertIsNotNone(self.settings.value("updates/auto_download"))
         self.click(page.check_updates_button)
         host.update_controller.check_now.assert_called_once()
         page._on_update_check_started()
@@ -402,12 +446,11 @@ class ResponsiveAppUiTests(unittest.TestCase):
         for width, height in ((712, 488), (1020, 760)):
             page.resize(width, height)
             self.app.processEvents()
-            scroll = page.section_stack.currentWidget()
-            self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
-            self.assertEqual(scroll.verticalScrollBar().maximum(), 0)
-            for control in (page.check_updates_button, page.open_logs_button,
+            self.assertEqual(page.scroll.horizontalScrollBar().maximum(), 0)
+            for control in (page.check_updates_button, page.install_update_button, page.open_release_button,
+                            page.auto_update_toggle, page.open_logs_button,
                             page.account_setup_button, page.repository_button):
-                self.assert_reachable(control, scroll.viewport())
+                self.assert_scrolls_into_view(control, page.scroll)
 
     def test_device_toolbar_inspector_and_group_controls_dispatch_to_the_correct_device(self):
         device = {"model": "H619C", "transport": "lan", "ip": "192.0.2.1", "mac": "fixture-light",
@@ -466,16 +509,7 @@ class ResponsiveAppUiTests(unittest.TestCase):
             self.click(inspector.remove_button)
         controller.remove_device.assert_called_once_with(0)
         self.click(inspector.close_button)
-        self.click(page.group_mode_button)
-        QTest.qWait(200)
-        self.click(page._cards[0])
-        self.assertEqual(page._selected, {0})
-        QTimer.singleShot(100, lambda: (QApplication.activeModalWidget().setTextValue("Desk"), QApplication.activeModalWidget().accept()))
-        self.click(page.save_group_button)
-        controller.save_group.assert_called_once_with("Desk", [0])
-        self.click(page.group_mode_button)
-        self.click(page.cancel_group_button)
-        self.assertFalse(page._group_selection_mode)
+        self.assertFalse(hasattr(page, "group_mode_button"))
         controller.devices = [dict(PANEL)]
         page._rebuild_cards()
         self.app.processEvents()

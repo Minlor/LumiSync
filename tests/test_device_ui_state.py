@@ -1,4 +1,6 @@
 import os
+import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -9,9 +11,11 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QWidget
 
 from lumisync.gui.controllers.device_controller import DeviceController
-from lumisync.gui.widgets.device_card import DeviceCard, format_device_output
+from lumisync.gui.main_window import LumiSyncMainWindow
+from lumisync.gui.theme import qcolor
+from lumisync.gui.widgets.device_card import DeviceCard, describe_device_status, device_subline
 from lumisync.gui.widgets.device_inspector import DeviceInspector
-from lumisync.gui.widgets.navigation_shell import NavigationShell, RAIL_ITEM_HEIGHT
+from lumisync.gui.widgets.navigation_shell import NavigationShell, NavRailItemDelegate, RAIL_ITEM_HEIGHT
 
 
 class DeviceUiStateTests(unittest.TestCase):
@@ -171,7 +175,136 @@ class DeviceUiStateTests(unittest.TestCase):
             controller.refresh_local_device_states()
         start.assert_called_once_with([0, 1])
 
-    def test_card_shows_unknown_copy_for_unanswered_lan_status(self):
+    def test_account_status_poll_reads_account_devices_and_only_failing_linked_strips(self):
+        controller = self._controller()
+        controller.devices = [
+            {"transport": "lan", "ip": "192.168.1.4", "mac": "lan"},
+            {
+                "transport": "tuya",
+                "device_id": "battletron",
+                "account_id": "acct",
+                "cloud_transport": "tuya_cloud",
+                "mac": "tuya",
+            },
+            {
+                "transport": "tuya_cloud",
+                "device_id": "cloud",
+                "account_id": "acct",
+                "cloud_transport": "tuya_cloud",
+                "mac": "cloud",
+            },
+            {
+                "transport": "ble",
+                "account_id": "acct",
+                "cloud_transport": "tuya_cloud",
+                "mac": "ble",
+            },
+            {"transport": "tuya", "device_id": "local-only", "mac": "local-only"},
+            {
+                "transport": "lan",
+                "ip": "192.168.1.9",
+                "account_id": "acct",
+                "cloud_transport": "govee_cloud",
+                "mac": "govee-lan",
+            },
+            # Imported account-only device that never recorded cloud_transport.
+            {"transport": "tuya_cloud", "device_id": "imported", "account_id": "acct", "mac": "imported"},
+        ]
+        with patch.object(controller, "_start_status_refresh") as start:
+            controller.refresh_account_device_states()
+
+        start.assert_called_once()
+        # The linked strip's LAN works, so the 15 s local poll owns it.
+        self.assertEqual(start.call_args.args[0], [2, 6])
+        self.assertTrue(start.call_args.kwargs["prefer_cloud"])
+
+        # While its LAN path is failing it is read through the account too.
+        controller._cloud_preferred_until[controller._device_key(controller.devices[1])] = time.time() + 60
+        with patch.object(controller, "_start_status_refresh") as start:
+            controller.refresh_account_device_states()
+        self.assertEqual(start.call_args.args[0], [1, 2, 6])
+
+    def _linked_strip(self, controller):
+        device = {
+            "transport": "tuya",
+            "device_id": "battletron",
+            "mac": "tuya:battletron",
+            "account_id": "acct",
+            "cloud_transport": "tuya_cloud",
+        }
+        controller.devices = [device]
+        return device
+
+    def test_account_first_reads_never_mark_a_working_strip_as_cloud_only(self):
+        controller = self._controller()
+        device = self._linked_strip(controller)
+        cloud = {"online": True, "status_source": "confirmed", "status_origin": "cloud"}
+
+        # The 60 s account poll asks the account first and never tries the
+        # LAN; repeating it must not lock the strip onto the cloud.
+        for _ in range(3):
+            controller._merge_device_state(0, dict(cloud))
+        self.assertFalse(controller._cloud_preferred(device))
+        self.assertFalse(controller.is_cloud_preferred(device))
+
+    def test_cloud_status_after_a_lan_failure_marks_cloud_preferred_and_local_status_clears_it(self):
+        controller = self._controller()
+        device = self._linked_strip(controller)
+        key = controller._device_key(device)
+
+        # Inline fallback: the worker read the account because the LAN failed.
+        controller._merge_device_state(
+            0,
+            {"online": True, "status_source": "confirmed", "status_origin": "cloud", "lan_failed": True},
+        )
+        self.assertTrue(controller._cloud_preferred(device))
+        self.assertNotIn("lan_failed", controller.device_states[key])
+
+        controller._merge_device_state(
+            0,
+            {"online": True, "status_source": "confirmed", "status_origin": "local"},
+        )
+        self.assertFalse(controller._cloud_preferred(device))
+
+        # Deferred fallback: the local pass handed the strip to the account pass.
+        with patch.object(controller, "_start_account_pass"):
+            controller._on_account_status_needed([key])
+        controller._merge_device_state(
+            0,
+            {"online": True, "status_source": "confirmed", "status_origin": "cloud"},
+        )
+        self.assertTrue(controller._cloud_preferred(device))
+        self.assertNotIn(key, controller._lan_failed_keys)
+
+        # A cloud read that also fails marks nothing and forgets the failure.
+        controller._cloud_preferred_until.clear()
+        with patch.object(controller, "_start_account_pass"):
+            controller._on_account_status_needed([key])
+        controller._merge_device_state(
+            0,
+            {"online": False, "status_source": "offline", "status_origin": "cloud"},
+        )
+        self.assertFalse(controller._cloud_preferred(device))
+        self.assertNotIn(key, controller._lan_failed_keys)
+
+    def test_cloud_confirmed_state_is_labelled_as_account(self):
+        state = {
+            "online": True,
+            "stale": False,
+            "status_source": "confirmed",
+            "status_origin": "cloud",
+            "power_on": True,
+            "readback_supported": True,
+        }
+        card = DeviceCard(0, {"model": "Battletron", "transport": "tuya"})
+        card.set_state(state)
+
+        self.assertEqual(card.status_label.text(), "On")
+        self.assertIn("vendor account", card.status_label.toolTip())
+        reachable = dict(state, power_on=None)
+        self.assertEqual(describe_device_status(reachable).text, "Online (account)")
+
+    def test_card_shows_no_status_yet_and_a_grey_dot_for_unanswered_lan_status(self):
         card = DeviceCard(0, {"model": "H7020", "ip": "192.168.1.4"})
 
         card.set_state(
@@ -184,21 +317,49 @@ class DeviceUiStateTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(card.state_detail_label.text(), "State unknown")
-        self.assertIn("No status reply yet", card.state_detail_label.toolTip())
+        self.assertEqual(card.status_label.text(), "No status yet")
+        self.assertIn("commands may still work", card.status_label.toolTip())
+        self.assertEqual(card.status_label.property("statusState"), "unknown")
+        self.assertNotEqual(card.status_dot._color, qcolor("success"))
+        self.assertFalse(card.status_dot._active)
 
-    def test_inspector_shows_unknown_copy_for_unanswered_lan_status(self):
-        copy = DeviceInspector._status_copy(
-            {
-                "online": False,
-                "stale": True,
-                "status_source": "unknown",
-                "readback_supported": True,
-                "last_error": "No status reply",
-            }
-        )
+    def test_inspector_uses_the_same_status_line_as_the_card(self):
+        state = {
+            "online": False,
+            "stale": True,
+            "status_source": "unknown",
+            "readback_supported": True,
+            "last_error": "No status reply",
+        }
+        inspector = DeviceInspector()
+        inspector.set_device(0, {"model": "H7020", "ip": "192.168.1.4"}, state, primary=False)
 
-        self.assertEqual(copy[0], "State unknown")
+        self.assertEqual(inspector.status_label.text(), "No status yet")
+        self.assertFalse(hasattr(inspector, "power_label"))
+        self.assertFalse(hasattr(inspector, "output_label"))
+        self.assertEqual(inspector.brightness_value.text(), "—")
+
+    def test_merged_status_phrase_covers_power_output_readings_and_reachability(self):
+        lamp = {"online": True, "status_source": "confirmed", "power_on": True}
+        cases = [
+            (dict(lamp, brightness=80), "On · 80%", "online"),
+            (dict(lamp, brightness=80, color=(255, 136, 0)), "On · 80%", "online"),
+            (dict(lamp, power_on=False, brightness=80), "Off", "online"),
+            (dict(lamp, power_w=12.3), "On", "online"),
+            ({"status_source": "offline", "online": False}, "Offline", "offline"),
+            (dict(lamp, active_output="Monitor sync"), "Syncing · Monitor", "online"),
+            ({"status_source": "error", "last_error": "Rejected"}, "Command failed", "warning"),
+            ({"status_source": "pending", "stale": True}, "Checking…", "unknown"),
+        ]
+        for state, text, tone in cases:
+            with self.subTest(text=text):
+                status = describe_device_status(state)
+                self.assertEqual(status.text, text)
+                self.assertEqual(status.tone, tone)
+        plug = describe_device_status(dict(lamp, power_w=12.3), meters=("power_w",))
+        self.assertEqual(plug.text, "On · 12.3 W")
+        self.assertEqual(describe_device_status({"status_source": "error", "last_error": "Rejected"}).tooltip,
+                         "Rejected")
 
     def test_bluetooth_command_is_last_sent_without_fake_readback(self):
         controller = self._controller()
@@ -214,7 +375,9 @@ class DeviceUiStateTests(unittest.TestCase):
         self.assertEqual(state["status_source"], "commanded")
         self.assertFalse(state["readback_supported"])
         self.assertFalse(state["stale"])
-        self.assertEqual(format_device_output(state), "Last sent · #0A141E")
+        status = describe_device_status(state)
+        self.assertEqual(status.text, "Colour sent")
+        self.assertIn("can't report its state", status.tooltip)
 
     def test_bluetooth_search_marks_unseen_saved_panel_without_guessing_offline(self):
         controller = self._controller()
@@ -233,15 +396,16 @@ class DeviceUiStateTests(unittest.TestCase):
 
     def test_confirmed_and_active_output_copy_are_distinct(self):
         confirmed = {
+            "online": True,
             "status_source": "confirmed",
             "power_on": True,
             "brightness": 42,
             "color": (12, 34, 56),
         }
-        active = dict(confirmed, active_output="Monitor sync")
+        active = dict(confirmed, active_output="Music sync")
 
-        self.assertEqual(format_device_output(confirmed), "Showing · #0C2238 · 42%")
-        self.assertEqual(format_device_output(active), "Live output · Monitor sync")
+        self.assertEqual(describe_device_status(confirmed).text, "On · 42%")
+        self.assertEqual(describe_device_status(active).text, "Syncing · Music")
 
     def test_concurrent_lan_result_preserves_bluetooth_device(self):
         controller = self._controller()
@@ -327,22 +491,33 @@ class DeviceUiStateTests(unittest.TestCase):
         self.assertEqual(card.power_button.toolTip(), "Turn on")
         self.assertEqual(card.power_button.accessibleDescription(), "Off")
 
-    def test_compact_card_hides_address_and_uses_transport_icon(self):
+    def test_card_subline_names_type_connection_and_one_detail(self):
         card = DeviceCard(
             0,
             {
                 "model": "H619C",
                 "ip": "192.168.0.28",
                 "transport": "lan",
+                "segment_count_override": 10,
             },
         )
 
-        compact_copy = card.device_summary.text().lower()
-        self.assertNotIn("192.168.0.28", compact_copy)
-        self.assertNotIn("lan", compact_copy)
-        self.assertNotIn("bluetooth", compact_copy)
-        self.assertFalse(card.transport_icon.pixmap().isNull())
+        self.assertEqual(card.device_summary.text(), "LED strip · Local network · 10 zones")
+        self.assertNotIn("192.168.0.28", card.device_summary.text())
         self.assertFalse(hasattr(card, "checkbox"))
+        self.assertFalse(hasattr(card, "primary_label"))
+        self.assertEqual(
+            device_subline({"transport": "ble", "mac": "AA", "matrix_size": "32x32"}),
+            "Matrix panel · Bluetooth · 32×32",
+        )
+        self.assertEqual(
+            device_subline({"transport": "tuya_cloud", "device_kind": "smart_plug", "device_id": "p"}),
+            "Smart plug · Account",
+        )
+        self.assertEqual(
+            device_subline({"transport": "tuya", "device_kind": "smart_plug", "device_id": "p"}),
+            "Smart plug · Local Wi-Fi",
+        )
 
     def test_card_brightness_is_a_direct_debounced_control(self):
         card = DeviceCard(3, {"model": "H619C", "transport": "lan"})
@@ -358,17 +533,14 @@ class DeviceUiStateTests(unittest.TestCase):
 
         self.assertEqual(changes, [(3, 37)])
 
-    def test_group_mode_turns_the_whole_card_into_a_safe_selector(self):
-        card = DeviceCard(0, {"model": "Panel", "transport": "ble"})
-
-        card.set_group_selection_mode(True)
-        card.set_checked(True)
-
-        self.assertTrue(card.property("groupSelection"))
-        self.assertTrue(card.property("selected"))
-        self.assertTrue(card.group_badge.isVisibleTo(card))
-        self.assertFalse(card.power_button.isEnabled())
-        self.assertFalse(card.brightness_slider.isEnabled())
+    def test_unknown_brightness_shows_a_dash_and_power_only_cards_hide_the_slider(self):
+        light = DeviceCard(0, {"model": "H619C", "transport": "lan"})
+        light.set_state({"online": True, "status_source": "confirmed", "power_on": True})
+        self.assertEqual(light.brightness_summary.text(), "—")
+        self.assertFalse(light.brightness_controls.isHidden())
+        plug = DeviceCard(1, {"transport": "tuya", "device_kind": "smart_plug", "device_id": "p",
+                              "tuya_functions": {"switch_1": {"type": "bool"}}})
+        self.assertTrue(plug.brightness_controls.isHidden())
 
     def test_inspector_exposes_details_and_capability_controls(self):
         inspector = DeviceInspector()
@@ -414,6 +586,51 @@ class DeviceUiStateTests(unittest.TestCase):
 
         self.assertEqual(shell.nav_list.count(), 4)
         self.assertEqual(shell.nav_list.height(), 4 * RAIL_ITEM_HEIGHT)
+
+    def test_hidden_rail_page_shrinks_the_rail_and_leaves_the_current_page(self):
+        shell = NavigationShell(icon_only=True)
+        pages = {}
+        for key, title, label in (
+            ("devices", "Devices", None),
+            ("monitor", "Monitor Sync", "Monitor"),
+            ("draw", "Draw", None),
+        ):
+            pages[key] = QWidget()
+            shell.add_page(key=key, title=title, icon=QIcon(), widget=pages[key], label=label)
+        item = shell.nav_list.item(1)
+        self.assertEqual(item.toolTip(), "Monitor Sync")
+        self.assertEqual(item.data(NavRailItemDelegate.LABEL_ROLE), "Monitor")
+
+        shell.set_current_by_key("draw")
+        self.assertEqual(shell.nav_list.currentRow(), 2)
+        shell.set_page_visible("draw", False)
+        self.assertFalse(shell.is_page_visible("draw"))
+        self.assertEqual(shell.nav_list.height(), 2 * RAIL_ITEM_HEIGHT)
+        self.assertEqual(shell.nav_list.currentRow(), 0)
+        shell.set_current_by_key("draw")
+        self.assertEqual(shell.nav_list.currentRow(), 0)
+        shell.set_page_visible("draw", True)
+        self.assertEqual(shell.nav_list.height(), 3 * RAIL_ITEM_HEIGHT)
+        shell.set_current_by_key("draw")
+        self.assertEqual(shell.nav_list.currentRow(), 2)
+
+    def test_draw_page_is_offered_only_with_a_matrix_panel(self):
+        shell = NavigationShell(icon_only=True)
+        for key in ("devices", "draw"):
+            shell.add_page(key=key, title=key.title(), icon=QIcon(), widget=QWidget())
+        window = SimpleNamespace(
+            nav_shell=shell,
+            device_controller=SimpleNamespace(devices=[{"transport": "lan", "model": "H619C"}]),
+        )
+
+        LumiSyncMainWindow._update_draw_page_visibility(window)  # type: ignore[arg-type]
+        self.assertFalse(shell.is_page_visible("draw"))
+        window.device_controller.devices.append({"transport": "ble", "mac": "AA:BB", "model": "IDM"})
+        LumiSyncMainWindow._update_draw_page_visibility(window)  # type: ignore[arg-type]
+        self.assertTrue(shell.is_page_visible("draw"))
+        window.device_controller.devices.pop()
+        LumiSyncMainWindow._update_draw_page_visibility(window)  # type: ignore[arg-type]
+        self.assertFalse(shell.is_page_visible("draw"))
 
 
 if __name__ == "__main__":

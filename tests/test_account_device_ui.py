@@ -222,7 +222,7 @@ class AccountDeviceUiTests(unittest.TestCase):
         self.assertEqual(dialog._selected_account()["id"], "old")
         item = dialog.accounts_list.item(0)
         labels = dialog.accounts_list.itemWidget(item).findChildren(QLabel)
-        self.assertEqual(len(labels), 2)
+        self.assertEqual(len(labels), 3)  # provider, masked label, status line
         self.assertTrue(all("preview@example.test" not in label.text() for label in labels))
         dialog._set_busy(True)
         self.assertFalse(dialog.refresh_button.isEnabled())
@@ -371,7 +371,8 @@ class AccountDeviceUiTests(unittest.TestCase):
         self.app.processEvents()
         self.assertEqual(panel.values["power_w"].text(), "0.0 W")
         self.assertEqual(panel.daily.item(0, 1).text(), "0.000")
-        self.assertEqual(panel.daily.item(1, 1).text(), "Not reported")
+        self.assertEqual(panel.daily.item(1, 1).text(), "—")
+        self.assertEqual(panel.daily.item(1, 1).toolTip(), "Not reported")
         self.assertTrue(panel.daily.isHidden())
         panel.breakdown_button.click()
         self.assertFalse(panel.daily.isHidden())

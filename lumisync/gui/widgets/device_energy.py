@@ -27,6 +27,10 @@ READINGS = {
 
 READINGS_REFRESH_MS = 5_000
 
+# Shown for a reading the device has not reported; one note line per section
+# explains why instead of repeating "Not reported" on every value.
+NO_READING = "—"
+
 
 class DeviceEnergy(QWidget):
     refresh_requested = Signal()
@@ -49,6 +53,7 @@ class DeviceEnergy(QWidget):
         root.setSpacing(18)
         self.live_panel = QFrame()
         self.live_panel.setObjectName("EnergyReadings")
+        self.live_panel.setProperty("card", True)
         layout = QVBoxLayout(self.live_panel)
         self._live_layout = layout
         layout.setContentsMargins(16, 14, 16, 14)
@@ -79,7 +84,7 @@ class DeviceEnergy(QWidget):
             caption = QLabel("Current power draw" if field == "power_w" else label)
             caption.setProperty("role", "subtle")
             row_layout.addWidget(caption)
-            value = QLabel("Not reported")
+            value = QLabel(NO_READING)
             value.setProperty("role", "meterPrimary" if field == "power_w" else "meterSecondary")
             value.setAccessibleName(label)
             value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -105,6 +110,7 @@ class DeviceEnergy(QWidget):
 
         self.history_controls = QFrame()
         self.history_controls.setObjectName("EnergyHistory")
+        self.history_controls.setProperty("card", True)
         history_layout = QVBoxLayout(self.history_controls)
         self._history_layout = history_layout
         history_layout.setContentsMargins(16, 16, 16, 16)
@@ -188,7 +194,7 @@ class DeviceEnergy(QWidget):
         self.live_panel.setVisible(bool(self._fields))
         for field, row in self._rows.items():
             row.setVisible(field in self._fields)
-            self.values[field].setText("Not reported")
+            self.values[field].setText(NO_READING)
         self.refresh_button.setVisible(bool(self._fields))
         self.readings_note.setVisible(bool(self._fields))
         self.scope_note.setVisible(bool(device.get("tuya_channel")))
@@ -209,7 +215,8 @@ class DeviceEnergy(QWidget):
             value = state.get(field)
             _, unit, digits = READINGS[field]
             valid = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
-            self.values[field].setText(f"{value:,.{digits}f} {unit}" if valid else "Not reported")
+            self.values[field].setText(f"{value:,.{digits}f} {unit}" if valid else NO_READING)
+            self.values[field].setToolTip("" if valid else "Not reported by the device yet")
             self.values[field].setProperty("reported", valid)
             self.values[field].style().unpolish(self.values[field])
             self.values[field].style().polish(self.values[field])
@@ -345,7 +352,9 @@ class DeviceEnergy(QWidget):
             date = QDate.fromString(day["date"], "yyyy-MM-dd")
             self.daily.setItem(row, 0, QTableWidgetItem(date.toString("d MMM") if date.isValid() else day["date"]))
             value = day["energy_kwh"]
-            energy = QTableWidgetItem(f"{value:,.3f}" if value is not None else "Not reported")
+            energy = QTableWidgetItem(f"{value:,.3f}" if value is not None else NO_READING)
+            if value is None:
+                energy.setToolTip("Not reported")
             energy.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.daily.setItem(row, 1, energy)
         self.daily.setVisible(total is not None and self.breakdown_button.isChecked())

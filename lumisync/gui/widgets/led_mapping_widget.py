@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
-from PySide6.QtCore import QPoint, QRect, QSettings, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QRect, QRectF, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen, QBrush
 from PySide6.QtWidgets import (
     QFrame,
@@ -22,8 +22,10 @@ from ... import connection, led_mapping, utils
 from ...drivers import pool
 from ...drivers.registry import capabilities_for_device
 from ...led_mapping import NormalizedRect
+from ...sync import processing
 from ..controllers.background import start_task
 from ..theme import qcolor
+from ..utils.flow_layout import FlowLayout
 from .product_controls import ProductSlider
 
 if TYPE_CHECKING:
@@ -117,12 +119,8 @@ class ScreenRegionPreview(QFrame):
         super().__init__(parent)
         self.setMinimumSize(300, 190)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setFrameShape(QFrame.Shape.Box)
-        self.setStyleSheet(
-            f"background-color: {qcolor('surface').name()};"
-            f"border: 1px solid {qcolor('border').name()};"
-            f"border-radius: 8px;"
-        )
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setStyleSheet("background: transparent; border: none;")
 
         self._mapping: List[NormalizedRect] = led_mapping.generate_screen_mapping(
             len(DEFAULT_LED_MAPPING)
@@ -290,16 +288,22 @@ class ScreenRegionPreview(QFrame):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         screen_rect = self._screen_rect()
-        painter.setPen(QPen(qcolor("border"), 1))
+        painter.setPen(QPen(qcolor("fl_card_stroke"), 1))
         painter.setBrush(QBrush(qcolor("surface_alt")))
-        painter.drawRoundedRect(screen_rect, 6, 6)
+        painter.drawRoundedRect(screen_rect, 8, 8)
 
         center_rect = screen_rect
-        painter.setPen(qcolor("text_dim"))
-        font = QFont()
-        font.setPointSize(11)
+        painter.setPen(qcolor("fl_text_tertiary"))
+        font = QFont(self.font())
+        font.setPixelSize(14)
         painter.setFont(font)
-        painter.drawText(center_rect, Qt.AlignmentFlag.AlignCenter, "Screen Content")
+        painter.drawText(center_rect, Qt.AlignmentFlag.AlignCenter, "Screen content")
+        if self.hasFocus() and self.window() is not None and self.window().testAttribute(
+            Qt.WidgetAttribute.WA_KeyboardFocusChange
+        ):
+            painter.setPen(QPen(qcolor("fl_text"), 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(screen_rect.adjusted(-3, -3, 3, 3), 10, 10)
 
         for index, _rect in enumerate(self._mapping):
             rect = self._zone_rect(index).adjusted(2, 2, -2, -2)
@@ -322,24 +326,24 @@ class ScreenRegionPreview(QFrame):
                 else:
                     border_color = fill_color.darker(150)
             else:
-                fill_color = QColor(qcolor("accent"))
-                fill_color.setAlpha(75 if is_hover else 45)
-                border_color = qcolor("accent_bright") if is_hover else qcolor("border_strong")
+                fill_color = QColor(qcolor("fl_accent"))
+                fill_color.setAlpha(70 if is_hover else 40)
+                border_color = qcolor("fl_accent") if is_hover else QColor(255, 255, 255, 60)
                 if is_source:
                     fill_color.setAlpha(120)
-                    border_color = qcolor("accent_bright")
+                    border_color = qcolor("fl_accent_hover")
                 elif is_target:
                     fill_color = QColor(qcolor("success"))
                     fill_color.setAlpha(130)
                     border_color = qcolor("success")
 
-            painter.setPen(QPen(border_color, 3 if is_source or is_target else 2))
+            painter.setPen(QPen(border_color, 2 if is_source or is_target else 1))
             painter.setBrush(QBrush(fill_color))
-            painter.drawRoundedRect(rect, 4, 4)
+            painter.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), 4, 4)
 
             painter.setPen(zone_text_color(fill_color))
-            font = QFont()
-            font.setPointSize(9 if len(self._mapping) < 24 else 7)
+            font = QFont(self.font())
+            font.setPixelSize(12 if len(self._mapping) < 24 else 10)
             font.setBold(True)
             painter.setFont(font)
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(index + 1))
@@ -380,6 +384,13 @@ class LedMappingWidget(QWidget):
         super().__init__(parent)
         self.settings = settings
         self.sync_controller = sync_controller
+        if sync_controller is not None:
+            # The test pattern should look like a live monitor-sync frame. Keep
+            # it in step with the brightness and boost controls above it.
+            sync_controller.brightness_changed.connect(self._on_preview_settings_changed)
+            boost_signal = getattr(sync_controller, "monitor_boost_changed", None)
+            if boost_signal is not None:
+                boost_signal.connect(self._on_preview_settings_changed)
         self._test_mode_active = False
         self._test_timer: Optional[QTimer] = None
         self._last_test_colors: Optional[List[Tuple[int, int, int]]] = None
@@ -390,10 +401,11 @@ class LedMappingWidget(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(12)
 
         instructions = QLabel(
-            "Drag zones to swap positions, or use arrow keys and Enter to choose two zones. Test colors appear on your lights."
+            "Drag zones to swap positions, or use arrow keys and Enter to choose "
+            "two zones. Test colors use the current Monitor brightness and Boost."
         )
         instructions.setWordWrap(True)
         instructions.setProperty("role", "subtle")
@@ -407,7 +419,10 @@ class LedMappingWidget(QWidget):
         layout.addWidget(self.selection_label)
 
         depth_layout = QHBoxLayout()
-        depth_layout.addWidget(QLabel("Capture depth"))
+        depth_layout.setSpacing(12)
+        depth_label = QLabel("Capture depth")
+        depth_label.setToolTip("How far into the screen each zone samples colors")
+        depth_layout.addWidget(depth_label)
         self.capture_depth_slider = ProductSlider(Qt.Orientation.Horizontal)
         self.capture_depth_slider.setRange(
             int(led_mapping.MIN_CAPTURE_DEPTH * 100),
@@ -417,14 +432,19 @@ class LedMappingWidget(QWidget):
         self.capture_depth_slider.valueChanged.connect(self._on_capture_depth_changed)
         depth_layout.addWidget(self.capture_depth_slider, 1)
         self.capture_depth_label = QLabel(f"{int(round(self._capture_depth * 100))}%")
-        self.capture_depth_label.setMinimumWidth(42)
+        self.capture_depth_label.setMinimumWidth(44)
+        self.capture_depth_label.setProperty("role", "valueLabel")
+        self.capture_depth_slider.setMaximumWidth(360)
+        self.capture_depth_slider.setAccessibleName("Capture depth")
         self.capture_depth_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
         depth_layout.addWidget(self.capture_depth_label)
+        depth_layout.addStretch(1)
         layout.addLayout(depth_layout)
 
-        button_layout = QHBoxLayout()
+        button_host = QWidget()
+        button_layout = FlowLayout(button_host, h_spacing=8, v_spacing=8)
 
         self.test_button = QPushButton("Test colors")
         self.test_button.setToolTip("Toggle test colors on LED strip")
@@ -433,16 +453,29 @@ class LedMappingWidget(QWidget):
         self.test_button.setChecked(True)
         button_layout.addWidget(self.test_button)
 
-        self.reverse_button = QPushButton("Reverse Order")
+        self.reverse_button = QPushButton("Reverse order")
         self.reverse_button.clicked.connect(self._reverse_order)
         button_layout.addWidget(self.reverse_button)
 
-        self.reset_button = QPushButton("Reset to Default")
+        # Strips start in any corner. Moving LED 1 one zone at a time (with
+        # Reverse Order for the direction) matches every mounting.
+        self.shift_start_back_button = QPushButton("Shift start ◀")
+        self.shift_start_back_button.setToolTip("Move LED 1 to the next zone")
+        self.shift_start_back_button.setAccessibleName("Shift strip start back by one zone")
+        self.shift_start_back_button.clicked.connect(lambda: self._shift_start(1))
+        button_layout.addWidget(self.shift_start_back_button)
+
+        self.shift_start_forward_button = QPushButton("Shift start ▶")
+        self.shift_start_forward_button.setToolTip("Move LED 1 to the previous zone")
+        self.shift_start_forward_button.setAccessibleName("Shift strip start forward by one zone")
+        self.shift_start_forward_button.clicked.connect(lambda: self._shift_start(-1))
+        button_layout.addWidget(self.shift_start_forward_button)
+
+        self.reset_button = QPushButton("Reset to default")
         self.reset_button.clicked.connect(self._reset_to_default)
         button_layout.addWidget(self.reset_button)
 
-        button_layout.addStretch()
-        layout.addLayout(button_layout)
+        layout.addWidget(button_host)
 
         self.screen_preview.zone_drag_swap.connect(self._on_zone_swap)
         self._load_mapping()
@@ -530,6 +563,18 @@ class LedMappingWidget(QWidget):
         mapping = list(reversed(self.screen_preview.get_mapping()))
         self.screen_preview.set_mapping(mapping)
         self.selection_label.setText("Zone order reversed")
+        self._save_mapping()
+
+        if self._test_mode_active:
+            self._update_test_display()
+
+    def _shift_start(self, steps: int) -> None:
+        """Rotate which zone LED 1 reads; ``1`` is ``m[1:] + m[:1]``."""
+        mapping = self.screen_preview.get_mapping()
+        if len(mapping) < 2:
+            return
+        self.screen_preview.set_mapping(led_mapping.shift_mapping_start(mapping, steps))
+        self.selection_label.setText("Strip start moved by one zone")
         self._save_mapping()
 
         if self._test_mode_active:
@@ -639,10 +684,46 @@ class LedMappingWidget(QWidget):
         finally:
             self._razer_mode_enabled = False
 
+    def _on_preview_settings_changed(self, *_args) -> None:
+        """Refresh the strip and preview when brightness or boost changes."""
+        if self._test_mode_active:
+            self._last_test_colors = None
+            self._update_test_display()
+
+    def _apply_preview_settings(
+        self, colors: List[Tuple[int, int, int]]
+    ) -> List[Tuple[int, int, int]]:
+        """Apply the live monitor brightness and boost to a test frame.
+
+        LED Mapping used to send raw 255 test colors while Monitor Sync scaled
+        every frame by the brightness slider (75% by default), so opening the
+        mapper looked like a hidden overdrive. Previewing through the same
+        pipeline keeps the two paths honest.
+        """
+        controller = self.sync_controller
+        if controller is None:
+            return [(int(r), int(g), int(b)) for r, g, b in colors]
+
+        factor = 1.0
+        getter = getattr(controller, "get_monitor_brightness", None)
+        if getter is not None:
+            factor = max(0.0, min(1.0, float(getter())))
+        boost = 1.0
+        getter = getattr(controller, "get_monitor_boost", None)
+        if getter is not None:
+            boost = max(1.0, min(1.5, float(getter())))
+
+        # Same order as live sync: boost first, then the brightness ceiling.
+        return processing.apply_brightness(
+            processing.apply_brightness_boost(colors, boost), factor
+        )
+
     def _zone_colors(self) -> Dict[int, Tuple[int, int, int]]:
+        colors = self._apply_preview_settings(
+            [rect_test_color(rect) for rect in self.get_mapping()]
+        )
         return {
-            index: rect_test_color(rect)
-            for index, rect in enumerate(self.get_mapping())
+            index: color for index, color in enumerate(colors)
         }
 
     def _refresh_test_colors(self) -> None:
@@ -664,6 +745,7 @@ class LedMappingWidget(QWidget):
         if not self.sync_controller:
             return
         try:
+            led_colors = self._apply_preview_settings(led_colors)
             if self._last_test_colors == led_colors:
                 return  # The 1 Hz timer re-sends unchanged test colors; skip.
             self._last_test_colors = list(led_colors)

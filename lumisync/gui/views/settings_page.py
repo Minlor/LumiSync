@@ -1,28 +1,48 @@
-"""Settings page — sectioned, multi-device-ready scaffold."""
+"""Settings page — one scrolling page of groups, like Windows 11 Settings.
+
+General · Monitor tuning · Music tuning · Groups · Updates · About. Every
+preference is a Fluent settings card: an icon, a title with a short
+description, and the control on the right.
+"""
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QSettings
-from PySide6.QtGui import QDesktopServices, QGuiApplication
-from PySide6.QtCore import QUrl
+import platform
+import sys
+
+import shiboken6
+from PySide6.QtCore import QSettings, Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QFormLayout,
-    QBoxLayout,
     QFrame,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
-    QListWidget,
     QMessageBox,
     QPushButton,
     QScrollArea,
-    QStackedWidget,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from ..controllers.sync_controller import SYNC_SETTINGS_KEYS, load_sync_settings
+from ..utils import firewall
 from ..widgets.product_controls import ProductComboBox, ProductSlider, ToggleSwitch
+from ..widgets.settings_card import SettingsCard, SettingsGroup, SettingsList
+
+# Settings › General › Network access, per firewall status.
+FIREWALL_DESCRIPTIONS = {
+    firewall.STATUS_ALLOWED: "Allowed through Windows Firewall",
+    firewall.STATUS_OFF: "Windows Firewall is off",
+    firewall.STATUS_BLOCKED: "Blocked by Windows Firewall",
+    firewall.STATUS_MISSING: "Not allowed through Windows Firewall yet",
+    firewall.STATUS_PUBLIC: "Your network is set to Public in Windows",
+}
+FIREWALL_CHECKING = "Checking…"
+
+
+def _bool_value(settings: QSettings, key: str, default: bool) -> bool:
+    return str(settings.value(key, default)).lower() in ("true", "1")
 
 
 class SettingsPage(QWidget):
@@ -39,223 +59,207 @@ class SettingsPage(QWidget):
         self.setObjectName("SettingsPage")
 
         root = QVBoxLayout(self)
-        self._root_layout = root
-        root.setContentsMargins(28, 24, 28, 28)
-        root.setSpacing(18)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        page_header = QVBoxLayout()
-        page_header.setSpacing(3)
-        header = QLabel("Settings")
-        header.setProperty("role", "title")
-        page_header.addWidget(header)
+        self.header = QWidget()
+        header_layout = QHBoxLayout(self.header)
+        self._header_layout = header_layout
+        header_layout.setContentsMargins(28, 24, 28, 16)
+        title = QLabel("Settings")
+        title.setProperty("role", "title")
+        header_layout.addWidget(title)
+        header_layout.addStretch(1)
+        root.addWidget(self.header)
 
-        intro = QLabel("Personalize the app and tune how screen and music syncing behaves.")
-        intro.setProperty("role", "pageDescription")
-        intro.setWordWrap(True)
-        self._intro = intro
-        page_header.addWidget(intro)
-        root.addLayout(page_header)
+        self.scroll = QScrollArea()
+        self.scroll.setObjectName("SettingsScroll")
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        root.addWidget(self.scroll, 1)
 
-        body = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        content = QWidget()
+        content.setObjectName("SettingsContent")
+        self.scroll.setWidget(content)
+        body = QVBoxLayout(content)
         self._body_layout = body
-        body.setSpacing(18)
+        body.setContentsMargins(28, 4, 28, 28)
+        body.setSpacing(28)
 
-        self.section_nav = QListWidget()
-        self.section_nav.setObjectName("SettingsSectionNav")
-        self.section_nav.setFixedWidth(196)
-        self.section_nav.setSpacing(2)
-        self.section_nav.setAccessibleName("Settings sections")
-        self.section_nav.addItems(
-            ["Application", "Monitor Sync", "Music Sync", "Groups", "About"]
-        )
-        self.section_picker = ProductComboBox()
-        self.section_picker.setAccessibleName("Settings section")
-        for index in range(self.section_nav.count()):
-            self.section_picker.addItem(self.section_nav.item(index).text())
-        self.section_picker.currentIndexChanged.connect(self.section_nav.setCurrentRow)
-        self.section_picker.hide()
-        body.addWidget(self.section_picker)
-        body.addWidget(self.section_nav)
+        self.general_group = self._build_general_group()
+        self.monitor_tuning_group = self._build_monitor_tuning_group()
+        self.music_tuning_group = self._build_music_tuning_group()
+        self.groups_group = self._build_groups_group()
+        self.updates_group = self._build_updates_group()
+        self.about_group = self._build_about_group()
+        for group in (
+            self.general_group,
+            self.monitor_tuning_group,
+            self.music_tuning_group,
+            self.groups_group,
+            self.updates_group,
+            self.about_group,
+        ):
+            body.addWidget(group)
+        body.addStretch(1)
 
-        self.section_stack = QStackedWidget()
-        self.section_stack.setObjectName("SettingsSectionStack")
-        self.section_stack.addWidget(
-            self._section_page(
-                "Application",
-                "Choose how LumiSync starts, closes, and blends into Windows.",
-                self._build_application_group(),
-            )
-        )
-        self.section_stack.addWidget(
-            self._section_page(
-                "Monitor Sync",
-                "Choose a display and tune how its colors are sampled and sent.",
-                self._build_display_group(),
-                self._build_monitor_tuning_group(),
-            )
-        )
-        self.section_stack.addWidget(
-            self._section_page(
-                "Music Sync",
-                "Fine-tune how quickly audio-reactive lighting responds.",
-                self._build_music_tuning_group(),
-            )
-        )
-        self.section_stack.addWidget(
-            self._section_page(
-                "Groups",
-                "Review reusable groups shared by Monitor and Music Sync.",
-                self._build_groups_group(),
-            )
-        )
-        self.section_stack.addWidget(
-            self._section_page(
-                "About",
-                "Version, updates, and project links.",
-                self._build_about_group(),
-            )
-        )
-        body.addWidget(self.section_stack, 1)
-        root.addLayout(body, 1)
+        self._latest_release_url = None
+        self._connect_update_controller()
 
-        self.section_nav.currentRowChanged.connect(
-            self.section_stack.setCurrentIndex
-        )
-        self.section_nav.currentRowChanged.connect(self._section_changed)
-        self.section_nav.setCurrentRow(0)
-        for form in self.findChildren(QFormLayout):
-            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-            form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-
-    def _section_changed(self, index: int) -> None:
-        blocked = self.section_picker.blockSignals(True)
-        self.section_picker.setCurrentIndex(index)
-        self.section_picker.blockSignals(blocked)
+    def groups(self) -> list[SettingsGroup]:
+        """The page's sections, in order (General … About)."""
+        return [
+            self.general_group,
+            self.monitor_tuning_group,
+            self.music_tuning_group,
+            self.groups_group,
+            self.updates_group,
+            self.about_group,
+        ]
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
         super().resizeEvent(event)
         if not hasattr(self, "_body_layout"):
             return
-        narrow = self.width() < 940
-        short = self.height() < 620
-        self.section_nav.setVisible(not narrow)
-        self.section_picker.setVisible(narrow)
-        self._body_layout.setDirection(QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight)
-        self._body_layout.setSpacing(12 if narrow else 18)
-        self._root_layout.setContentsMargins(16 if short else 28, 16 if short else 24,
-                                            16 if short else 28, 16 if short else 28)
-        self._root_layout.setSpacing(12 if short else 18)
-        self._intro.setVisible(not short)
+        compact = self.height() < 680 or self.width() < 760
+        inset = 16 if compact else 28
+        self._header_layout.setContentsMargins(inset, 16 if compact else 24, inset, 12 if compact else 16)
+        self._body_layout.setContentsMargins(inset, 2 if compact else 4, inset, 16 if compact else 28)
+        self._body_layout.setSpacing(20 if compact else 28)
 
-    @staticmethod
-    def _section_page(
-        title: str,
-        description: str,
-        *groups: QGroupBox,
-    ) -> QScrollArea:
-        scroll = QScrollArea()
-        scroll.setObjectName("SettingsSectionScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
+    # ---------------------------------------------------------------- general
 
-        page = QWidget()
-        page.setObjectName("SettingsSectionPage")
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(2, 0, 8, 8)
-        layout.setSpacing(14)
-
-        heading = QLabel(title)
-        heading.setProperty("role", "inspectorTitle")
-        layout.addWidget(heading)
-        copy = QLabel(description)
-        copy.setProperty("role", "pageDescription")
-        copy.setWordWrap(True)
-        layout.addWidget(copy)
-        for group in groups:
-            layout.addWidget(group)
-        layout.addStretch(1)
-        scroll.setWidget(page)
-        return scroll
-
-    # ---------------------------------------------------------------- groups
-
-    def _build_application_group(self) -> QGroupBox:
+    def _build_general_group(self) -> SettingsGroup:
         from ..utils import autostart
 
-        group = QGroupBox("Application")
-        form = QFormLayout(group)
-        form.setSpacing(8)
+        group = SettingsGroup("General")
 
-        def _bool_setting(key: str, default: bool) -> bool:
-            return str(self.settings.value(key, default)).lower() in ("true", "1")
-
-        self.tray_check = ToggleSwitch(
-            "Keep running when the window is closed"
-        )
-        self.tray_check.setChecked(_bool_setting("ui/minimize_to_tray", True))
+        self.tray_check = ToggleSwitch()
+        self.tray_check.setAccessibleName("Keep running in the tray")
+        self.tray_check.setChecked(_bool_value(self.settings, "ui/minimize_to_tray", True))
         self.tray_check.toggled.connect(
             lambda checked: self.settings.setValue("ui/minimize_to_tray", bool(checked))
         )
-        form.addRow("Tray", self.tray_check)
+        group.add_card(SettingsCard(
+            "tray-run.svg", "Keep running in the tray",
+            "Closing the window keeps LumiSync syncing from the notification area",
+            self.tray_check,
+        ))
 
-        import platform
-        start_label = (
-            "Start LumiSync when Windows starts"
-            if platform.system() == "Windows"
-            else "Start LumiSync when you log in"
-        )
-        self.autostart_check = ToggleSwitch(start_label)
+        on_windows = platform.system() == "Windows"
+        self.autostart_check = ToggleSwitch()
+        start_title = "Start with Windows" if on_windows else "Start when you log in"
+        self.autostart_check.setAccessibleName(start_title)
         if autostart.is_supported():
             self.autostart_check.setChecked(autostart.is_enabled())
             self.autostart_check.toggled.connect(self._on_autostart_toggled)
         else:
             self.autostart_check.setEnabled(False)
-            self.autostart_check.setToolTip(
-                "Autostart isn't supported on this platform."
-            )
-        form.addRow("Startup", self.autostart_check)
+            self.autostart_check.setToolTip("Autostart isn't supported on this platform.")
+        group.add_card(SettingsCard(
+            "startup.svg", start_title,
+            "Opens quietly in the tray when you sign in",
+            self.autostart_check,
+        ))
 
-        self.statusbar_check = ToggleSwitch("Show the status bar")
-        self.statusbar_check.setChecked(_bool_setting("ui/status_bar", True))
+        self.statusbar_check = ToggleSwitch()
+        self.statusbar_check.setAccessibleName("Show the status bar")
+        self.statusbar_check.setChecked(_bool_value(self.settings, "ui/status_bar", True))
         self.statusbar_check.toggled.connect(self._on_statusbar_toggled)
-        form.addRow("Status bar", self.statusbar_check)
+        group.add_card(SettingsCard(
+            "statusbar.svg", "Status bar",
+            "Show progress messages along the bottom of the window",
+            self.statusbar_check,
+        ))
 
         self.window_material_combo = ProductComboBox()
-        self.window_material_combo.addItem(
-            "Acrylic · blurred desktop",
-            "acrylic",
-        )
-        self.window_material_combo.addItem(
-            "Mica · wallpaper tint",
-            "mica",
-        )
-        self.window_material_combo.addItem(
-            "Solid dark · no transparency",
-            "solid",
-        )
+        self.window_material_combo.setAccessibleName("Window material")
+        self.window_material_combo.setMinimumWidth(200)
+        self.window_material_combo.addItem("Acrylic", "acrylic")
+        self.window_material_combo.addItem("Mica", "mica")
+        self.window_material_combo.addItem("Solid", "solid")
         self.window_material_combo.setToolTip(
             "Choose the background material used by the LumiSync window."
         )
-        saved_material = str(
-            self.settings.value("ui/window_material", "acrylic")
-        ).lower()
+        saved_material = str(self.settings.value("ui/window_material", "acrylic")).lower()
         material_index = self.window_material_combo.findData(saved_material)
         self.window_material_combo.setCurrentIndex(max(0, material_index))
-        self.window_material_combo.currentIndexChanged.connect(
-            self._on_window_material_changed
-        )
-        form.addRow("Window material", self.window_material_combo)
+        self.window_material_combo.currentIndexChanged.connect(self._on_window_material_changed)
+        group.add_card(SettingsCard(
+            "layers.svg", "Window material",
+            "Acrylic blurs the desktop, Mica tints with your wallpaper, Solid is opaque",
+            self.window_material_combo,
+        ))
 
+        # Windows Firewall, for the installed app only (source runs are not
+        # checked). The card and its button are parented by add_card before
+        # any visibility change.
+        self._firewall = getattr(self._main_window, "firewall_monitor", None)
+        self.firewall_allow_button = QPushButton("Allow")
+        self.firewall_allow_button.setAccessibleName("Allow LumiSync through Windows Firewall")
+        self.firewall_allow_button.setToolTip(
+            "Adds a Windows Firewall rule for Private and Domain networks (asks for administrator approval)"
+        )
+        self.firewall_allow_button.clicked.connect(self._allow_firewall)
+        self.firewall_card = SettingsCard(
+            "network.svg", "Network access", FIREWALL_CHECKING, self.firewall_allow_button,
+        )
+        group.add_card(self.firewall_card)
+        monitor = self._firewall
+        self.firewall_card.setVisible(monitor is not None and monitor.is_supported())
+        if monitor is not None:
+            monitor.changed.connect(lambda *_: self._update_firewall_card())
+            monitor.allow_finished.connect(lambda *_: self._update_firewall_card())
+        self._update_firewall_card()
         return group
+
+    def _update_firewall_card(self) -> None:
+        monitor = self._firewall
+        if monitor is None:
+            self.firewall_allow_button.setVisible(False)
+            return
+        state = monitor.state()
+        verifying = monitor.is_verifying()
+        text = FIREWALL_CHECKING if verifying else FIREWALL_DESCRIPTIONS.get(state.status, FIREWALL_CHECKING)
+        self.firewall_card.set_description(text)
+        self.firewall_card.description_label.setToolTip(state.detail if not verifying else "")
+        self.firewall_allow_button.setVisible(state.can_allow and not verifying)
+        self.firewall_allow_button.setEnabled(not monitor.is_allowing())
+
+    def _allow_firewall(self) -> None:
+        monitor = self._firewall
+        if monitor is None or not monitor.state().can_allow:
+            return
+        handle = None
+        window = self.window()
+        if sys.platform == "win32" and window is not None and window.isVisible():
+            try:
+                handle = int(window.winId())  # The UAC prompt opens in front of it.
+            except Exception:
+                handle = None
+        if monitor.allow(handle, self._on_firewall_allowed):
+            self.firewall_allow_button.setEnabled(False)
+
+    def _on_firewall_allowed(self, ok: bool, message: str) -> None:
+        if not shiboken6.isValid(self):
+            return
+        self.firewall_allow_button.setEnabled(True)
+        if ok or message == firewall.CANCELLED:
+            return
+        main_window = self._main_window
+        if main_window is not None and hasattr(main_window, "show_notice"):
+            main_window.show_notice(message, "error")
 
     def _on_autostart_toggled(self, checked: bool) -> None:
         from ..utils import autostart
 
         if not autostart.set_enabled(bool(checked)):
-            # Revert the checkbox if the registry write failed.
+            # Revert the switch if the registry write failed.
             self.autostart_check.blockSignals(True)
             self.autostart_check.setChecked(autostart.is_enabled())
             self.autostart_check.blockSignals(False)
+            self.autostart_check._animate_state(self.autostart_check.isChecked())
             main_window = self._main_window
             if main_window is not None and hasattr(main_window, "show_error"):
                 main_window.show_error("Error: could not update the Windows autostart entry.")
@@ -283,90 +287,86 @@ class SettingsPage(QWidget):
         self.window_material_combo.setCurrentIndex(index)
         self.window_material_combo.blockSignals(blocked)
 
-    def _build_display_group(self) -> QGroupBox:
-        group = QGroupBox("Display Sync")
-        form = QFormLayout(group)
-        form.setSpacing(8)
+    # ---------------------------------------------------------------- tuning
 
-        self.display_combo = ProductComboBox()
-        self._populate_displays()
-        controller = getattr(self._main_window, "sync_controller", None)
-        if controller is not None:
-            saved_display = controller.get_monitor_display()
-        else:
-            saved_display = int(self.settings.value("sync/monitor_display", 0))
-        idx = self.display_combo.findData(saved_display)
-        if idx >= 0:
-            self.display_combo.setCurrentIndex(idx)
-        self.display_combo.currentIndexChanged.connect(self._on_display_changed)
-        form.addRow("Monitor", self.display_combo)
-
-        return group
-
-    def _build_monitor_tuning_group(self) -> QGroupBox:
-        group = QGroupBox("Monitor Response")
-        form = QFormLayout(group)
-        form.setSpacing(8)
-
-        self.smoothing_slider, smoothing_row, self.smoothing_label = self._slider_row(
-            5, 100, int(round(self._sync_settings.smoothing * 100)), self._on_smoothing
-        )
-        self.smoothing_label.setText(f"{self._sync_settings.smoothing:.2f}")
-        form.addRow("Monitor smoothing", smoothing_row)
-
-        self.saturation_slider, saturation_row, self.saturation_label = self._slider_row(
-            100, 200, int(round(self._sync_settings.saturation * 100)), self._on_saturation
-        )
-        self.saturation_label.setText(f"{self._sync_settings.saturation:.2f}×")
-        form.addRow("Color saturation", saturation_row)
-
-        self.fps_slider, fps_row, self.fps_label = self._slider_row(
-            10, 120, int(self._sync_settings.monitor_fps), self._on_fps
-        )
-        self.fps_label.setText(f"{int(self._sync_settings.monitor_fps)} fps")
-        form.addRow("Max frame rate", fps_row)
-
-        self.gamma_check = ToggleSwitch(
-            "Blend zone colors in linear light (recommended)"
-        )
-        self.gamma_check.setChecked(bool(self._sync_settings.gamma_correct))
-        self.gamma_check.toggled.connect(self._on_gamma)
-        form.addRow("Gamma", self.gamma_check)
-
-        return group
-
-    def _build_music_tuning_group(self) -> QGroupBox:
-        group = QGroupBox("Advanced Audio Response")
-        form = QFormLayout(group)
-        form.setSpacing(8)
-
-        self.gain_slider, gain_row, self.gain_label = self._slider_row(
-            50, 400, int(round(self._sync_settings.music_gain * 100)), self._on_gain
-        )
-        self.gain_label.setText(f"{self._sync_settings.music_gain:.2f}×")
-        form.addRow("Music sensitivity", gain_row)
-
-        self.music_smoothing_slider, music_smoothing_row, self.music_smoothing_label = self._slider_row(
-            5, 100, int(round(self._sync_settings.music_smoothing * 100)), self._on_music_smoothing
-        )
-        self.music_smoothing_label.setText(f"{self._sync_settings.music_smoothing:.2f}")
-        form.addRow("Music smoothing", music_smoothing_row)
-
-        return group
-
-    def _slider_row(self, minimum, maximum, value, on_change):
-        """Build a horizontal slider paired with a right-aligned value label."""
-        row = QHBoxLayout()
+    def _slider_card(self, icon, title, description, minimum, maximum, value, on_change):
+        """A card with a slider and its value on the right."""
         slider = ProductSlider(Qt.Orientation.Horizontal)
         slider.setRange(minimum, maximum)
         slider.setValue(max(minimum, min(maximum, value)))
+        slider.setAccessibleName(title)
         slider.valueChanged.connect(on_change)
-        row.addWidget(slider, 1)
+        slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        slider.setMinimumWidth(96)
+        slider.setMaximumWidth(280)
         label = QLabel()
-        label.setMinimumWidth(48)
+        label.setProperty("role", "valueLabel")
+        label.setMinimumWidth(56)
         label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        host = QWidget()
+        row = QHBoxLayout(host)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(12)
+        row.addWidget(slider, 1)
         row.addWidget(label)
-        return slider, row, label
+        host.setMaximumWidth(352)
+        card = SettingsCard(icon, title, description, host)
+        return slider, card, label
+
+    def _build_monitor_tuning_group(self) -> SettingsGroup:
+        group = SettingsGroup("Monitor tuning")
+        sync = self._sync_settings
+
+        self.smoothing_slider, card, self.smoothing_label = self._slider_card(
+            "smoothing.svg", "Smoothing", "Higher values fade between screen colors more gently",
+            5, 100, int(round(sync.smoothing * 100)), self._on_smoothing,
+        )
+        self.smoothing_label.setText(f"{sync.smoothing:.2f}")
+        group.add_card(card)
+
+        self.saturation_slider, card, self.saturation_label = self._slider_card(
+            "droplet.svg", "Color saturation", "Strengthens the colors sent to the lights",
+            100, 200, int(round(sync.saturation * 100)), self._on_saturation,
+        )
+        self.saturation_label.setText(f"{sync.saturation:.2f}×")
+        group.add_card(card)
+
+        self.fps_slider, card, self.fps_label = self._slider_card(
+            "gauge.svg", "Frame rate", "The most screen frames captured and sent each second",
+            10, 120, int(sync.monitor_fps), self._on_fps,
+        )
+        self.fps_label.setText(f"{int(sync.monitor_fps)} fps")
+        group.add_card(card)
+
+        self.gamma_check = ToggleSwitch()
+        self.gamma_check.setAccessibleName("Blend zone colors in linear light")
+        self.gamma_check.setChecked(bool(sync.gamma_correct))
+        self.gamma_check.toggled.connect(self._on_gamma)
+        group.add_card(SettingsCard(
+            "sun.svg", "Gamma-correct blending",
+            "Blend zone colors in linear light (recommended)",
+            self.gamma_check,
+        ))
+        return group
+
+    def _build_music_tuning_group(self) -> SettingsGroup:
+        group = SettingsGroup("Music tuning")
+        sync = self._sync_settings
+
+        self.gain_slider, card, self.gain_label = self._slider_card(
+            "waveform.svg", "Sensitivity", "How strongly quiet passages drive the lights",
+            50, 400, int(round(sync.music_gain * 100)), self._on_gain,
+        )
+        self.gain_label.setText(f"{sync.music_gain:.2f}×")
+        group.add_card(card)
+
+        self.music_smoothing_slider, card, self.music_smoothing_label = self._slider_card(
+            "smoothing.svg", "Smoothing", "Higher values soften fast changes between beats",
+            5, 100, int(round(sync.music_smoothing * 100)), self._on_music_smoothing,
+        )
+        self.music_smoothing_label.setText(f"{sync.music_smoothing:.2f}")
+        group.add_card(card)
+        return group
 
     def _reload_sync(self) -> None:
         self._sync_settings = load_sync_settings(self.settings)
@@ -403,67 +403,48 @@ class SettingsPage(QWidget):
         self.settings.setValue(SYNC_SETTINGS_KEYS["music_smoothing"], value / 100)
         self._reload_sync()
 
-    def _build_groups_group(self) -> QGroupBox:
-        group = QGroupBox("Sync Groups")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(8)
+    # ---------------------------------------------------------------- groups
 
-        info = QLabel(
-            "Create groups from Devices, Monitor Sync, or Music Sync. Saved "
-            "groups appear as reusable targets in both sync pages."
+    def _build_groups_group(self) -> SettingsGroup:
+        group = SettingsGroup("Groups")
+        self._groups_list = SettingsList()
+        group.add_card(self._groups_list)
+        self._groups_empty = SettingsCard(
+            "group.svg", "No groups yet",
+            "Select lights on Monitor Sync or Music Sync and choose Save as group. "
+            "Saved groups can be applied on both pages.",
         )
-        info.setProperty("role", "subtle")
-        info.setWordWrap(True)
-        layout.addWidget(info)
-
-        self._groups_list = QVBoxLayout()
-        self._groups_list.setSpacing(4)
-        layout.addLayout(self._groups_list)
+        group.add_card(self._groups_empty)
+        self._groups_list.hide()
 
         controller = getattr(self._main_window, "device_controller", None)
         if controller is not None:
             controller.groups_changed.connect(lambda *_: self._refresh_groups())
             self._refresh_groups()
-
         return group
 
     def _refresh_groups(self) -> None:
         controller = getattr(self._main_window, "device_controller", None)
         if controller is None:
             return
-        # Clear existing rows.
-        while self._groups_list.count():
-            item = self._groups_list.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-            elif item.layout() is not None:
-                self._clear_layout(item.layout())
-
+        self._groups_list.clear()
         groups = controller.get_groups()
-        if not groups:
-            empty = QLabel("No groups yet.")
-            empty.setProperty("role", "hint")
-            self._groups_list.addWidget(empty)
-            return
-
+        self._groups_list.setVisible(bool(groups))
+        self._groups_empty.setVisible(not groups)
         for grp in groups:
-            row = QHBoxLayout()
             count = len(grp.get("devices", []))
-            label = QLabel(
-                f"{grp['name']}  ·  {count} device{'s' if count != 1 else ''}"
-            )
-            label.setTextFormat(Qt.TextFormat.PlainText)
-            label.setWordWrap(True)
-            row.addWidget(label)
-            row.addStretch(1)
             delete_btn = QPushButton("Delete")
-            delete_btn.setObjectName("LinkButton")
+            delete_btn.setAccessibleName(f"Delete the group {grp['name']}")
             delete_btn.clicked.connect(
                 lambda _checked=False, name=grp["name"]: self._confirm_delete_group(name)
             )
-            row.addWidget(delete_btn)
-            self._groups_list.addLayout(row)
+            row = SettingsCard(
+                "group.svg", str(grp["name"]),
+                f"{count} light{'s' if count != 1 else ''}",
+                delete_btn,
+                in_list=True,
+            )
+            self._groups_list.add_row(row)
 
     def _confirm_delete_group(self, name: str) -> None:
         controller = getattr(self._main_window, "device_controller", None)
@@ -479,85 +460,97 @@ class SettingsPage(QWidget):
         if reply == QMessageBox.StandardButton.Yes:
             controller.delete_group(name)
 
-    def _clear_layout(self, layout) -> None:
-        while layout.count():
-            item = layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+    # --------------------------------------------------------------- updates
 
-    def _build_about_group(self) -> QGroupBox:
-        group = QGroupBox("About")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(4)
+    def _build_updates_group(self) -> SettingsGroup:
+        group = SettingsGroup("Updates")
 
-        from ... import __version__ as _version  # local import to avoid cycles
-        self.about_version_label = QLabel(f"<b>LumiSync</b> · v{_version}")
-        layout.addWidget(self.about_version_label)
-
-        desc = QLabel(
-            "Control Govee, Tuya and LSC lights, switches and smart plugs. "
-            "Sync local lights with your screen or music and draw on iDotMatrix panels."
-        )
-        desc.setProperty("role", "subtle")
-        desc.setWordWrap(True)
-        layout.addWidget(desc)
-
-        capabilities = QLabel(
-            "Connect your vendor accounts. Supported plugs show live electrical "
-            "readings and monthly energy usage."
-        )
-        capabilities.setProperty("role", "subtle")
-        capabilities.setWordWrap(True)
-        layout.addWidget(capabilities)
-
-        self.update_status_label = QLabel("Updates have not been checked yet.")
-        self.update_status_label.setProperty("role", "subtle")
-        self.update_status_label.setWordWrap(True)
-        layout.addWidget(self.update_status_label)
-
-        buttons = QHBoxLayout()
-        buttons.setSpacing(8)
-
-        self.check_updates_button = QPushButton("Check for updates")
-        self.check_updates_button.clicked.connect(self._check_for_updates)
-        buttons.addWidget(self.check_updates_button)
-
-        self.open_release_button = QPushButton("Open Release")
+        actions = QWidget()
+        row = QHBoxLayout(actions)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        self.open_release_button = QPushButton("Release notes")
         self.open_release_button.setObjectName("LinkButton")
         self.open_release_button.setVisible(False)
         self.open_release_button.clicked.connect(self._open_latest_release)
-        buttons.addWidget(self.open_release_button)
+        row.addWidget(self.open_release_button)
+        self.install_update_button = QPushButton("Update now")
+        self.install_update_button.setProperty("role", "primary")
+        self.install_update_button.setVisible(False)
+        self.install_update_button.clicked.connect(self._install_update)
+        row.addWidget(self.install_update_button)
+        self.check_updates_button = QPushButton("Check for updates")
+        self.check_updates_button.clicked.connect(self._check_for_updates)
+        row.addWidget(self.check_updates_button)
 
+        self.update_card = SettingsCard(
+            "refresh.svg", "LumiSync updates", "Updates have not been checked yet.", actions,
+        )
+        self.update_status_label = self.update_card.description_label
+        group.add_card(self.update_card)
+
+        self.auto_update_toggle = ToggleSwitch()
+        self.auto_update_toggle.setAccessibleName("Download updates automatically")
+        self.auto_update_toggle.setToolTip(
+            "Downloads a verified update when one is found; installation still asks first."
+        )
+        self.auto_update_toggle.setChecked(_bool_value(self.settings, "updates/auto_download", False))
+        self.auto_update_toggle.toggled.connect(
+            lambda checked: self.settings.setValue("updates/auto_download", bool(checked))
+        )
+        group.add_card(SettingsCard(
+            "download.svg", "Download updates automatically",
+            "Installing still asks first",
+            self.auto_update_toggle,
+        ))
+        return group
+
+    # ----------------------------------------------------------------- about
+
+    def _build_about_group(self) -> SettingsGroup:
+        from ... import __version__ as _version  # local import to avoid cycles
+
+        group = SettingsGroup("About")
+        self.about_version_label = QLabel(f"Version {_version}")
+        self.about_version_label.setProperty("role", "valueLabel")
+        group.add_card(SettingsCard(
+            "info.svg", "LumiSync",
+            "Control Govee, Tuya and LSC lights, switches and smart plugs. Sync local "
+            "lights with your screen or music and draw on iDotMatrix panels.",
+            self.about_version_label,
+        ))
+
+        links = SettingsList()
+        self.repository_button = QPushButton("Open")
+        self.repository_button.setObjectName("LinkButton")
+        self.repository_button.setAccessibleName("Open the GitHub repository")
+        self.repository_button.clicked.connect(self._open_repository)
+        links.add_row(SettingsCard(
+            "link.svg", "GitHub repository", "Source code, issues and release notes",
+            self.repository_button, in_list=True,
+        ))
+        self.account_setup_button = QPushButton("Open")
+        self.account_setup_button.setObjectName("LinkButton")
+        self.account_setup_button.setAccessibleName("Open the account setup guide")
+        self.account_setup_button.clicked.connect(self._open_account_setup)
+        links.add_row(SettingsCard(
+            "link.svg", "Account setup", "How to link Govee, Tuya and LSC accounts",
+            self.account_setup_button, in_list=True,
+        ))
         self.open_logs_button = QPushButton("Open logs folder")
         self.open_logs_button.setToolTip("Open connection logs and crash diagnostics")
         self.open_logs_button.clicked.connect(self._open_logs)
-        buttons.addWidget(self.open_logs_button)
-        buttons.addStretch(1)
-        layout.addLayout(buttons)
-
-        links = QHBoxLayout()
-        links.setSpacing(8)
-        self.account_setup_button = QPushButton("Account setup")
-        self.account_setup_button.setObjectName("LinkButton")
-        self.account_setup_button.clicked.connect(self._open_account_setup)
-        links.addWidget(self.account_setup_button)
-
-        self.repository_button = QPushButton("GitHub repository")
-        self.repository_button.setObjectName("LinkButton")
-        self.repository_button.clicked.connect(self._open_repository)
-        links.addWidget(self.repository_button)
-        links.addStretch(1)
-        layout.addLayout(links)
+        links.add_row(SettingsCard(
+            "folder.svg", "Logs", "Connection logs and crash diagnostics for bug reports",
+            self.open_logs_button, in_list=True,
+        ))
+        group.add_card(links)
 
         credit = QLabel("Created by Minlor · Open source under the MIT license.")
-        credit.setProperty("role", "subtle")
+        credit.setProperty("role", "hint")
         credit.setWordWrap(True)
-        layout.addWidget(credit)
-
-        self._latest_release_url = None
-        self._connect_update_controller()
-
+        credit.setContentsMargins(2, 6, 0, 0)
+        group.add_widget(credit)
         return group
 
     # ---------------------------------------------------------------- helpers
@@ -581,6 +574,9 @@ class SettingsPage(QWidget):
 
         controller.check_started.connect(self._on_update_check_started)
         controller.check_finished.connect(self._on_update_check_finished)
+        download_finished = getattr(controller, "download_finished", None)
+        if download_finished is not None:
+            download_finished.connect(self._on_update_downloaded)
         if controller.last_result is not None:
             self._on_update_check_finished(controller.last_result)
 
@@ -595,6 +591,19 @@ class SettingsPage(QWidget):
         if controller is not None:
             controller.check_now()
 
+    def _install_update(self) -> None:
+        window = self._main_window
+        if window is not None and hasattr(window, "show_update_dialog"):
+            window.show_update_dialog()
+
+    def _on_update_downloaded(self, _path: str) -> None:
+        self.install_update_button.setText("Restart && update")
+        self.install_update_button.setVisible(True)
+        self._set_update_status(
+            "The update is downloaded and verified. Restart to install it.",
+            "active",
+        )
+
     def _open_latest_release(self) -> None:
         if self._latest_release_url:
             QDesktopServices.openUrl(QUrl(self._latest_release_url))
@@ -602,6 +611,7 @@ class SettingsPage(QWidget):
     def _on_update_check_started(self) -> None:
         self.check_updates_button.setEnabled(False)
         self.open_release_button.setVisible(False)
+        self.install_update_button.setVisible(False)
         self._set_update_status("Checking GitHub releases...")
 
     def _on_update_check_finished(self, result) -> None:
@@ -610,40 +620,28 @@ class SettingsPage(QWidget):
         if result.error:
             self._latest_release_url = None
             self.open_release_button.setVisible(False)
+            self.install_update_button.setVisible(False)
             self._set_update_status(f"Update check failed: {result.error}", "error")
             return
 
         if result.is_update_available and result.latest_version:
             self._latest_release_url = result.release_url
             self.open_release_button.setVisible(bool(result.release_url))
+            controller = getattr(self._main_window, "update_controller", None)
+            ready = bool(getattr(controller, "ready_installer", None))
+            self.install_update_button.setText(
+                "Restart && update" if ready else "Update now"
+            )
+            self.install_update_button.setVisible(True)
+            current = getattr(result, "current_version", None)
+            suffix = f" (you have v{current})" if current else ""
             self._set_update_status(
-                f"Update available: v{result.latest_version}",
+                f"LumiSync v{result.latest_version} is available{suffix}.",
                 "active",
             )
             return
 
         self._latest_release_url = None
         self.open_release_button.setVisible(False)
+        self.install_update_button.setVisible(False)
         self._set_update_status("LumiSync is up to date.", "idle")
-
-    def _populate_displays(self) -> None:
-        self.display_combo.clear()
-        screens = list(QGuiApplication.screens())
-        primary = QGuiApplication.primaryScreen()
-        for i, screen in enumerate(screens):
-            geo = screen.geometry()
-            label = f"Display {i + 1}: {geo.width()}×{geo.height()}"
-            if primary is not None and screen is primary:
-                label += " (Primary)"
-            self.display_combo.addItem(label, i)
-        if not screens:
-            self.display_combo.addItem("Default", 0)
-
-    def _on_display_changed(self) -> None:
-        display_index = int(self.display_combo.currentData() or 0)
-        self.settings.setValue("sync/monitor_display", display_index)
-        if self._main_window is not None and hasattr(self._main_window, "sync_controller"):
-            try:
-                self._main_window.sync_controller.set_monitor_display(display_index)
-            except Exception:
-                pass

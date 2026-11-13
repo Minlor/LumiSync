@@ -8,6 +8,7 @@ import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
 from lumisync import connection, led_mapping
@@ -157,6 +158,47 @@ class SegmentCountTests(unittest.TestCase):
         self.assertEqual(widget.get_mapping(), list(reversed(original)))
         self.assertIn(led_mapping.NORMALIZED_MAPPING_KEY, saved)
 
+    def test_shift_start_rotates_the_mapping_by_one_zone(self):
+        mapping = [{"x": index / 10, "y": 0.0, "w": 0.1, "h": 0.1} for index in range(4)]
+
+        forward = led_mapping.shift_mapping_start(mapping, 1)
+        back = led_mapping.shift_mapping_start(mapping, -1)
+
+        self.assertEqual(forward, mapping[1:] + mapping[:1])
+        self.assertEqual(back, mapping[-1:] + mapping[:-1])
+        self.assertEqual(led_mapping.shift_mapping_start(forward, -1), mapping)
+        self.assertEqual(led_mapping.shift_mapping_start(mapping, len(mapping)), mapping)
+        self.assertEqual(led_mapping.shift_mapping_start([], 1), [])
+
+    def test_shift_start_buttons_persist_the_rotated_mapping(self):
+        saved = {}
+
+        class FakeSettings:
+            def value(self, key, default=None):
+                return saved.get(key, default)
+
+            def setValue(self, key, value):
+                saved[key] = value
+
+        widget = LedMappingWidget(FakeSettings())
+        widget.set_segment_count(6)
+        original = widget.get_mapping()
+
+        widget.shift_start_back_button.click()
+        self.assertEqual(widget.get_mapping(), original[1:] + original[:1])
+        self.assertEqual(
+            led_mapping.parse_normalized_mapping(saved[led_mapping.NORMALIZED_MAPPING_KEY]),
+            original[1:] + original[:1],
+        )
+
+        widget.shift_start_forward_button.click()
+        widget.shift_start_forward_button.click()
+        self.assertEqual(widget.get_mapping(), original[-1:] + original[:-1])
+
+        # Reverse + shift reaches every start corner and direction.
+        widget._reverse_order()
+        self.assertEqual(widget.get_mapping(), list(reversed(original[-1:] + original[:-1])))
+
     def test_test_colors_follow_mapped_screen_rectangles(self):
         class FakeSettings:
             def value(self, _key, default=None):
@@ -182,6 +224,77 @@ class SegmentCountTests(unittest.TestCase):
 
         self.assertNotEqual(before, after)
         self.assertEqual(after, list(reversed(before)))
+
+    def test_mapping_test_preview_uses_live_brightness_and_boost(self):
+        class FakeSettings:
+            def value(self, _key, default=None):
+                return default
+
+            def setValue(self, _key, _value):
+                pass
+
+        class FakeController(QObject):
+            brightness_changed = Signal(str, float)
+            monitor_boost_changed = Signal(float)
+
+            def __init__(self, brightness, boost):
+                super().__init__()
+                self.brightness = brightness
+                self.boost = boost
+
+            def get_monitor_brightness(self):
+                return self.brightness
+
+            def get_monitor_boost(self):
+                return self.boost
+
+        controller = FakeController(0.5, 1.0)
+        widget = LedMappingWidget(FakeSettings(), sync_controller=controller)
+
+        self.assertEqual(
+            widget._apply_preview_settings([(200, 100, 50)]),
+            [(100, 50, 25)],
+        )
+
+        controller.brightness = 1.0
+        controller.boost = 1.5
+        self.assertEqual(
+            widget._apply_preview_settings([(100, 50, 25)]),
+            [(125, 63, 31)],
+        )
+
+        # Boost runs before brightness, so the brightness cap still holds.
+        controller.brightness = 0.75
+        self.assertEqual(
+            widget._apply_preview_settings([(255, 255, 255)]),
+            [(191, 191, 191)],
+        )
+
+    def test_sync_warning_covers_cloud_preferred_local_devices(self):
+        messages = []
+
+        class FakeDevices:
+            def is_cloud_preferred(self, _device):
+                return True
+
+            def is_device_busy(self, *_args, **_kwargs):
+                return False
+
+        view = SimpleNamespace(
+            device_controller=FakeDevices(),
+            controller=SimpleNamespace(
+                status_updated=SimpleNamespace(emit=messages.append)
+            ),
+        )
+
+        self.assertFalse(
+            ModesView._can_start_sync(
+                view, [{"name": "Battletron", "transport": "tuya"}]
+            )
+        )
+        self.assertIn("Battletron", messages[0])
+        self.assertIn("cloud", messages[0].lower())
+        self.assertIn("local Wi-Fi", messages[0])
 
     def test_start_monitor_sync_stops_mapping_test_before_live_stream(self):
         events = []
@@ -295,7 +408,7 @@ class SegmentCountTests(unittest.TestCase):
                     return json.dumps(mapping)
                 return default
 
-        with patch("lumisync.gui.controllers.sync_controller.QSettings", FakeSettings):
+        with patch("lumisync.gui.controllers.sync_controller.app_settings", FakeSettings):
             self.assertEqual(get_led_mapping_from_settings(4), mapping)
 
     def test_legacy_mapping_loads_as_full_screen_rectangles(self):

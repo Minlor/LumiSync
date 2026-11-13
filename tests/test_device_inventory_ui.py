@@ -18,8 +18,8 @@ from lumisync.gui.resources.icons import IconKey
 from lumisync.gui.theme import apply_theme
 from lumisync.gui.utils.device_identity import device_identity
 from lumisync.gui.views.devices_view import DevicesView
+from lumisync.gui.widgets.device_card import describe_device_status
 from lumisync.gui.widgets.device_energy import DeviceEnergy, READINGS_REFRESH_MS
-from lumisync.gui.widgets.device_inspector import DeviceInspector
 
 
 def inventory_fixtures():
@@ -81,7 +81,7 @@ class DeviceInventoryUiTests(unittest.TestCase):
 
     def assert_controls_fit(self, view):
         for card in view._cards:
-            for control in (card.power_button, card.type_label, card.brightness_slider):
+            for control in (card.power_button, card.device_summary, card.status_label, card.brightness_slider):
                 if not control.isVisible():
                     continue
                 origin = control.mapTo(card, QPoint(0, 0))
@@ -124,10 +124,8 @@ class DeviceInventoryUiTests(unittest.TestCase):
 
     def test_opening_and_closing_an_inspector_does_not_move_page_text_or_buttons(self):
         view, _ = self.view(1032, 760)
-        actions = [view.find_devices_button, view.add_button, view.accounts_button,
-                   view.summary_label, view.group_mode_button]
-        actions.extend(label for label in view.findChildren(QLabel)
-                       if label.text() == "Devices" or label.text().startswith("Control your lights"))
+        actions = [view.find_devices_button, view.add_button, view.accounts_button]
+        actions.extend(label for label in view.findChildren(QLabel) if label.text() == "Devices")
         before = [widget.mapTo(view, QPoint(0, 0)) for widget in actions]
         for index in (4, 0, 2):
             view._open_inspector(index)
@@ -146,7 +144,10 @@ class DeviceInventoryUiTests(unittest.TestCase):
         self.assertEqual(len({card.x() for card in view._cards}), 2)
         self.assertEqual(view.scroll.verticalScrollBar().maximum(), 0)
         self.assertEqual(view.inspector_scroll.verticalScrollBar().maximum(), 0)
-        self.assertLessEqual(abs(view._cards[-1].geometry().bottom() - view.scroll.viewport().rect().bottom()), 2)
+        # Cards share one height that hugs the tallest card's content, so
+        # power-only plugs are not stretched into mostly empty tiles.
+        natural = max(card.sizeHint().height() for card in view._cards)
+        self.assertEqual({card.height() for card in view._cards}, {natural})
 
     def test_readback_does_not_move_brightness_while_the_user_is_dragging(self):
         view, _ = self.view(1032, 760)
@@ -162,11 +163,21 @@ class DeviceInventoryUiTests(unittest.TestCase):
             widget.set_state({"brightness": 74})
             self.assertEqual(slider.value(), 74)
 
-    def test_group_action_uses_the_first_toolbar_row_when_it_fits(self):
-        view, _ = self.view(1209, 760)
-        view._open_inspector(4)
-        QTest.qWait(30)
-        self.assertEqual(view.group_mode_button.y(), view.find_devices_button.y())
+    def test_page_actions_share_the_title_row_without_group_mode(self):
+        for width in (712, 1209):
+            view, _ = self.view(width, 760)
+            title = next(label for label in view.findChildren(QLabel) if label.text() == "Devices")
+            buttons = (view.find_devices_button, view.add_button, view.accounts_button)
+            self.assertEqual(len({button.mapTo(view, QPoint(0, 0)).y() for button in buttons}), 1)
+            title_box = title.geometry().translated(title.parentWidget().mapTo(view, QPoint(0, 0)))
+            button_box = view.find_devices_button.geometry().translated(
+                view.find_devices_button.parentWidget().mapTo(view, QPoint(0, 0)))
+            self.assertLess(title_box.top(), button_box.bottom())
+            self.assertGreater(title_box.bottom(), button_box.top())
+            right = view.accounts_button.mapTo(view, QPoint(view.accounts_button.width(), 0)).x()
+            self.assertEqual(right, view.width() - view.layout().contentsMargins().right())
+            for removed in ("group_mode_button", "summary_label", "group_bar", "_selected"):
+                self.assertFalse(hasattr(view, removed), removed)
 
     def test_wide_inventory_balances_rows_without_adding_extra_scrolling(self):
         view, _ = self.view(1512, 868)
@@ -196,6 +207,7 @@ class DeviceInventoryUiTests(unittest.TestCase):
         month = panel.month.currentData()
         panel._show_history({"month": month, "total_kwh": 2.14, "reported_days": 1, "expected_days": 8,
                              "days": [{"date": month + "-01", "energy_kwh": 2.14}]})
+        view.inspector.details_toggle.click()
         QTest.qWait(40)
         self.assertTrue(view.main_column.isHidden())
         self.assertGreater(view.inspector_scroll.verticalScrollBar().maximum(), 0)
@@ -207,12 +219,12 @@ class DeviceInventoryUiTests(unittest.TestCase):
 
     def test_types_use_hardware_metadata_and_card_keyboard_opens_the_inspector(self):
         view, _ = self.view(1055, 760)
-        self.assertEqual([card.type_label.text() for card in view._cards],
+        self.assertEqual([card.device_summary.text().split(" · ")[0] for card in view._cards],
                          ["LED strip", "Matrix panel", "Light switch", "Smart plug", "Smart plug", "Smart plug"])
         self.assertEqual(len({card._type_icon for card in view._cards}), 4)
         for card in view._cards:
             self.assertFalse(card.type_icon.pixmap().isNull())
-            self.assertIn(card.type_label.text(), card.accessibleName())
+            self.assertIn(card._type_name, card.accessibleName())
         card = view._cards[2]
         card.setFocus()
         QTest.keyClick(card, Qt.Key.Key_Return)
@@ -257,8 +269,8 @@ class DeviceInventoryUiTests(unittest.TestCase):
         view, _ = self.view(1055, 760)
         state = {"status_source": "offline", "online": False, "stale": True, "power_w": 215.1}
         view._on_device_state_updated(4, state)
-        self.assertEqual(view._cards[4].state_detail_label.text(), "Offline")
-        self.assertEqual(DeviceInspector._status_copy(state)[0], "Offline")
+        self.assertEqual(view._cards[4].status_label.text(), "Offline")
+        self.assertEqual(describe_device_status(state).text, "Offline")
 
     def test_queued_targeted_reads_coalesce_and_follow_identity_after_reordering(self):
         with patch.object(DeviceController, "_init_devices"):
@@ -329,7 +341,11 @@ class DeviceInventoryUiTests(unittest.TestCase):
                 self.assertTrue(all(thread is not self.app.thread() for thread in reads))
                 self.assertTrue(all(thread is self.app.thread() for thread in delivered_on))
                 view.hide()
-                wait(80)  # Let any already queued read finish.
+                wait(80)
+                self.assertFalse(view.inspector.energy._poll.isActive())
+                # A page-open status refresh may still be in flight; let it
+                # settle before measuring that no periodic reads continue.
+                wait(500)
                 count = len(reads)
                 wait(300)
                 self.assertEqual(len(reads), count)

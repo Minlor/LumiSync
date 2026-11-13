@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-from PySide6.QtCore import Qt, Signal, QRect
-from PySide6.QtGui import QColor, QPainter, QMouseEvent
+from PySide6.QtCore import Qt, Signal, QRect, QRectF
+from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
 from ..theme import qcolor
@@ -188,23 +188,37 @@ class PixelCanvas(QWidget):
         painter = QPainter(self)
         size = self._cell_size()
         origin_x, origin_y = self._grid_origin()
-        grid_line = QColor(40, 40, 40)
+        area = QRect(origin_x, origin_y, size * self._cols, size * self._rows)
+        outline = QPainterPath()
+        outline.addRoundedRect(QRectF(area), 4, 4)
+        painter.setClipPath(outline)
         for y in range(self._rows):
             for x in range(self._cols):
                 r, g, b = self._grid[y][x]
-                rect = QRect(
-                    origin_x + x * size,
-                    origin_y + y * size,
-                    size,
-                    size,
+                painter.fillRect(
+                    QRect(origin_x + x * size, origin_y + y * size, size, size),
+                    QColor(r, g, b),
                 )
-                painter.fillRect(rect, QColor(r, g, b))
-                painter.setPen(grid_line)
-                painter.drawRect(rect)
+        if size >= 5:
+            # Hairline grid, quiet enough to disappear under painted pixels.
+            painter.setPen(QColor(255, 255, 255, 16))
+            for column in range(1, self._cols):
+                gx = origin_x + column * size
+                painter.drawLine(gx, area.top(), gx, area.bottom())
+            for row in range(1, self._rows):
+                gy = origin_y + row * size
+                painter.drawLine(area.left(), gy, area.right(), gy)
+        painter.setClipping(False)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(qcolor("fl_card_stroke"), 1))
+        painter.drawRoundedRect(QRectF(area).adjusted(0.5, 0.5, -0.5, -0.5), 4, 4)
         if self.hasFocus():
             x, y = self._keyboard_cell
-            selected = QRect(origin_x + x * size, origin_y + y * size, size, size)
-            painter.setPen(qcolor("text"))
-            painter.drawRect(selected.adjusted(0, 0, -1, -1))
-            painter.setPen(qcolor("accent_bright"))
-            painter.drawRect(self.rect().adjusted(1, 1, -2, -2))
+            selected = QRectF(origin_x + x * size, origin_y + y * size, size, size)
+            painter.setPen(QPen(qcolor("fl_text"), 1.5))
+            painter.drawRoundedRect(selected.adjusted(0.75, 0.75, -0.75, -0.75), 1.5, 1.5)
+            window = self.window()
+            if window is not None and window.testAttribute(Qt.WidgetAttribute.WA_KeyboardFocusChange):
+                painter.setPen(QPen(qcolor("fl_text"), 2))
+                painter.drawRoundedRect(QRectF(area).adjusted(-2, -2, 2, 2), 6, 6)

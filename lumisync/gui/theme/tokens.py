@@ -11,77 +11,123 @@ from PySide6.QtGui import QColor
 
 
 TOKENS: dict[str, str] = {
-    # Surfaces (neutral charcoal with a restrained indigo cast). The window
-    # material supplies color; controls remain legible over any wallpaper.
-    "bg":             "#11121A",
-    "surface":        "#1B1C27",
-    "surface_alt":    "#252735",
-    "hover":          "#303242",
-    "pressed":        "#393C4E",
+    # Surfaces: neutral WinUI 3 dark greys. The solid fallback matches
+    # fl_base; cards and controls layer translucent whites over it.
+    "bg":             "#1C1C1C",
+    "surface":        "#272727",
+    "surface_alt":    "#2D2D2D",
+    "hover":          "#353535",
+    "pressed":        "#292929",
     # Windows 11 system-backdrop layers. These are only selected after DWM
-    # accepts the request; all other platforms keep the solid colors.
-    "mica_bg":         "rgba(17, 17, 26, 0.90)",
-    "mica_sidebar":    "rgba(9, 10, 17, 0.90)",
-    "mica_surface":    "rgba(30, 30, 43, 0.78)",
-    "mica_control":    "rgba(40, 41, 55, 0.86)",
-    "mica_border":     "rgba(222, 226, 255, 0.11)",
-    "mica_device_surface": "rgba(15, 17, 25, 0.90)",
-    "mica_inspector_surface": "rgba(21, 22, 33, 0.94)",
-    # Limit translucency to the foundation and navigation. Even a bright
-    # desktop behind the native material must leave text and focus legible.
-    "acrylic_bg":      "rgba(15, 15, 24, 0.88)",
-    "acrylic_sidebar": "rgba(8, 9, 15, 0.90)",
-    "acrylic_surface": "rgba(29, 30, 42, 0.76)",
-    "acrylic_control": "rgba(40, 42, 56, 0.84)",
-    "acrylic_border":  "rgba(222, 226, 255, 0.11)",
-    "device_surface": "#151721",
-    "device_hover": "#1C1F2C",
-    "acrylic_device_surface": "rgba(14, 16, 24, 0.89)",
-    "acrylic_inspector_surface": "rgba(20, 21, 31, 0.94)",
+    # accepts the request; all other platforms keep the solid colors. The
+    # rail and the content share one layer, as in WinUI's NavigationView.
+    "mica_bg":         "rgba(28, 28, 28, 0.62)",
+    "mica_sidebar":    "rgba(28, 28, 28, 0.62)",
+    "mica_surface":    "rgba(255, 255, 255, 0.051)",
+    "mica_control":    "rgba(255, 255, 255, 0.061)",
+    "mica_border":     "rgba(255, 255, 255, 0.070)",
+    "mica_device_surface": "rgba(255, 255, 255, 0.051)",
+    "mica_inspector_surface": "rgba(40, 40, 40, 0.92)",
+    # Desktop Acrylic shows the desktop through a blur, so its tint stays
+    # dense enough to keep text and focus legible over bright wallpapers.
+    "acrylic_bg":      "rgba(28, 28, 28, 0.84)",
+    "acrylic_sidebar": "rgba(28, 28, 28, 0.84)",
+    "acrylic_surface": "rgba(255, 255, 255, 0.051)",
+    "acrylic_control": "rgba(255, 255, 255, 0.061)",
+    "acrylic_border":  "rgba(255, 255, 255, 0.070)",
+    "device_surface": "#262626",
+    "device_hover": "#2C2C2C",
+    "acrylic_device_surface": "rgba(255, 255, 255, 0.051)",
+    "acrylic_inspector_surface": "rgba(40, 40, 40, 0.92)",
 
-    # Navigation uses neutral selection glass; the accent belongs to the icon
-    # and slim location marker, keeping the rail quiet like Fluent apps.
-    "nav_selected":    "rgba(244, 247, 255, 0.10)",
-    "nav_hover":       "rgba(244, 247, 255, 0.06)",
+    # Navigation uses neutral selection glass; the accent belongs to the
+    # slim location marker, keeping the rail quiet like Fluent apps.
+    "nav_selected":    "rgba(255, 255, 255, 0.090)",
+    "nav_hover":       "rgba(255, 255, 255, 0.060)",
 
-    # Borders
-    "border":         "#343644",
-    "border_dim":     "#252633",
-    "border_strong":  "#55586D",
+    # Borders (opaque approximations of the Fluent strokes over fl_base, so
+    # painters that call QColor.name() keep working).
+    "border":         "#333333",
+    "border_dim":     "#2A2A2A",
+    "border_strong":  "#5C5C5C",
 
     # Text
-    "text":           "#F3F7FF",
-    "text_dim":       "#B0B2C0",
-    "text_disabled":  "#9A9CAA",
+    "text":           "#FFFFFF",
+    "text_dim":       "#C5C5C5",
+    "text_disabled":  "#9A9A9A",
 
-    # Accent (accessible Fluent-inspired blue)
-    "accent":          "#4A8BF5",
-    "accent_bright":   "#68A3FF",
-    "accent_dim":      "rgba(74, 139, 245, 0.20)",
-    "accent_glow":     "rgba(74, 139, 245, 0.12)",
-    "accent_surface":  "rgba(89, 151, 255, 0.38)",
-    "accent_hover":    "rgba(105, 164, 255, 0.50)",
-    "accent_pressed":  "rgba(70, 128, 224, 0.30)",
-    "accent_border":   "rgba(125, 177, 255, 0.52)",
+    # Accent (the Fluent dark-theme accent: a light blue fill with dark text)
+    "accent":          "#6BA6FF",
+    "accent_bright":   "#8DBBFF",
+    "accent_dim":      "rgba(107, 166, 255, 0.20)",
+    "accent_glow":     "rgba(107, 166, 255, 0.12)",
+    "accent_surface":  "rgba(107, 166, 255, 0.38)",
+    "accent_hover":    "rgba(125, 178, 255, 0.50)",
+    "accent_pressed":  "rgba(91, 147, 230, 0.30)",
+    "accent_border":   "rgba(141, 187, 255, 0.52)",
 
     # Semantic
-    "success":        "#34D399",
-    "success_dim":    "rgba(52, 211, 153, 0.18)",
-    "warning":        "#FBBF24",
-    "danger":         "#F87171",
-    "danger_bright":  "#EF4444",
-    "danger_dim":     "rgba(248, 113, 113, 0.18)",
+    "success":        "#6CCB5F",
+    "success_dim":    "rgba(108, 203, 95, 0.18)",
+    "warning":        "#F2C94C",
+    "danger":         "#FF99A4",
+    "danger_bright":  "#FFB3BB",
+    "danger_dim":     "rgba(255, 153, 164, 0.18)",
 
-    # Geometry
-    "radius_sm":      "8px",
-    "radius_md":      "10px",
-    "radius_lg":      "14px",
+    # Geometry: controls 4px, cards and flyouts 8px.
+    "radius_sm":      "4px",
+    "radius_md":      "4px",
+    "radius_lg":      "8px",
 
-    # Typography
-    "font_title":     "20pt",
-    "font_body":      "10pt",
-    "font_small":     "9pt",
-    "font_caption":   "8pt",
+    # Fluent (Windows 11 / WinUI 3 dark) layer system, modelled on the
+    # GalaxyBudsClient reference. New UI uses these; values are final so
+    # painted widgets and the stylesheet stay in step.
+    "fl_base":             "#1C1C1C",   # solid window fallback
+    "fl_layer":            "rgba(58, 58, 58, 0.30)",   # content layer
+    "fl_card":             "rgba(255, 255, 255, 0.051)",  # CardBackgroundFillColorDefault
+    "fl_card_secondary":   "rgba(255, 255, 255, 0.031)",
+    "fl_card_hover":       "rgba(255, 255, 255, 0.082)",
+    "fl_card_stroke":      "rgba(255, 255, 255, 0.060)",
+    "fl_control":          "rgba(255, 255, 255, 0.061)",  # ControlFillColorDefault
+    "fl_control_hover":    "rgba(255, 255, 255, 0.084)",
+    "fl_control_pressed":  "rgba(255, 255, 255, 0.033)",
+    "fl_control_disabled": "rgba(255, 255, 255, 0.043)",
+    "fl_control_stroke":   "rgba(255, 255, 255, 0.070)",
+    "fl_control_stroke_top": "rgba(255, 255, 255, 0.094)",
+    "fl_control_strong":   "rgba(255, 255, 255, 0.545)",  # slider track, toggle-off ring
+    "fl_control_solid":    "#454545",   # slider thumb ring
+    "fl_divider":          "rgba(255, 255, 255, 0.083)",
+    "fl_subtle_hover":     "rgba(255, 255, 255, 0.060)",  # list/nav hover
+    "fl_subtle_selected":  "rgba(255, 255, 255, 0.090)",  # list/nav selection
+    "fl_flyout":           "rgba(44, 44, 44, 0.98)",
+    "fl_flyout_stroke":    "rgba(255, 255, 255, 0.080)",
+    "fl_text":             "#FFFFFF",
+    "fl_text_secondary":   "rgba(255, 255, 255, 0.773)",
+    "fl_text_tertiary":    "rgba(255, 255, 255, 0.529)",
+    "fl_text_disabled":    "rgba(255, 255, 255, 0.365)",
+    # Accent fill in dark Fluent is a light tone with dark foreground.
+    "fl_accent":           "#6BA6FF",
+    "fl_accent_hover":     "#7DB2FF",
+    "fl_accent_pressed":   "#5B93E6",
+    "fl_accent_on":        "#08101F",
+    "fl_accent_text":      "#8DBBFF",   # accent-coloured text / links
+    "fl_info":             "#6BA6FF",
+    "fl_success":          "#6CCB5F",
+    "fl_caution":          "#FCE100",
+    "fl_critical":         "#FF99A4",
+    # InfoBar / notification backgrounds per severity (WinUI dark values).
+    "fl_info_bg":          "rgba(255, 255, 255, 0.031)",
+    "fl_success_bg":       "#393D1B",
+    "fl_caution_bg":       "#433519",
+    "fl_critical_bg":      "#442726",
+    "fl_radius_control":   "4px",
+    "fl_radius_card":      "8px",
+
+    # Typography (Fluent type ramp: Title 28, Body 14, Caption 12)
+    "font_title":     "28px",
+    "font_body":      "14px",
+    "font_small":     "12px",
+    "font_caption":   "12px",
 }
 
 

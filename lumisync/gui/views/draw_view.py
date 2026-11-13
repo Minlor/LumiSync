@@ -129,15 +129,16 @@ class DrawView(QWidget):
         tools_panel.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding
         )
-        tools_panel.setFixedWidth(236)
+        tools_panel.setFixedWidth(248)
         tools = self._tools_layout = QGridLayout(tools_panel)
-        tools.setContentsMargins(12, 12, 12, 12)
-        tools.setSpacing(8)
+        tools.setContentsMargins(16, 16, 16, 16)
+        tools.setHorizontalSpacing(8)
+        tools.setVerticalSpacing(12)
 
         target = self._target_field = QWidget()
         target_layout = QVBoxLayout(target)
         target_layout.setContentsMargins(0, 0, 0, 0)
-        target_layout.setSpacing(4)
+        target_layout.setSpacing(6)
         target_label = QLabel("Target panel")
         target_label.setProperty("role", "fieldLabel")
         target_layout.addWidget(target_label)
@@ -153,7 +154,7 @@ class DrawView(QWidget):
         size = self._size_field = QWidget()
         size_layout = QVBoxLayout(size)
         size_layout.setContentsMargins(0, 0, 0, 0)
-        size_layout.setSpacing(4)
+        size_layout.setSpacing(6)
         size_label = QLabel("Canvas size")
         size_label.setProperty("role", "fieldLabel")
         size_layout.addWidget(size_label)
@@ -174,7 +175,7 @@ class DrawView(QWidget):
         color_row.setSpacing(8)
         self.color_swatch = QLabel()
         self.color_swatch.setObjectName("DrawColorSwatch")
-        self.color_swatch.setFixedSize(28, 28)
+        self.color_swatch.setFixedSize(32, 32)
         self._refresh_swatch()
         color_row.addWidget(self.color_swatch)
 
@@ -183,11 +184,11 @@ class DrawView(QWidget):
         color_row.addWidget(self.color_button, 1)
         tools.addWidget(brush, 2, 0)
 
-        self.clear_button = QPushButton("Clear Canvas")
+        self.clear_button = QPushButton("Clear canvas")
         self.clear_button.clicked.connect(self._clear_canvas)
         tools.addWidget(self.clear_button, 3, 0)
 
-        self.fill_button = QPushButton("Fill Canvas")
+        self.fill_button = QPushButton("Fill canvas")
         self.fill_button.clicked.connect(lambda: self.canvas.fill(self._color))
         tools.addWidget(self.fill_button, 4, 0)
         tools.setRowStretch(5, 1)
@@ -197,7 +198,7 @@ class DrawView(QWidget):
         canvas_panel.setObjectName("DrawCanvasPanel")
         canvas_layout = QVBoxLayout(canvas_panel)
         canvas_layout.setContentsMargins(16, 14, 16, 16)
-        canvas_layout.setSpacing(10)
+        canvas_layout.setSpacing(12)
 
         canvas_header = QHBoxLayout()
         canvas_title = QLabel("Canvas")
@@ -225,8 +226,8 @@ class DrawView(QWidget):
         animation_panel = self.animation_panel = QFrame()
         animation_panel.setObjectName("DrawTimelinePanel")
         animation_layout = QVBoxLayout(animation_panel)
-        animation_layout.setContentsMargins(16, 12, 16, 12)
-        animation_layout.setSpacing(10)
+        animation_layout.setContentsMargins(16, 14, 16, 16)
+        animation_layout.setSpacing(12)
 
         animation_header = QHBoxLayout()
         animation_title = QLabel("Animation")
@@ -239,18 +240,18 @@ class DrawView(QWidget):
         animation_layout.addLayout(animation_header)
 
         send_row = QHBoxLayout()
-        send_row.setSpacing(10)
+        send_row.setSpacing(8)
 
-        self.add_frame_button = QPushButton("Add Frame")
+        self.add_frame_button = QPushButton("Add frame")
         self.add_frame_button.clicked.connect(self._add_frame)
         send_row.addWidget(self.add_frame_button)
 
-        self.clear_frames_button = QPushButton("Clear Frames")
+        self.clear_frames_button = QPushButton("Clear frames")
         self.clear_frames_button.clicked.connect(lambda: self._clear_frames())
         self.clear_frames_button.setEnabled(False)
         send_row.addWidget(self.clear_frames_button)
 
-        self.play_button = QPushButton("Play Animation")
+        self.play_button = QPushButton("Play animation")
         self.play_button.clicked.connect(self._play_animation)
         send_row.addWidget(self.play_button)
         send_row.addStretch(1)
@@ -259,7 +260,7 @@ class DrawView(QWidget):
         animation_panel.hide()
 
         actions = QHBoxLayout()
-        actions.setSpacing(10)
+        actions.setSpacing(8)
         self.animation_toggle = QPushButton("Animation")
         self.animation_toggle.setCheckable(True)
         self.animation_toggle.toggled.connect(animation_panel.setVisible)
@@ -267,7 +268,7 @@ class DrawView(QWidget):
         actions.addWidget(self.animation_toggle)
         actions.addStretch(1)
 
-        self.send_button = QPushButton("Send to Panel")
+        self.send_button = QPushButton("Send to panel")
         self.send_button.setProperty("role", "primary")
         self.send_button.clicked.connect(self._send_current)
         actions.addWidget(self.send_button)
@@ -293,12 +294,12 @@ class DrawView(QWidget):
         self._root_layout.setSpacing(10 if compact else 18)
         self._intro.setVisible(not compact)
         self._workspace_layout.setDirection(QBoxLayout.Direction.TopToBottom if compact else QBoxLayout.Direction.LeftToRight)
-        self._tools_panel.setMinimumWidth(0 if compact else 236)
-        self._tools_panel.setMaximumWidth(16777215 if compact else 236)
+        self._tools_panel.setMinimumWidth(0 if compact else 248)
+        self._tools_panel.setMaximumWidth(16777215 if compact else 248)
         self._tools_panel.setSizePolicy(QSizePolicy.Policy.Expanding if compact else QSizePolicy.Policy.Fixed,
                                         QSizePolicy.Policy.Maximum if compact else QSizePolicy.Policy.Expanding)
-        self._tools_layout.setContentsMargins(8 if compact else 12, 8 if compact else 12,
-                                              8 if compact else 12, 8 if compact else 12)
+        self._tools_layout.setContentsMargins(12 if compact else 16, 12 if compact else 16,
+                                              12 if compact else 16, 12 if compact else 16)
         widgets = [self._target_field, self._size_field, self._brush_field, self.clear_button, self.fill_button]
         for widget in widgets:
             self._tools_layout.removeWidget(widget)
@@ -400,8 +401,8 @@ class DrawView(QWidget):
     def _refresh_swatch(self) -> None:
         r, g, b = self._color
         self.color_swatch.setStyleSheet(
-            f"background: rgb({r},{g},{b}); border: 2px solid #727272; "
-            "border-radius: 10px;"
+            f"background: rgb({r},{g},{b}); border: 1px solid rgba(255, 255, 255, 0.16); "
+            "border-radius: 4px;"
         )
 
     def _pick_color(self) -> None:

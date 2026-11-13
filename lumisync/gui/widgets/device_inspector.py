@@ -19,14 +19,51 @@ from PySide6.QtWidgets import (
 )
 
 from ... import connection
+from ...accounts.tuya_energy import meter_fields
 from ...drivers.registry import capabilities_for_device, is_cloud
 from ..resources.icons import IconKey, tinted_icon, tinted_pixmap
-from ..theme import qcolor
+from ..theme import TOKENS, qcolor
+from ..utils.animations import StatusDot
 from ..utils.device_identity import device_identity
-from .device_card import format_device_output
+from .color_flyout import (
+    ColorSwatchButton,
+    SwatchChoice,
+    SwatchRow,
+    preset_choices,
+    recent_choices,
+    remember_recent_color,
+    state_display_color,
+    swatch_tooltip,
+    white_range,
+)
+from .device_card import (
+    UNKNOWN_VALUE,
+    apply_status,
+    connection_name,
+    describe_device_status,
+    power_visual_state,
+    set_power_button_state,
+)
 from .device_energy import DeviceEnergy
 from .elided_label import ElidedLabel
 from .product_controls import ProductSlider, ProductComboBox
+
+
+def _section(object_name: str = "InspectorSection") -> QFrame:
+    """A Fluent card section (the app stylesheet paints ``card=true``)."""
+    frame = QFrame()
+    frame.setObjectName(object_name)
+    frame.setProperty("card", True)
+    return frame
+
+
+def _divider() -> QWidget:
+    line = QWidget()
+    line.setObjectName("InspectorDivider")
+    line.setFixedHeight(1)
+    line.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+    line.setStyleSheet(f"QWidget#InspectorDivider {{ background: {TOKENS['fl_divider']}; }}")
+    return line
 
 
 class DeviceInspector(QFrame):
@@ -40,7 +77,6 @@ class DeviceInspector(QFrame):
     color_temp_changed = Signal(int, int)
     zone_count_requested = Signal(int)
     zone_count_reset_requested = Signal(int)
-    firmware_requested = Signal(int)
     remove_requested = Signal(int)
     connection_changed = Signal(int, str)
     panel_tools_requested = Signal(int)
@@ -50,9 +86,13 @@ class DeviceInspector(QFrame):
         super().__init__(parent)
         self._index = -1
         self._device: Dict[str, Any] = {}
-        self._current_color = qcolor("accent")
+        self._current_color: Optional[QColor] = None
+        self._current_kelvin: Optional[int] = None
         self._ct_min = 2000
         self._ct_max = 9000
+        self._cap = capabilities_for_device({})
+        self._meters: tuple = ()
+        self.status = describe_device_status({})
 
         self._brightness_timer = QTimer(self)
         self._brightness_timer.setSingleShot(True)
@@ -77,11 +117,12 @@ class DeviceInspector(QFrame):
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(14)
 
+        # Header: what the device is, its power, and a way out.
         header = QHBoxLayout()
         header.setSpacing(10)
         self.type_icon = QLabel()
         self.type_icon.setFixedSize(32, 38)
-        header.addWidget(self.type_icon)
+        header.addWidget(self.type_icon, 0, Qt.AlignmentFlag.AlignVCenter)
         titles = QVBoxLayout()
         titles.setSpacing(2)
 
@@ -89,7 +130,7 @@ class DeviceInspector(QFrame):
         self.title_label.setProperty("role", "inspectorTitle")
         self.title_label.setTextFormat(Qt.TextFormat.PlainText)
         titles.addWidget(self.title_label)
-        self.type_label = QLabel()
+        self.type_label = ElidedLabel("")
         self.type_label.setProperty("role", "subtle")
         titles.addWidget(self.type_label)
         header.addLayout(titles, 1)
@@ -118,44 +159,32 @@ class DeviceInspector(QFrame):
         header.addWidget(self.close_button)
         root.addLayout(header)
 
-        self.meta_label = QLabel("")
-        self.meta_label.setProperty("role", "subtle")
-        self.meta_label.setWordWrap(True)
-        root.addWidget(self.meta_label)
-
-        status_panel = QFrame()
-        status_panel.setObjectName("InspectorSection")
-        status_layout = QVBoxLayout(status_panel)
-        self._status_layout = status_layout
-        status_layout.setContentsMargins(14, 12, 14, 12)
-        status_layout.setSpacing(5)
-
+        # One status line: the same merged phrase the device card shows,
+        # plus the colour the light is showing.
         status_row = QHBoxLayout()
-        status_row.setSpacing(8)
-        self.power_label = QLabel("Power unknown")
-        self.power_label.setProperty("role", "strong")
-        status_row.addWidget(self.power_label)
-        status_row.addStretch(1)
-        self.status_label = QLabel("Status pending")
-        self.status_label.setProperty("role", "status")
-        status_row.addWidget(self.status_label)
-        status_layout.addLayout(status_row)
+        status_row.setContentsMargins(2, 0, 0, 0)
+        status_row.setSpacing(6)
+        self.status_dot = StatusDot(qcolor("text_disabled"), self, size=8)
+        status_row.addWidget(self.status_dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.status_swatch = ColorSwatchButton(None, self, diameter=14)
+        self.status_swatch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.status_swatch.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.status_swatch.setCursor(Qt.CursorShape.ArrowCursor)
+        self.status_swatch.setAccessibleName("Current colour")
+        status_row.addWidget(self.status_swatch, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.status_label = ElidedLabel("No status yet")
+        self.status_label.setProperty("role", "deviceStatus")
+        status_row.addWidget(self.status_label, 1)
+        root.addLayout(status_row)
 
-        self.output_label = QLabel("Output · Not reported")
-        self.output_label.setProperty("role", "subtle")
-        self.output_label.setWordWrap(True)
-        status_layout.addWidget(self.output_label)
-        root.addWidget(status_panel)
-
-        self.controls_label = QLabel("Light controls")
+        self.controls_label = QLabel("Light")
         self.controls_label.setProperty("role", "sectionTitle")
         root.addWidget(self.controls_label)
 
-        self.controls_panel = controls = QFrame()
-        controls.setObjectName("InspectorSection")
+        self.controls_panel = controls = _section()
         controls_layout = QVBoxLayout(controls)
-        controls_layout.setContentsMargins(14, 12, 14, 14)
-        controls_layout.setSpacing(10)
+        controls_layout.setContentsMargins(16, 14, 16, 16)
+        controls_layout.setSpacing(12)
 
         self.brightness_controls = QWidget()
         brightness_layout = QVBoxLayout(self.brightness_controls)
@@ -171,7 +200,7 @@ class DeviceInspector(QFrame):
         brightness_header.addWidget(brightness_icon)
         brightness_header.addWidget(QLabel("Brightness"))
         brightness_header.addStretch(1)
-        self.brightness_value = QLabel("100%")
+        self.brightness_value = QLabel(UNKNOWN_VALUE)
         self.brightness_value.setProperty("role", "subtle")
         brightness_header.addWidget(self.brightness_value)
         brightness_layout.addLayout(brightness_header)
@@ -184,25 +213,39 @@ class DeviceInspector(QFrame):
         brightness_layout.addWidget(self.brightness_slider)
         controls_layout.addWidget(self.brightness_controls)
 
+        self.color_divider = _divider()
+        controls_layout.addWidget(self.color_divider)
+
         self.color_controls = QWidget()
-        color_row = QHBoxLayout(self.color_controls)
+        color_layout = QVBoxLayout(self.color_controls)
+        color_layout.setContentsMargins(0, 0, 0, 0)
+        color_layout.setSpacing(10)
+        color_row = QHBoxLayout()
         color_row.setContentsMargins(0, 0, 0, 0)
         color_row.setSpacing(10)
         color_copy = QVBoxLayout()
-        color_copy.setSpacing(2)
-        color_copy.addWidget(QLabel("Color"))
-        color_hint = QLabel("Choose the light's static color")
-        color_hint.setProperty("role", "subtle")
-        color_copy.addWidget(color_hint)
+        color_copy.setSpacing(1)
+        color_copy.addWidget(QLabel("Colour"))
+        self.color_hint = ElidedLabel(swatch_tooltip(None, action=""))
+        self.color_hint.setProperty("role", "subtle")
+        color_copy.addWidget(self.color_hint)
         color_row.addLayout(color_copy, 1)
 
-        self.color_button = QPushButton()
+        self.color_button = ColorSwatchButton(None, self, diameter=30)
         self.color_button.setObjectName("InspectorColorSwatch")
-        self.color_button.setAccessibleName("Choose device color")
-        self.color_button.setToolTip("Choose color")
+        self.color_button.setAccessibleName("Choose any colour")
+        self.color_button.setToolTip("More colours…")
         self.color_button.clicked.connect(self._pick_color)
-        color_row.addWidget(self.color_button)
+        color_row.addWidget(self.color_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        color_layout.addLayout(color_row)
+
+        self.color_presets = SwatchRow(self, diameter=22, spacing=6)
+        self.color_presets.chosen.connect(self._choose_preset)
+        color_layout.addWidget(self.color_presets)
         controls_layout.addWidget(self.color_controls)
+
+        self.temperature_divider = _divider()
+        controls_layout.addWidget(self.temperature_divider)
 
         self.temperature_controls = QWidget()
         temperature_layout = QVBoxLayout(self.temperature_controls)
@@ -219,7 +262,7 @@ class DeviceInspector(QFrame):
         self.temperature_title = QLabel("White temperature")
         self.temperature_header.addWidget(self.temperature_title)
         self.temperature_header.addStretch(1)
-        self.temperature_value = QLabel("4000K")
+        self.temperature_value = QLabel(UNKNOWN_VALUE)
         self.temperature_value.setProperty("role", "subtle")
         self.temperature_header.addWidget(self.temperature_value)
         temperature_layout.addLayout(self.temperature_header)
@@ -252,30 +295,29 @@ class DeviceInspector(QFrame):
         self.details_panel = QWidget()
         detail_layout = QVBoxLayout(self.details_panel)
         detail_layout.setContentsMargins(0, 0, 0, 0)
-        detail_layout.setSpacing(12)
+        detail_layout.setSpacing(10)
         self.details_toggle.toggled.connect(self._toggle_details)
         self.details_panel.hide()
 
-        info = QFrame()
-        info.setObjectName("InspectorSection")
+        info = _section()
         info_layout = QVBoxLayout(info)
-        info_layout.setContentsMargins(14, 12, 14, 12)
+        info_layout.setContentsMargins(16, 12, 16, 12)
         info_layout.setSpacing(8)
         self._info_rows = {}
         self._info_titles = {}
         self.connection_value = self._add_info_row(
-            info_layout, "Connection", "Unknown"
+            info_layout, "Connection", UNKNOWN_VALUE
         )
-        self.address_value = self._add_info_row(info_layout, "Address", "Unknown")
+        self.address_value = self._add_info_row(info_layout, "Address", UNKNOWN_VALUE)
         self.port_value = self._add_info_row(
-            info_layout, "Control port", "Unknown"
+            info_layout, "Control port", UNKNOWN_VALUE
         )
         self.identifier_value = self._add_info_row(
-            info_layout, "Identifier", "Unknown"
+            info_layout, "Identifier", UNKNOWN_VALUE
         )
-        self.zones_value = self._add_info_row(info_layout, "Layout", "Unknown")
+        self.zones_value = self._add_info_row(info_layout, "Layout", UNKNOWN_VALUE)
         self.readback_value = self._add_info_row(
-            info_layout, "State reporting", "Unknown"
+            info_layout, "State reporting", UNKNOWN_VALUE
         )
         detail_layout.addWidget(info)
 
@@ -307,15 +349,6 @@ class DeviceInspector(QFrame):
         zone_actions.addWidget(self.reset_zones_button)
         detail_layout.addLayout(zone_actions)
 
-        self.firmware_button = QPushButton("Check Firmware")
-        self.firmware_button.setToolTip(
-            "Read the device's current firmware from its vendor account"
-        )
-        self.firmware_button.clicked.connect(
-            lambda: self.firmware_requested.emit(self._index)
-        )
-        detail_layout.addWidget(self.firmware_button)
-
         self.remove_button = QPushButton("Remove Device")
         self.remove_button.setProperty("role", "danger")
         self.remove_button.setIcon(
@@ -328,7 +361,7 @@ class DeviceInspector(QFrame):
         root.addWidget(self.details_panel)
         root.addStretch(1)
 
-        self._refresh_color_button()
+        self._show_color(None, None)
 
     def _toggle_details(self, show: bool) -> None:
         self.details_panel.setVisible(show)
@@ -376,31 +409,27 @@ class DeviceInspector(QFrame):
         self.type_label.setText(type_name)
         self.type_icon.setPixmap(tinted_pixmap(icon, qcolor("text_dim"), 30))
         self.type_icon.setAccessibleName(type_name)
-        self.meta_label.setText(self._format_meta(device))
+        self._meters = tuple(meter_fields(device))
 
         transport = str(device.get("transport") or "lan").lower()
-        self.connection_value.setText(
-            "Bluetooth" if transport == "ble" else "LSC / Tuya"
-            if transport == "tuya"
-            else "Wi-Fi cloud" if is_cloud(device) else "Local network"
-        )
+        self.connection_value.setText(connection_name(device))
         self.address_value.setText(
             str(
                 device.get("ble_address")
                 or device.get("ip")
                 or device.get("mac")
-                or "Unknown"
+                or UNKNOWN_VALUE
             )
         )
         port = device.get("port")
         if not port and transport == "lan":
             port = connection.get_device_port(device)
-        self.port_value.setText(str(port) if port else "Unknown")
+        self.port_value.setText(str(port) if port else UNKNOWN_VALUE)
         identifier = (
             device.get("device_id")
             or device.get("mac")
             or device.get("ble_address")
-            or "Unknown"
+            or UNKNOWN_VALUE
         )
         self.identifier_value.setText(str(identifier))
         self._info_rows["Control port"].setVisible(bool(port))
@@ -432,19 +461,20 @@ class DeviceInspector(QFrame):
             self.zones_value.setText(f"{count} zones · {source}")
 
         self.power_button.setVisible(cap.supports_power)
-        self.power_label.setVisible(cap.supports_power)
         self.power_button.setEnabled(cap.supports_power)
         self.brightness_slider.setEnabled(cap.supports_brightness)
         self.color_button.setEnabled(cap.supports_color)
         self.brightness_controls.setVisible(cap.supports_brightness)
         self.color_controls.setVisible(cap.supports_color)
+        self.status_swatch.setVisible(cap.supports_color)
         supported = bool(cap.supports_white and cap.color_temp_max > cap.color_temp_min > 0)
         self.temperature_slider.setEnabled(supported)
         self.temperature_controls.setVisible(supported)
+        self.color_divider.setVisible(cap.supports_brightness and cap.supports_color)
+        self.temperature_divider.setVisible(supported and (cap.supports_brightness or cap.supports_color))
         lighting_controls = cap.supports_brightness or cap.supports_color or supported
         self.controls_label.setVisible(lighting_controls)
         self.controls_panel.setVisible(lighting_controls)
-        self.output_label.setVisible(lighting_controls or cap.is_matrix)
         if supported:
             self._ct_min = int(cap.color_temp_min)
             self._ct_max = int(cap.color_temp_max)
@@ -455,7 +485,6 @@ class DeviceInspector(QFrame):
             widget.setVisible(supported)
 
         self.default_button.setVisible(cap.supports_streaming)
-        self.firmware_button.setVisible(bool(device.get("account_id")))
         self.default_button.setEnabled(not primary and cap.supports_streaming)
         self.default_button.setText(
             "Default Device" if primary else "Set as Default"
@@ -474,21 +503,21 @@ class DeviceInspector(QFrame):
             local_cap = capabilities_for_device({**device, "transport": local})
             self.connection_combo.addItem("Local Wi-Fi · " + ("screen and music sync" if local_cap.supports_streaming else "manual controls"), local)
         if cloud and device.get("account_id"):
-            self.connection_combo.addItem("Account Wi-Fi · manual controls", cloud)
+            self.connection_combo.addItem("Account · manual controls", cloud)
         selected = self.connection_combo.findData(transport)
         if selected >= 0:
             self.connection_combo.setCurrentIndex(selected)
         self.connection_combo.blockSignals(blocked)
         self.connection_combo.setVisible(self.connection_combo.count() > 1)
         # A reused inspector must not display the previous device's values.
-        self.brightness_value.setText("Not reported")
-        self.temperature_value.setText("Not reported")
-        self._current_color = qcolor("accent")
-        self._refresh_color_button()
+        self.brightness_value.setText(UNKNOWN_VALUE)
+        self.temperature_value.setText(UNKNOWN_VALUE)
+        self._show_color(None, None)
+        self._refresh_presets()
         self.set_state(state)
         self.energy.set_device(device, state)
         if not cap.supports_brightness:
-            self.brightness_value.setText("Not reported")
+            self.brightness_value.setText(UNKNOWN_VALUE)
 
     def set_available_size(self, width: int, height: int) -> None:
         """Reflow to the viewport, rather than our potentially taller content."""
@@ -496,11 +525,7 @@ class DeviceInspector(QFrame):
         compact = height < 720
         inset = 12 if compact else 18
         self.layout().setContentsMargins(inset, inset, inset, inset)
-        self.layout().setSpacing(8 if compact else 14)
-        self._status_layout.setContentsMargins(10 if compact else 14, 8 if compact else 12,
-                                              10 if compact else 14, 8 if compact else 12)
-        self.meta_label.setVisible(not compact)
-        self.title_label.setToolTip(self.title_label.text() + "\n" + self.meta_label.text())
+        self.layout().setSpacing(10 if compact else 14)
         self.energy.set_available_size(max(0, min(width, self.maximumWidth()) - inset * 2), height)
 
     def _connection_selected(self, _index: int) -> None:
@@ -516,26 +541,11 @@ class DeviceInspector(QFrame):
             "Live" if state.get("readback_supported", True)
             else "Last command only"
         )
-        power = state.get("power_on")
-        self.power_label.setText(
-            "Power on" if power is True else "Power off"
-            if power is False
-            else "Power unknown"
-        )
-        self._set_power_visual(
-            "on" if power is True else "off" if power is False else "unknown"
-        )
+        self._set_power_visual(power_visual_state(state), state.get("power_on"))
 
-        status_text, status_state, tooltip = self._status_copy(state)
-        self.status_label.setText(status_text)
-        self.status_label.setToolTip(tooltip)
-        if self.status_label.property("statusState") != status_state:
-            self.status_label.setProperty("statusState", status_state)
-            style = self.status_label.style()
-            style.unpolish(self.status_label)
-            style.polish(self.status_label)
         cap = self._cap
-        self.output_label.setText(format_device_output(state, cap))
+        self.status = describe_device_status(state, cap, self._meters)
+        apply_status(self.status_label, self.status_dot, self.status)
 
         brightness = state.get("brightness")
         if (cap.supports_brightness and isinstance(brightness, int)
@@ -546,14 +556,10 @@ class DeviceInspector(QFrame):
             self.brightness_slider.blockSignals(blocked)
             self.brightness_value.setText(f"{bounded}%")
 
-        color = state.get("color")
-        if cap.supports_color and isinstance(color, (tuple, list)) and len(color) >= 3:
-            color_value = QColor(
-                int(color[0]), int(color[1]), int(color[2])
-            )
-            if color_value != self._current_color:
-                self._current_color = color_value
-                self._refresh_color_button()
+        if cap.supports_color:
+            color, kelvin = state_display_color(state, cap)
+            if color is not None:
+                self._show_color(color, kelvin)
 
         color_temp = state.get("color_temp")
         if (cap.supports_white and color_temp and not self.temperature_slider.isSliderDown()
@@ -566,73 +572,12 @@ class DeviceInspector(QFrame):
             self.temperature_slider.blockSignals(blocked)
             self.temperature_value.setText(f"{bounded_temp}K")
 
-    @staticmethod
-    def _status_copy(state: Dict[str, Any]) -> tuple[str, str, str]:
-        source = str(state.get("status_source") or "unknown")
-        active = state.get("active_output")
-        error = state.get("last_error")
-        if error and source == "error":
-            return "Command failed", "warning", str(error)
-        if source == "offline":
-            return "Offline", "warning", str(error or "Device reported unavailable")
-        if active:
-            return "Active", "online", f"Sending {str(active).lower()} output"
-        if source == "confirmed" and state.get("online"):
-            return "Online", "online", "Status confirmed by the device"
-        if source == "commanded" and state.get("online"):
-            return "Last sent", "online", "Showing the last successful command"
-        if source == "seen" and state.get("online"):
-            return "Nearby", "online", "Visible during the latest search"
-        if source == "not_seen":
-            return "Not visible", "offline", "Not seen in the latest search"
-        if source == "unknown" and state.get("readback_supported", True):
-            # Never-confirmed LAN device: some models never answer status
-            # queries, so an unanswered poll is not proof of absence.
-            return "State unknown", "warning", "No status reply yet; commands may still work"
-        if source == "pending" or state.get("stale"):
-            return "Refreshing", "warning", "Waiting for status confirmation"
-        return "State unknown", "offline", "Live state is not available"
-
-    @staticmethod
-    def _format_meta(device: Dict[str, Any]) -> str:
-        transport = str(device.get("transport") or "lan").lower()
-        kind = device.get("device_kind")
-        if kind in ("light_switch", "smart_plug"):
-            return "Local Wi-Fi control" if transport == "tuya" else "Account Wi-Fi control"
-        if transport == "ble":
-            return "Bluetooth matrix panel · Last-commanded output"
-        if transport == "tuya":
-            return "Local Tuya light · Direct network control"
-        if is_cloud(device):
-            return "Account Wi-Fi · Manual light controls"
-        return "LAN light · Confirmed device readback when supported"
-
-    def _set_power_visual(self, state: str) -> None:
-        if getattr(self, "_power_visual_state", None) == state:
+    def _set_power_visual(self, state: str, last_known: Optional[bool] = None) -> None:
+        visual = (state, last_known if state == "offline" else None)
+        if getattr(self, "_power_visual_state", None) == visual:
             return
-        self._power_visual_state = state
-        is_on = state == "on"
-        self.power_button.setProperty("powerState", state)
-        self.power_button.setIcon(
-            tinted_icon(
-                IconKey.POWER,
-                "#FFFFFF" if is_on else qcolor("text_dim"),
-                20,
-            )
-        )
-        self.power_button.setToolTip(
-            "Turn off"
-            if is_on
-            else "Turn on"
-            if state == "off"
-            else "Power state unknown · click to turn on"
-        )
-        self.power_button.setAccessibleDescription(
-            "On" if is_on else "Off" if state == "off" else "Unknown"
-        )
-        style = self.power_button.style()
-        style.unpolish(self.power_button)
-        style.polish(self.power_button)
+        self._power_visual_state = visual
+        set_power_button_state(self.power_button, state, last_known=last_known)
 
     def _on_brightness(self, value: int) -> None:
         self.brightness_value.setText(f"{value}%")
@@ -654,36 +599,47 @@ class DeviceInspector(QFrame):
                 self._index, self.temperature_slider.value()
             )
 
+    # ------------------------------------------------------------------ colour
+
+    def current_color(self) -> Optional[QColor]:
+        return QColor(self._current_color) if self._current_color is not None else None
+
+    def _show_color(self, color: Optional[QColor], kelvin: Optional[int]) -> None:
+        self._current_color = QColor(color) if color is not None else None
+        self._current_kelvin = kelvin
+        for swatch in (self.color_button, self.status_swatch):
+            swatch.set_color(self._current_color, kelvin)
+        description = swatch_tooltip(self._current_color, kelvin, action="")
+        self.color_hint.setText(description)
+        self.status_swatch.setToolTip(description)
+        self.color_button.setToolTip(swatch_tooltip(self._current_color, kelvin, action="click for more colours"))
+        self.color_presets.mark_current(self._current_color)
+
+    def _refresh_presets(self) -> None:
+        white = white_range(self._cap) if self._cap.supports_white else None
+        self.color_presets.set_choices([*preset_choices(white), *recent_choices()], self._current_color)
+
+    def _choose_preset(self, choice: SwatchChoice) -> None:
+        if self._index < 0 or not self._cap.supports_color:
+            return
+        if choice.kelvin:
+            self._show_color(QColor(choice.color), int(choice.kelvin))
+            self.color_temp_changed.emit(self._index, int(choice.kelvin))
+            return
+        self._show_color(QColor(choice.color), None)
+        self.color_picked.emit(self._index, QColor(choice.color))
+
     def _pick_color(self) -> None:
         if self._index < 0 or not self._cap.supports_color:
             return
         chosen = QColorDialog.getColor(
-            self._current_color, self, "Choose device color"
+            self._current_color or QColor("#FFFFFF"), self, "Choose device colour"
         )
         if chosen.isValid() and self._index >= 0:
-            self._current_color = chosen
-            self._refresh_color_button()
+            remember_recent_color(chosen)
+            self._show_color(chosen, None)
+            self._refresh_presets()
             self.color_picked.emit(self._index, chosen)
-
-    def _refresh_color_button(self) -> None:
-        self.color_button.setStyleSheet(
-            "QPushButton#InspectorColorSwatch {"
-            f"background: {self._current_color.name()};"
-            f"border: 2px solid {qcolor('border_strong').name()};"
-            "border-radius: 12px;"
-            "min-width: 44px; min-height: 44px;"
-            "max-width: 44px; max-height: 44px; padding: 0;"
-            "}"
-            "QPushButton#InspectorColorSwatch:hover {"
-            f"border-color: {qcolor('text').name()};"
-            "}"
-            "QPushButton#InspectorColorSwatch:focus {"
-            f"border-color: {qcolor('accent_bright').name()};"
-            "}"
-        )
-        self.color_button.setToolTip(
-            f"Current color {self._current_color.name().upper()}"
-        )
 
 
 __all__ = ["DeviceInspector"]

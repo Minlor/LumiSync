@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import QLocale, QSize, Qt, Slot, QTimer
@@ -24,7 +25,11 @@ from ...accounts.tuya import TuyaSharingClient
 from ...accounts.secrets import vault
 from ...utils.logging import setup_logger
 from ..controllers.background import start_task
+from ..controllers.discovery import AccountFailure
+from ..theme import TOKENS
 from ..utils.account_country import suggested_account_country
+from ..widgets.elided_label import ElidedLabel
+from ..widgets.info_bar import SEVERITY_CAUTION, InfoBar, SeverityIcon
 from ..widgets.product_controls import ProductComboBox
 
 logger = setup_logger("lumisync_accounts")
@@ -44,6 +49,8 @@ SIGN_IN_METHODS = {
     "tuya": (("Email and password", "tuya_account"), ("QR sign-in", "tuya_qr")),
     "lsc": (("Email and password", "lsc_account"),),
 }
+# Height of one connected-account row: name, masked label, status line.
+ACCOUNT_ROW_HEIGHT = 92
 
 
 class AccountFeedback(QLabel):
@@ -73,7 +80,7 @@ class SignInFailure:
 
 
 class AccountsDialog(QDialog):
-    def __init__(self, controller, parent=None) -> None:
+    def __init__(self, controller, parent=None, *, select_account: str | None = None) -> None:
         super().__init__(parent)
         self.controller = controller
         self.setWindowTitle("Accounts · LumiSync")
@@ -81,6 +88,10 @@ class AccountsDialog(QDialog):
         self.setMinimumSize(480, 440)
         self._task = None
         self._busy = False
+        # The connected account a "Reconnect" sign-in should update in place
+        # (same id, so its devices stay linked and its issue clears).
+        self._reconnect_account: dict | None = None
+        self._reconnect_pending: dict | None = None
         self._qr_client = None
         self._qr_created = 0.0
         self._pending_client = None
@@ -96,7 +107,38 @@ class AccountsDialog(QDialog):
         self._verification_timer.setSingleShot(True)
         self._verification_timer.timeout.connect(self._expire_verification)
         self._build()
-        self._refresh_accounts()
+        self._refresh_accounts(select_account)
+        if select_account:
+            self._select_page("connected")
+        issues_changed = getattr(controller, "account_issues_changed", None)
+        if issues_changed is not None and hasattr(issues_changed, "connect"):
+            issues_changed.connect(self._on_account_issues_changed)
+
+    # ------------------------------------------------------------------ account health
+
+    def _account_issue(self, account_id) -> tuple[str, str] | None:
+        """``(label, reason)`` the controller recorded for an account, if any."""
+        getter = getattr(self.controller, "account_issue", None)
+        if not callable(getter):
+            return None
+        pair = getter(account_id)
+        return pair if isinstance(pair, tuple) and len(pair) == 2 else None
+
+    def _account_device_count(self, account_id) -> int | None:
+        devices = getattr(self.controller, "devices", None)
+        if not isinstance(devices, list):
+            return None
+        return sum(1 for device in devices if isinstance(device, Mapping) and device.get("account_id") == account_id)
+
+    def _record_account_failure(self, metadata, failure: AccountFailure) -> None:
+        """Let the controller decide whether this failure is an account issue."""
+        recorder = getattr(self.controller, "record_account_failure", None)
+        if callable(recorder):
+            recorder(metadata, failure)
+
+    def _on_account_issues_changed(self, *_args) -> None:
+        if not self._busy:
+            self._refresh_accounts()
 
     def _build(self) -> None:
         outer = QVBoxLayout(self)
@@ -166,12 +208,23 @@ class AccountsDialog(QDialog):
         self.accounts_list.setAccessibleName("Connected vendor accounts")
         self.accounts_list.currentRowChanged.connect(self._account_selection_changed)
         connected.addWidget(self.accounts_list)
+        self.account_issue_bar = InfoBar(SEVERITY_CAUTION, "Needs attention", "", closable=False)
+        self.account_issue_bar.setObjectName("AccountIssueBar")
+        self.account_issue_bar.hide()
+        connected.addWidget(self.account_issue_bar)
+        self.reconnect_button = QPushButton("Reconnect")
+        self.reconnect_button.setAutoDefault(False)
+        self.reconnect_button.setMinimumHeight(44)
+        self.reconnect_button.setToolTip("Sign in again with this account")
+        self.reconnect_button.clicked.connect(self._reconnect_selected)
+        self.reconnect_button.hide()
         self.refresh_button = QPushButton("Refresh devices")
         self.refresh_button.setAutoDefault(False)
         self.refresh_button.setMinimumHeight(44)
         self.refresh_button.clicked.connect(self._refresh_selected)
         self._account_actions = QBoxLayout(QBoxLayout.Direction.TopToBottom)
         self._account_actions.setSpacing(8)
+        self._account_actions.addWidget(self.reconnect_button)
         self._account_actions.addWidget(self.refresh_button)
         self.disconnect_button = QPushButton("Disconnect account")
         self.disconnect_button.setAutoDefault(False)
@@ -480,9 +533,9 @@ class AccountsDialog(QDialog):
         self._connected_layout.setSpacing(8 if compact else 12)
         self._account_note.setVisible(not compact)
         self._account_actions.setDirection(QBoxLayout.Direction.LeftToRight if stacked else QBoxLayout.Direction.TopToBottom)
-        account_rows = self.accounts_list.count() * 78 + 8
-        available_rows = max(78, self._scroll.viewport().height() - (94 if stacked else 150))
-        self.accounts_list.setFixedHeight(min(270, account_rows, available_rows))
+        account_rows = self.accounts_list.count() * (ACCOUNT_ROW_HEIGHT + 4) + 8
+        available_rows = max(ACCOUNT_ROW_HEIGHT + 4, self._scroll.viewport().height() - (94 if stacked else 150))
+        self.accounts_list.setFixedHeight(min(300, account_rows, available_rows))
         direction = QBoxLayout.Direction.LeftToRight if compact else QBoxLayout.Direction.TopToBottom
         for label, layout in [(self._method_label, self._method_layout),
                               (self.country_label, self._country_layout),
@@ -520,7 +573,7 @@ class AccountsDialog(QDialog):
         self._set_tab_order(stacked)
 
     def _set_tab_order(self, stacked: bool) -> None:
-        account_controls = [self.accounts_list, self.refresh_button, self.disconnect_button]
+        account_controls = [self.accounts_list, self.reconnect_button, self.refresh_button, self.disconnect_button]
         sign_in_controls = [*self.provider_buttons.values(), self.method, self.entries["email"], self.country,
                             self.entries["password"], self.show_password, self.entries["mfa_code"],
                             self.entries["api_key"], self.entries["user_code"], self.resend_button, self.restart_button,
@@ -589,9 +642,38 @@ class AccountsDialog(QDialog):
         self.status.style().polish(self.status)
 
     def _account_selection_changed(self, *_args) -> None:
-        enabled = self._selected_account() is not None and not self._busy
+        selected = self._selected_account()
+        enabled = selected is not None and not self._busy
         self.refresh_button.setEnabled(enabled)
         self.disconnect_button.setEnabled(enabled)
+        self.reconnect_button.setEnabled(enabled)
+        issue = self._account_issue(selected.get("id")) if selected else None
+        if issue is not None:
+            self.account_issue_bar.set_content(SEVERITY_CAUTION, "Needs attention", issue[1])
+        self.account_issue_bar.setVisible(issue is not None)
+        reconnectable = bool(selected and selected.get("provider") in PROVIDER_NAMES
+                             and selected.get("provider") != "tuya_project")
+        self.reconnect_button.setVisible(issue is not None and reconnectable)
+
+    def _reconnect_selected(self) -> None:
+        """Open the sign-in form for the selected account's provider."""
+        metadata = self._selected_account()
+        if not metadata or self._busy:
+            return
+        provider = metadata.get("provider")
+        index = self.provider.findData(provider)
+        if index < 0:
+            self._show_status("Sign in again from the Sign in form to reconnect this account.")
+            return
+        self.provider.setCurrentIndex(index)
+        self._reconnect_account = dict(metadata)
+        self._select_page("signin")
+        name = PROVIDER_NAMES.get(provider, "account")
+        self._show_status(f"Sign in again with the same {name} account to reconnect it.")
+        target = next((self.entries[key] for key in ("email", "api_key", "user_code")
+                       if not self.field_rows[key].isHidden()), None)
+        if target is not None:
+            target.setFocus()
 
     def _clear_pending_login(self, *_args) -> None:
         if self._pending_client is not None:
@@ -633,6 +715,9 @@ class AccountsDialog(QDialog):
         self._show_status("This sign-in attempt has expired. Enter your password to start again.", "error")
 
     def _provider_changed(self) -> None:
+        if self._reconnect_account is not None and self._reconnect_account.get("provider") != self.provider.currentData():
+            # Choosing another provider is a new sign-in, not a reconnect.
+            self._reconnect_account = None
         self._clear_pending_login()
         if self._qr_client is not None:
             self._qr_client.close()
@@ -692,21 +777,30 @@ class AccountsDialog(QDialog):
     def _refresh_accounts(self, select_id=None) -> None:
         selected = self._selected_account()
         selected_id = select_id or (selected.get("id") if selected else None)
+        blocked = self.accounts_list.blockSignals(True)
         self.accounts_list.clear()
         for metadata in self.controller.get_accounts():
             title = mask_account_label(metadata.get("label") or metadata["provider"])
             if not metadata.get("remember", True):
                 title += " · this session"
+            issue = self._account_issue(metadata.get("id"))
+            count = self._account_device_count(metadata.get("id"))
+            if issue is not None:
+                status = issue[1]
+            elif count is not None:
+                status = f"Connected · {count} device{'s' if count != 1 else ''}"
+            else:
+                status = "Connected"
             item = QListWidgetItem(title)
             item.setData(Qt.ItemDataRole.UserRole, metadata)
-            item.setSizeHint(QSize(180, 74))
-            item.setToolTip(title)
+            item.setSizeHint(QSize(180, ACCOUNT_ROW_HEIGHT))
+            item.setToolTip(f"{title}\n{status}")
             self.accounts_list.addItem(item)
             row = QWidget()
             row.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             layout = QVBoxLayout(row)
             layout.setContentsMargins(12, 10, 12, 10)
-            layout.setSpacing(4)
+            layout.setSpacing(3)
             name = QLabel(PROVIDER_NAMES.get(metadata["provider"], "Connected account"))
             name.setProperty("role", "strong")
             name.setTextFormat(Qt.TextFormat.PlainText)
@@ -716,11 +810,25 @@ class AccountsDialog(QDialog):
             detail.setWordWrap(True)
             layout.addWidget(name)
             layout.addWidget(detail)
+            status_row = QHBoxLayout()
+            status_row.setContentsMargins(0, 0, 0, 0)
+            status_row.setSpacing(6)
+            if issue is not None:
+                status_row.addWidget(SeverityIcon(SEVERITY_CAUTION, row, size=12), 0, Qt.AlignmentFlag.AlignVCenter)
+            status_label = ElidedLabel(status)
+            status_label.setObjectName("AccountRowStatus")
+            status_label.setProperty("accountState", "issue" if issue is not None else "ok")
+            status_label.setStyleSheet(
+                f"QLabel#AccountRowStatus {{ color: {TOKENS['fl_text_secondary']}; background: transparent; }}"
+            )
+            status_row.addWidget(status_label, 1)
+            layout.addLayout(status_row)
             self.accounts_list.setItemWidget(item, row)
             if selected_id and metadata.get("id") == selected_id:
                 self.accounts_list.setCurrentItem(item)
+        self.accounts_list.blockSignals(blocked)
         has_accounts = self.accounts_list.count() > 0
-        self.accounts_list.setFixedHeight(min(270, self.accounts_list.count() * 78 + 8))
+        self.accounts_list.setFixedHeight(min(300, self.accounts_list.count() * (ACCOUNT_ROW_HEIGHT + 4) + 8))
         if has_accounts and self.accounts_list.currentRow() < 0:
             self.accounts_list.setCurrentRow(0)
         self.accounts_empty.setVisible(not has_accounts)
@@ -730,10 +838,18 @@ class AccountsDialog(QDialog):
         self._account_selection_changed()
         self._update_responsive_layout()
 
+    def account_row_status(self, row: int) -> str:
+        """The status line shown for one connected-account row."""
+        item = self.accounts_list.item(row)
+        widget = self.accounts_list.itemWidget(item) if item is not None else None
+        label = widget.findChild(QLabel, "AccountRowStatus") if widget is not None else None
+        return label.text() if label is not None else ""
+
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
         self.progress.setVisible(busy)
-        for widget in (self.connect_button, self.refresh_button, self.disconnect_button, self.provider, self.qr_confirm,
+        for widget in (self.connect_button, self.refresh_button, self.disconnect_button, self.reconnect_button,
+                       self.provider, self.qr_confirm,
                        self.country, self.connection_options, self.resend_button,
                        self.restart_button,
                        self.app_package, self.browse_package, self.remember, self.accounts_list,
@@ -741,17 +857,19 @@ class AccountsDialog(QDialog):
             widget.setEnabled(not busy)
         self._account_selection_changed()
 
-    def _run(self, action, completed) -> None:
+    def _run(self, action, completed, failed=None) -> None:
         if self._busy:
             return
         self._set_busy(True)
         self._callback = completed
+        self._failed = failed
         self._task = start_task(action, self._completed)
 
     @Slot(object, object)
     def _completed(self, value, error) -> None:
         self._set_busy(False)
         callback, self._callback = self._callback, None
+        failed, self._failed = getattr(self, "_failed", None), None
         self._task = None
         if self.controller._closing:
             if isinstance(value, tuple) and hasattr(value[0], "close"):
@@ -762,6 +880,8 @@ class AccountsDialog(QDialog):
             return
         if error:
             self._show_status(error, "error")
+            if failed is not None:
+                failed(error)
             return
         try:
             callback(value)
@@ -806,6 +926,8 @@ class AccountsDialog(QDialog):
             credentials["region"] = "auto"
         self._remember_pending = self.remember.isChecked()
         self._provider_pending = provider
+        reconnect = self._reconnect_account
+        self._reconnect_pending = dict(reconnect) if reconnect and reconnect.get("provider") == provider else None
         self._country_pending = self.country.currentData(Qt.ItemDataRole.UserRole + 1) if mobile else ""
         remember = self._remember_pending
         self._pending_client = None
@@ -956,8 +1078,13 @@ class AccountsDialog(QDialog):
                 self.connection_options.setChecked(True)
             return
         client, raw_devices = value
+        reconnect = self._reconnect_pending
+        identity = reconnect.get("id") if reconnect and self._same_account(reconnect, client) else None
         try:
-            metadata = account_manager.register(self._provider_pending, client, remember=self._remember_pending)
+            # A reconnect re-registers the existing account id: the vault entry
+            # and client are replaced in place and its devices stay linked.
+            metadata = account_manager.register(self._provider_pending, client, remember=self._remember_pending,
+                                                identity=identity)
         except Exception:
             client.close()
             raise
@@ -968,10 +1095,23 @@ class AccountsDialog(QDialog):
             metadata["label"] += " · " + mask_email(client.credentials["email"])
         try:
             descriptors = account_manager.descriptors(metadata, raw_devices)
-            self.controller.import_account_devices(metadata, descriptors)
+            if self.controller.import_account_devices(metadata, descriptors) is False:
+                raise AccountError(
+                    "Signed in, but your settings could not be saved. Try again in a moment.",
+                    "storage",
+                )
         except Exception:
-            account_manager.disconnect(metadata["id"])
+            if identity is None:
+                account_manager.disconnect(metadata["id"])
+            # A reconnect keeps the fresh credentials under the existing id;
+            # only the settings save failed, so nothing is disconnected.
             raise
+        if identity is not None:
+            self._reconnect_account = None
+            self._reconnect_pending = None
+            clear = getattr(self.controller, "clear_account_issue", None)
+            if callable(clear):
+                clear(identity)
         self._refresh_accounts(metadata["id"])
         self._clear_pending_login()
         self.entries["email"].clear()
@@ -980,6 +1120,30 @@ class AccountsDialog(QDialog):
         self._show_status(f"Account connected. {count} supported device{'s' if count != 1 else ''} imported. Open Devices to control them.", "success")
         for key in ("api_key",):
             self.entries[key].clear()
+
+    @staticmethod
+    def _same_account(metadata: dict, client) -> bool:
+        """Whether a new sign-in is the account being reconnected.
+
+        Another account must not take over this id. The saved credentials
+        hold the full email; when they cannot be read (often the reason to
+        reconnect), the label's masked email is compared instead.
+        """
+        email = str(getattr(client, "credentials", {}).get("email") or "")
+        if not email:
+            return True
+        try:
+            saved = vault.get("account/" + str(metadata.get("id") or ""))
+            saved_email = str((saved.get("credentials") or {}).get("email") or "")
+        except Exception:
+            saved_email = ""
+        if saved_email:
+            return saved_email.strip().casefold() == email.strip().casefold()
+        label = mask_account_label(str(metadata.get("label") or ""))
+        _name, separator, old_hint = label.rpartition(" · ")
+        if not separator or "@" not in old_hint:
+            return True
+        return mask_email(email) == old_hint
 
     def _selected_account(self):
         item = self.accounts_list.currentItem()
@@ -991,14 +1155,34 @@ class AccountsDialog(QDialog):
             self._show_status("Choose a connected account first.")
             return
         def refresh():
-            client = account_manager.client_for({"account_id": metadata["id"]})
-            return account_manager.descriptors(metadata, client.list_devices())
+            try:
+                client = account_manager.client_for({"account_id": metadata["id"]})
+                return account_manager.descriptors(metadata, client.list_devices())
+            except AccountError as exc:
+                # Keep the code: only a broken sign-in becomes an account issue.
+                return AccountFailure.from_error(exc)
         self._show_status("Refreshing devices from " + PROVIDER_NAMES.get(metadata["provider"], "your account") + "…")
-        self._run(refresh, lambda descriptors: self._devices_refreshed(metadata, descriptors))
+        self._run(refresh, lambda descriptors: self._devices_refreshed(metadata, descriptors),
+                  lambda error: self._refresh_failed(metadata, error))
 
     def _devices_refreshed(self, metadata, descriptors) -> None:
-        self.controller.import_account_devices(metadata, descriptors)
+        if isinstance(descriptors, AccountFailure):
+            self._show_status(descriptors.message, "error")
+            self._record_account_failure(metadata, descriptors)
+            self._refresh_accounts(metadata.get("id"))
+            return
+        if self.controller.import_account_devices(metadata, descriptors) is False:
+            self._show_status("The devices were read, but your settings could not be saved. Try again in a moment.")
+            return
+        # A successful import clears the account's issue in the controller.
+        self._refresh_accounts(metadata.get("id"))
         self._show_status(f"Refreshed {len(descriptors)} account device(s).", "success")
+
+    def _refresh_failed(self, metadata, error) -> None:
+        # A plain error string has no account code (timeouts, server
+        # errors): it is shown in this dialog and logged, not an issue.
+        logger.info("Account refresh failed without an account error code")
+        self._refresh_accounts(metadata.get("id"))
 
     def _disconnect_selected(self) -> None:
         metadata = self._selected_account()
@@ -1009,8 +1193,11 @@ class AccountsDialog(QDialog):
         self._run(lambda: account_manager.disconnect(metadata["id"]), lambda _: self._account_disconnected(metadata))
 
     def _account_disconnected(self, metadata) -> None:
-        self.controller.remove_account(metadata["id"])
+        saved = self.controller.remove_account(metadata["id"]) is not False
         self._refresh_accounts()
+        if not saved:
+            self._show_status("The account was signed out, but your settings could not be saved. Try again in a moment.")
+            return
         self._show_status("Account disconnected. Saved local connections can still be used.", "success")
 
     def reject(self) -> None:

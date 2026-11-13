@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, Optional
 import math
 
+import shiboken6
 from PySide6.QtCore import QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QEnterEvent, QMouseEvent
 from PySide6.QtWidgets import (
@@ -21,78 +23,248 @@ from ... import connection
 from ...accounts.tuya_energy import meter_fields
 from ...drivers.base import DeviceCapabilities
 from ...drivers.registry import capabilities_for_device, is_cloud
+from ...utils.colors import kelvin_to_rgb
 from ..resources.icons import IconKey, tinted_icon, tinted_pixmap
 from ..theme import qcolor
 from ..utils.animations import StatusDot
 from ..utils.device_identity import device_identity
+from .color_flyout import (
+    ColorFlyout,
+    ColorSwatchButton,
+    state_display_color,
+    swatch_tooltip,
+    white_range,
+)
 from .elided_label import ElidedLabel
 from .product_controls import ProductSlider
 
 
 CARD_MIN_WIDTH = 260
 CARD_WIDTH = CARD_MIN_WIDTH  # Compatibility for callers of the former fixed width.
-CARD_MIN_HEIGHT = 160
+
+UNKNOWN_VALUE = "—"
+
+# Status tones drive both the dot and the phrase color.
+TONE_ONLINE = "online"
+TONE_WARNING = "warning"
+TONE_OFFLINE = "offline"
+TONE_UNKNOWN = "unknown"
+
+_SYNC_OUTPUTS = {"Monitor sync": "Monitor", "Music sync": "Music"}
+_NEVER_ANSWERED = (
+    "This device hasn't answered a status request yet. Some models never "
+    "do; commands may still work."
+)
+_NO_READBACK = (
+    "This device can't report its state, so LumiSync shows the last "
+    "command it sent."
+)
 
 
-def format_device_output(state: Dict[str, Any], cap: DeviceCapabilities | None = None) -> str:
-    """Build a compact, honest output summary for a device card."""
-    if cap is not None:
-        state = dict(state)
-        for flag, field in ((cap.supports_power, "power_on"), (cap.supports_brightness, "brightness"),
-                            (cap.supports_color, "color"), (cap.supports_white, "color_temp"),
-                            (cap.supports_streaming, "active_output")):
-            if not flag:
-                state.pop(field, None)
-        if not (cap.supports_color or cap.supports_white or cap.supports_brightness):
-            state.pop("last_output", None)
-    active_output = state.get("active_output")
-    if active_output:
-        return f"Live output · {active_output}"
+@dataclass(frozen=True)
+class DeviceStatus:
+    """One short phrase describing a device, plus its tone and explanation."""
 
-    if state.get("power_on") is False:
-        return "Output · Off"
+    text: str
+    tone: str
+    tooltip: str = ""
 
-    last_output = state.get("last_output")
-    source = str(state.get("status_source") or "unknown")
-    prefix = "Showing" if source == "confirmed" else "Last sent"
 
+def connection_name(device: Dict[str, Any]) -> str:
+    transport = str(device.get("transport") or "lan").lower()
+    if transport == "ble":
+        return "Bluetooth"
+    if transport == "tuya":
+        return "Local Wi-Fi"
+    if is_cloud(device):
+        return "Account"
+    return "Local network"
+
+
+def device_subline(device: Dict[str, Any], cap: Optional[DeviceCapabilities] = None) -> str:
+    """``<type> · <connection>`` plus one key detail, e.g. the zone count."""
+    cap = cap or capabilities_for_device(device)
+    type_name, _icon = device_identity(device)
+    parts = [type_name, connection_name(device)]
+    transport = str(device.get("transport") or "lan").lower()
+    if device.get("device_kind") in ("light_switch", "smart_plug"):
+        pass
+    elif transport == "ble" or cap.is_matrix:
+        size = str(device.get("matrix_size") or "32x32").replace("x", "×")
+        parts.append(size)
+    elif transport in ("", "lan") and cap.supports_segments:
+        parts.append(f"{connection.get_segment_count(device)} zones")
+    elif cap.supports_segments and cap.segment_count > 1:
+        parts.append(f"{cap.segment_count} zones")
+    return " · ".join(parts)
+
+
+def _reading(state: Dict[str, Any], field: str) -> Optional[float]:
+    value = state.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return float(value)
+
+
+def _output_phrase(
+    state: Dict[str, Any],
+    cap: Optional[DeviceCapabilities],
+    meters: Iterable[str],
+    *,
+    lead: str,
+) -> str:
+    """``On · 80%``, ``Off``, ``On · 12.3 W``; empty when unknown.
+
+    Colour lights show their colour in the swatch beside the power button,
+    so the phrase never spells out a hex value. A white-only light has no
+    swatch and keeps its temperature (``On · 2700K · 80%``).
+    """
+    power = state.get("power_on") if cap is None or cap.supports_power else None
+    if power is False:
+        return "Off"
+
+    details = []
     color_temp = state.get("color_temp")
-    color = state.get("color")
+    if color_temp and cap is not None and cap.supports_white and not cap.supports_color:
+        details.append(f"{int(color_temp)}K")
     brightness = state.get("brightness")
+    if isinstance(brightness, int) and not isinstance(brightness, bool) and (cap is None or cap.supports_brightness):
+        details.append(f"{max(0, min(100, brightness))}%")
+    watts = _reading(state, "power_w") if "power_w" in set(meters) else None
+    if watts is not None:
+        details.append(f"{watts:,.1f} W")
 
-    if last_output and source != "confirmed":
-        detail = str(last_output)
-    elif color_temp:
-        detail = f"White {int(color_temp)}K"
-    elif isinstance(color, (tuple, list)) and len(color) >= 3:
-        detail = "#{:02X}{:02X}{:02X}".format(
-            int(color[0]), int(color[1]), int(color[2])
+    if power is True:
+        return " · ".join(["On", *details])
+    if details:
+        return " · ".join([lead, *details])
+    return ""
+
+
+def _via_account(phrase: str, state: Dict[str, Any]) -> str:
+    """Mark a local device whose last command went through its account."""
+    if phrase and state.get("command_route") == "account":
+        return f"{phrase} · via account"
+    return phrase
+
+
+def _is_color_output(value: Any) -> bool:
+    text = str(value or "")
+    return len(text) == 7 and text.startswith("#")
+
+
+def describe_device_status(
+    state: Dict[str, Any],
+    cap: Optional[DeviceCapabilities] = None,
+    meters: Iterable[str] = (),
+) -> DeviceStatus:
+    """Merge power, output, readings and reachability into one phrase.
+
+    The tone is ``online`` only when the device (or its account) confirmed
+    it is reachable, so an unknown or offline device never shows a green dot.
+    """
+    source = str(state.get("status_source") or "unknown")
+    error = state.get("last_error")
+    online = bool(state.get("online"))
+    active = state.get("active_output")
+    meters = tuple(meters)
+
+    if error and source == "error":
+        return DeviceStatus("Command failed", TONE_WARNING, str(error))
+    if source == "offline":
+        return DeviceStatus(
+            "Offline", TONE_OFFLINE,
+            str(error or "The device isn't answering. Check that it has power and network."),
         )
-    elif state.get("power_on") is True:
-        detail = "On"
-    elif isinstance(brightness, int):
-        detail = f"{max(0, min(100, brightness))}% brightness"
-    else:
-        return "Output · Not reported"
+    if active:
+        label = str(active)
+        mode = _SYNC_OUTPUTS.get(label)
+        return DeviceStatus(
+            f"Syncing · {mode}" if mode else f"Live · {label}",
+            TONE_ONLINE,
+            f"LumiSync is sending {label.lower()} output.",
+        )
+    if source == "not_seen":
+        return DeviceStatus("Not visible", TONE_OFFLINE, "Not seen in the latest Bluetooth search.")
+    if source == "confirmed" and online:
+        cloud = state.get("status_origin") == "cloud"
+        tooltip = "Reported through your vendor account." if cloud else "Reported by the device."
+        phrase = _output_phrase(state, cap, meters, lead="Online")
+        return DeviceStatus(
+            _via_account(phrase or ("Online (account)" if cloud else "Online"), state), TONE_ONLINE, tooltip
+        )
+    if source == "commanded" and online:
+        phrase = _output_phrase(state, cap, meters, lead="Sent")
+        last = state.get("last_output")
+        if not phrase:
+            phrase = "Colour sent" if _is_color_output(last) else f"Sent · {last}" if last else "Ready"
+        return DeviceStatus(_via_account(phrase, state), TONE_ONLINE, _NO_READBACK)
+    if source == "seen" and online:
+        return DeviceStatus("Nearby", TONE_ONLINE, "Visible during the latest Bluetooth search.")
+    if source == "unknown":
+        tooltip = _NEVER_ANSWERED if state.get("readback_supported", True) else _NO_READBACK
+        phrase = _output_phrase(state, cap, meters, lead="Sent")
+        return DeviceStatus(phrase or "No status yet", TONE_UNKNOWN, tooltip)
+    if source == "pending" or state.get("stale"):
+        phrase = _output_phrase(state, cap, meters, lead="Sent")
+        if phrase:
+            tone = TONE_ONLINE if online and state.get("readback_seen") else TONE_UNKNOWN
+            return DeviceStatus(_via_account(phrase, state), tone, "Waiting for the device to confirm its state.")
+        return DeviceStatus("Checking…", TONE_UNKNOWN, "Waiting for the device to answer.")
+    return DeviceStatus("Offline", TONE_OFFLINE, str(error or ""))
 
-    if isinstance(brightness, int) and "brightness" not in detail.lower():
-        detail += f" · {max(0, min(100, brightness))}%"
-    return f"{prefix} · {detail}"
+
+def tone_color(tone: str):
+    """Green only for a confirmed-reachable device; caution for problems."""
+    if tone == TONE_ONLINE:
+        return qcolor("fl_success")
+    if tone == TONE_WARNING:
+        return qcolor("fl_caution")
+    return qcolor("text_disabled")
+
+
+def power_visual_state(state: Dict[str, Any]) -> str:
+    """``on``/``off``/``unknown``, or ``offline`` when the device is unreachable.
+
+    An offline device never shows the accent "on" fill, whatever its last
+    known power was; that stays in the button's tooltip.
+    """
+    if state.get("status_source") in ("offline", "not_seen"):
+        return "offline"
+    power = state.get("power_on")
+    return "on" if power is True else "off" if power is False else "unknown"
+
+
+def apply_status(label: QLabel, dot: StatusDot, status: DeviceStatus) -> None:
+    """Render a status phrase and its dot consistently on cards and panels."""
+    label.setText(status.text)
+    label.setToolTip(status.tooltip or status.text)
+    label.setAccessibleName(f"Status: {status.text}")
+    label.setAccessibleDescription(status.tooltip)
+    dot.set_color(tone_color(status.tone))
+    dot.set_active(status.tone in (TONE_ONLINE, TONE_WARNING))
+    dot.setToolTip(status.tooltip or status.text)
+    if label.property("statusState") != status.tone:
+        label.setProperty("statusState", status.tone)
+        style = label.style()
+        style.unpolish(label)
+        style.polish(label)
+        label.update()
 
 
 class DeviceCard(QFrame):
-    """Quick power/brightness surface that opens a complete inspector."""
+    """Quick power/brightness/colour surface that opens a complete inspector."""
 
-    selection_changed = Signal(int, bool)
     details_requested = Signal(int)
-    primary_clicked = Signal(int)
     power_clicked = Signal(int)
-    color_picked = Signal(int, QColor)
     brightness_changed = Signal(int, int)
+    color_picked = Signal(int, QColor)
     color_temp_changed = Signal(int, int)
-    remove_requested = Signal(int)
-    zone_count_requested = Signal(int)
-    zone_count_reset_requested = Signal(int)
+    # "More colours…": the Devices page opens the colour dialog. It outlives
+    # this card, which a device refresh may rebuild while the dialog is open.
+    custom_color_requested = Signal(int)
 
     def __init__(
         self,
@@ -106,78 +278,80 @@ class DeviceCard(QFrame):
         self._cap = capabilities_for_device(self._device)
         self._type_name, self._type_icon = device_identity(self._device)
         self._meter_fields = meter_fields(self._device)
-        self._current_color = qcolor("accent")
-        self._power_on: Optional[bool] = None
-        self._is_primary = False
-        self._is_selected = False
-        self._group_selection_mode = False
+        self.status = DeviceStatus("No status yet", TONE_UNKNOWN, "")
+        self._flyout: Optional[ColorFlyout] = None
 
         self._brightness_timer = QTimer(self)
         self._brightness_timer.setSingleShot(True)
         self._brightness_timer.setInterval(120)
         self._brightness_timer.timeout.connect(self._commit_brightness)
 
+        name = str(self._device.get("name") or self._device.get("model") or "Unknown device")
+        cap = self._cap
         self.setObjectName("DeviceCard")
         self.setProperty("card", True)
         self.setProperty("hovered", False)
-        self.setProperty("selected", False)
         self.setProperty("inspected", False)
-        self.setProperty("groupSelection", False)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setAccessibleName(
-            f"{self._device.get('name') or self._device.get('model', 'Unknown')} · {self._type_name} controls"
-        )
+        self.setAccessibleName(f"{name} · {self._type_name} controls")
         self.setAccessibleDescription(
-            "Open complete device controls. The circular button toggles power "
-            "and the bottom slider changes brightness."
+            "Open complete device controls."
+            + (" The colour swatch opens quick colours." if cap.supports_color else "")
+            + (" The circular button toggles power." if cap.supports_power else "")
+            + (" The bottom slider changes brightness." if cap.supports_brightness else "")
         )
-        self.setToolTip(
-            f"Open controls for {self._device.get('model', 'this device')}"
-        )
+        self.setToolTip(f"Open controls for {name}")
         self.setMinimumWidth(CARD_MIN_WIDTH)
-        self.setMinimumHeight(CARD_MIN_HEIGHT)
-        self.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
-        )
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
-        self._build()
+        self._build(name)
         self._set_power_visual("unknown")
-        self.set_group_selection_mode(False)
+        apply_status(self.status_label, self.status_dot, self.status)
+        self._set_swatch(None, None)
 
-    def _build(self) -> None:
+    def _build(self, name: str) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(6)
+        root.setContentsMargins(14, 12, 12, 12)
+        root.setSpacing(8)
 
         header = QHBoxLayout()
-        header.setSpacing(10)
+        header.setSpacing(12)
 
         self.type_icon = QLabel()
-        self.type_icon.setFixedSize(34, 38)
-        self.type_icon.setPixmap(tinted_pixmap(self._type_icon, qcolor("text_dim"), 32))
+        self.type_icon.setFixedSize(32, 32)
+        self.type_icon.setPixmap(tinted_pixmap(self._type_icon, qcolor("text_dim"), 30))
         self.type_icon.setAccessibleName(self._type_name)
         self.type_icon.setToolTip(self._type_name)
-        header.addWidget(self.type_icon)
+        header.addWidget(self.type_icon, 0, Qt.AlignmentFlag.AlignVCenter)
 
         titles = QVBoxLayout()
-        titles.setSpacing(2)
-        self.name_label = ElidedLabel(str(self._device.get("name") or self._device.get("model") or "Unknown device"))
+        titles.setSpacing(1)
+        titles.setContentsMargins(0, 0, 0, 0)
+        self.name_label = ElidedLabel(name)
         font = self.name_label.font()
         font.setPointSize(11)
         font.setBold(True)
         self.name_label.setFont(font)
         titles.addWidget(self.name_label)
-        self.type_label = QLabel(self._type_name)
-        self.type_label.setProperty("role", "subtle")
-        titles.addWidget(self.type_label)
+        self.device_summary = ElidedLabel(device_subline(self._device, self._cap))
+        self.device_summary.setProperty("role", "subtle")
+        self.device_summary.setAccessibleName("Device type and connection")
+        titles.addWidget(self.device_summary)
         header.addLayout(titles, 1)
 
-        self.group_badge = QLabel("In group")
-        self.group_badge.setProperty("role", "pill")
-        self.group_badge.setVisible(False)
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        actions.setContentsMargins(0, 0, 0, 0)
+        self.color_swatch = ColorSwatchButton(None, self, diameter=22)
+        self.color_swatch.setAccessibleName("Device colour")
+        self.color_swatch.clicked.connect(self._open_color_flyout)
+        self.color_swatch.setVisible(self._cap.supports_color)
+        actions.addWidget(self.color_swatch, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        self.power_button = QToolButton()
+        # Parented at construction: setVisible(True) on a parentless widget
+        # would flash it on screen as its own window until the layout adopts it.
+        self.power_button = QToolButton(self)
         self.power_button.setObjectName("DevicePowerButton")
         self.power_button.setProperty("powerState", "unknown")
         self.power_button.setFixedSize(46, 46)
@@ -185,73 +359,29 @@ class DeviceCard(QFrame):
         self.power_button.setAccessibleName("Toggle device power")
         self.power_button.setToolTip("Turn on")
         self.power_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.power_button.clicked.connect(
-            lambda: self.power_clicked.emit(self._index)
-        )
-        header.addWidget(self.power_button)
+        self.power_button.clicked.connect(lambda: self.power_clicked.emit(self._index))
+        self.power_button.setVisible(self._cap.supports_power)
+        actions.addWidget(self.power_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        header.addLayout(actions)
         root.addLayout(header)
 
-        transport_row = QHBoxLayout()
-        transport_row.setSpacing(7)
-        transport_row.addWidget(self.group_badge)
-        self.transport_icon = QLabel()
-        icon_key, transport_name = self._transport_details()
-        self.transport_icon.setPixmap(
-            tinted_pixmap(icon_key, qcolor("text_dim"), 15)
-        )
-        self.transport_icon.setToolTip(transport_name)
-        self.transport_icon.setAccessibleName(transport_name)
-        transport_row.addWidget(self.transport_icon)
+        status_row = QHBoxLayout()
+        status_row.setSpacing(6)
+        status_row.setContentsMargins(0, 0, 0, 0)
+        self.status_dot = StatusDot(qcolor("text_disabled"), self, size=8)
+        status_row.addWidget(self.status_dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.status_label = ElidedLabel("No status yet")
+        self.status_label.setProperty("role", "deviceStatus")
+        status_row.addWidget(self.status_label, 1)
+        root.addLayout(status_row)
 
-        self.device_summary = ElidedLabel(self._format_subline())
-        self.device_summary.setProperty("role", "subtle")
-        self.device_summary.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        transport_row.addWidget(self.device_summary, 1)
-        root.addLayout(transport_row)
-
-        state_row = QHBoxLayout()
-        state_row.setSpacing(8)
-        self.status_dot = StatusDot(qcolor("success"), self, size=8)
-        self.status_dot.set_active(False)
-        state_row.addWidget(self.status_dot)
-        self.primary_label = QLabel("Default")
-        self.primary_label.setProperty("role", "pill")
-        self.primary_label.setVisible(False)
-        transport_row.insertWidget(1, self.primary_label)
-
-        self.power_state_label = QLabel("Power unknown")
-        self.power_state_label.setProperty("role", "subtle")
-        state_row.addWidget(self.power_state_label)
-        state_row.addStretch(1)
-
-        self.state_detail_label = ElidedLabel("Status pending")
-        self.state_detail_label.setMinimumWidth(90)
-        self.state_detail_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
-        self.state_detail_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.state_detail_label.setProperty("role", "status")
-        state_row.addWidget(self.state_detail_label)
-        root.addLayout(state_row)
-
-        self.output_label = ElidedLabel("Output · Not reported")
-        self.output_label.setProperty("role", "subtle")
-        self.output_label.setAccessibleName("Current device output")
-        root.addWidget(self.output_label)
-
-        self.metering_summary = ElidedLabel("Readings · Not reported")
-        self.metering_summary.setProperty("role", "subtle")
-        self.metering_summary.setAccessibleName("Electrical readings")
-        self.metering_summary.setVisible(bool(self._meter_fields))
-        root.addWidget(self.metering_summary)
-
-        self.brightness_controls = QWidget()
+        self.brightness_controls = QWidget(self)
         brightness_row = QHBoxLayout(self.brightness_controls)
         brightness_row.setContentsMargins(0, 0, 0, 0)
         brightness_row.setSpacing(8)
-        brightness_icon = QLabel()
-        brightness_icon.setPixmap(
-            tinted_pixmap(IconKey.SUN, qcolor("text_dim"), 14)
-        )
-        brightness_row.addWidget(brightness_icon)
+        self.brightness_icon = QLabel()
+        self.brightness_icon.setPixmap(tinted_pixmap(IconKey.SUN, qcolor("text_dim"), 14))
+        brightness_row.addWidget(self.brightness_icon)
 
         self.brightness_slider = ProductSlider(Qt.Orientation.Horizontal)
         self.brightness_slider.setRange(0, 100)
@@ -259,79 +389,40 @@ class DeviceCard(QFrame):
         self.brightness_slider.setTracking(True)
         self.brightness_slider.setAccessibleName("Device brightness")
         self.brightness_slider.setToolTip("Change brightness")
-        self.brightness_slider.valueChanged.connect(
-            self._on_brightness_slider_changed
-        )
+        self.brightness_slider.valueChanged.connect(self._on_brightness_slider_changed)
         brightness_row.addWidget(self.brightness_slider, 1)
 
-        self.brightness_summary = QLabel("100%")
+        self.brightness_summary = QLabel(UNKNOWN_VALUE)
         self.brightness_summary.setProperty("role", "subtle")
-        self.brightness_summary.setMinimumWidth(38)
-        self.brightness_summary.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
+        self.brightness_summary.setMinimumWidth(36)
+        self.brightness_summary.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         brightness_row.addWidget(self.brightness_summary)
-        root.addStretch(1)
+        self.brightness_controls.setVisible(self._cap.supports_brightness)
+        self.brightness_slider.setEnabled(self._cap.supports_brightness)
         root.addWidget(self.brightness_controls)
+        # Cards share a row height. Status lines stay aligned across a row;
+        # the little spare height of power-only cards collects at the bottom.
+        root.addStretch(1)
 
         for label in (
             self.name_label,
             self.type_icon,
-            self.type_label,
-            self.group_badge,
             self.device_summary,
-            self.primary_label,
-            self.power_state_label,
-            self.state_detail_label,
-            self.output_label,
+            self.status_dot,
             self.brightness_summary,
-            brightness_icon,
-            self.transport_icon,
+            self.brightness_icon,
         ):
-            label.setAttribute(
-                Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
-            )
-
-    def _format_subline(self) -> str:
-        transport = str(self._device.get("transport", "lan")).lower()
-        kind = self._device.get("device_kind")
-        if kind in ("light_switch", "smart_plug"):
-            return "Local Wi-Fi" if transport == "tuya" else "Account Wi-Fi"
-        if transport == "ble":
-            return f"{self._device.get('matrix_size', '32x32')} matrix"
-        if transport == "tuya":
-            version = self._device.get("protocol_version", "3.3")
-            return f"Smart light · protocol {version}"
-        if is_cloud(self._device):
-            return "Wi-Fi account · manual controls"
-        zones = connection.get_segment_count(self._device)
-        source = (
-            "custom" if self._device.get("segment_count_override") else "default"
-        )
-        return f"{zones} zones · {source} layout"
-
-    def _transport_details(self) -> tuple[IconKey, str]:
-        transport = str(self._device.get("transport", "lan")).lower()
-        if transport == "ble":
-            return IconKey.BLUETOOTH, "Bluetooth connection"
-        if transport == "tuya":
-            return IconKey.NETWORK, "Local Tuya connection"
-        if is_cloud(self._device):
-            return IconKey.NETWORK, "Wi-Fi account connection"
-        return IconKey.NETWORK, "Local network connection"
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        # The status phrase keeps mouse hover so its explanation shows as a
+        # tooltip; QLabel ignores presses, so a click still opens the card.
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            if self._group_selection_mode:
-                self.set_checked(not self._is_selected)
-                self.selection_changed.emit(self._index, self._is_selected)
-                event.accept()
-                return
             child = self.childAt(event.position().toPoint())
             slider_hit = child is self.brightness_slider or (
                 child is not None and self.brightness_slider.isAncestorOf(child)
             )
-            if child is self.power_button or slider_hit:
+            if child is self.power_button or child is self.color_swatch or slider_hit:
                 super().mousePressEvent(event)
                 return
             self.details_requested.emit(self._index)
@@ -341,12 +432,7 @@ class DeviceCard(QFrame):
 
     def keyPressEvent(self, event) -> None:
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
-            if self._group_selection_mode:
-                if self._cap.supports_streaming:
-                    self.set_checked(not self._is_selected)
-                    self.selection_changed.emit(self._index, self._is_selected)
-            else:
-                self.details_requested.emit(self._index)
+            self.details_requested.emit(self._index)
             event.accept()
             return
         super().keyPressEvent(event)
@@ -364,54 +450,10 @@ class DeviceCard(QFrame):
     def set_index(self, index: int) -> None:
         self._index = index
 
-    def set_primary(self, primary: bool) -> None:
-        self._is_primary = bool(primary)
-        self.setProperty("primary", self._is_primary)
-        self.primary_label.setVisible(self._is_primary and self._cap.supports_streaming)
-        self._repolish()
-
     def set_inspected(self, inspected: bool) -> None:
+        if bool(self.property("inspected")) == bool(inspected):
+            return
         self.setProperty("inspected", bool(inspected))
-        self._repolish()
-
-    def set_checked(self, checked: bool) -> None:
-        self._is_selected = bool(checked)
-        self.setProperty("selected", self._is_selected)
-        self.group_badge.setVisible(
-            self._group_selection_mode and self._is_selected
-        )
-        self._repolish()
-
-    def set_group_selection_mode(self, enabled: bool) -> None:
-        self._group_selection_mode = bool(enabled)
-        self.setProperty("groupSelection", self._group_selection_mode)
-        cap = self._cap
-        self.setEnabled(not self._group_selection_mode or cap.supports_streaming)
-        self.power_button.setVisible(cap.supports_power)
-        self.power_state_label.setVisible(cap.supports_power)
-        self.brightness_controls.setVisible(cap.supports_brightness)
-        self.output_label.setVisible(cap.supports_brightness or cap.supports_color or cap.supports_white or cap.is_matrix)
-        self.power_button.setEnabled(not self._group_selection_mode and cap.supports_power)
-        self.brightness_slider.setEnabled(not self._group_selection_mode and cap.supports_brightness)
-        if not cap.supports_brightness:
-            self.brightness_summary.setText("Unknown")
-        self.group_badge.setVisible(
-            self._group_selection_mode and self._is_selected
-        )
-        self.setAccessibleDescription(
-            "Click to add or remove this device from the new group."
-            if self._group_selection_mode
-            else "Open complete device controls."
-            + (" The circular button toggles power." if cap.supports_power else "")
-            + (" The bottom slider changes brightness." if cap.supports_brightness else "")
-        )
-        self.setToolTip(
-            "Sync groups use lights with a local sync connection."
-            if self._group_selection_mode and not cap.supports_streaming
-            else "Add or remove this device from the new group"
-            if self._group_selection_mode
-            else f"Open controls for {self._device.get('model', 'this device')}"
-        )
         self._repolish()
 
     def device(self) -> Dict[str, Any]:
@@ -422,146 +464,99 @@ class DeviceCard(QFrame):
         if not state:
             return
 
-        online = bool(state.get("online"))
-        stale = bool(state.get("stale"))
-        error = state.get("last_error")
-        source = str(state.get("status_source") or "unknown")
-        active_output = state.get("active_output")
-        self.status_dot.set_active(
-            source != "error" and (bool(active_output) or (online and source != "offline"))
-        )
+        self._set_power_visual(power_visual_state(state), state.get("power_on"))
 
-        power = state.get("power_on")
-        if power is True:
-            self._power_on = True
-            self.power_state_label.setText("Power on")
-            self._set_power_visual("on")
-        elif power is False:
-            self._power_on = False
-            self.power_state_label.setText("Power off")
-            self._set_power_visual("off")
-        else:
-            self._power_on = None
-            self.power_state_label.setText("Power unknown")
-            self._set_power_visual("unknown")
-
-        if error and source == "error":
-            status_text, status_state, tooltip = "Command failed", "warning", str(error)
-        elif source == "offline":
-            status_text, status_state, tooltip = "Offline", "warning", str(error or "Device reported unavailable.")
-        elif active_output:
-            status_text, status_state = "Active", "online"
-            tooltip = f"LumiSync is sending {str(active_output).lower()} output."
-        elif source == "confirmed" and online:
-            status_text, status_state = "Online", "online"
-            tooltip = "Status confirmed by the device."
-        elif source == "commanded" and online:
-            status_text, status_state = "Last sent", "online"
-            tooltip = "This is the last command LumiSync sent successfully."
-        elif source == "seen" and online:
-            status_text, status_state = "Nearby", "online"
-            tooltip = "Visible during the latest Bluetooth search."
-        elif source == "not_seen":
-            status_text, status_state = "Not visible", "offline"
-            tooltip = "Not seen in the latest Bluetooth search."
-        elif source == "unknown" and state.get("readback_supported", True):
-            # Never-confirmed LAN device: some models never answer status
-            # queries, so an unanswered poll is not proof of absence.
-            status_text, status_state = "State unknown", "warning"
-            tooltip = "No status reply yet; commands may still work."
-        elif source == "pending" or stale:
-            status_text, status_state = "Refreshing", "warning"
-            tooltip = "Waiting for status confirmation."
-        elif source == "unknown" and not state.get("readback_supported", True):
-            status_text, status_state = "State unknown", "offline"
-            tooltip = "This panel does not provide live state readback."
-        else:
-            status_text, status_state, tooltip = "Offline", "offline", ""
-
-        self.state_detail_label.setText(status_text)
-        self.state_detail_label.setToolTip(tooltip)
-        if self.state_detail_label.property("statusState") != status_state:
-            self.state_detail_label.setProperty("statusState", status_state)
-            style = self.state_detail_label.style()
-            style.unpolish(self.state_detail_label)
-            style.polish(self.state_detail_label)
-
-        self.output_label.setText(format_device_output(state, self._cap))
-        readings = []
-        for field, unit, digits in (("power_w", "W", 1), ("voltage_v", "V", 1), ("current_a", "A", 3), ("energy_kwh", "kWh", 3)):
-            value = state.get(field)
-            if field in self._meter_fields and isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
-                readings.append(f"{value:,.{digits}f} {unit}")
-        summary = " · ".join(readings[:2]) or "Readings · Not reported"
-        self.metering_summary.setText(("Last reported · " if readings and stale else "") + summary)
-        if active_output:
-            self.output_label.setToolTip(
-                f"LumiSync is sending {str(active_output).lower()} output."
-            )
-        elif source == "confirmed":
-            self.output_label.setToolTip("Current output reported by the device.")
-        elif source == "commanded":
-            self.output_label.setToolTip(
-                "Last successful command; Bluetooth output cannot be read live."
-            )
-        else:
-            self.output_label.setToolTip(
-                "The device has not reported its output yet."
-            )
+        self.status = describe_device_status(state, self._cap, self._meter_fields)
+        apply_status(self.status_label, self.status_dot, self.status)
+        if self._cap.supports_color:
+            self._set_swatch(*state_display_color(state, self._cap))
 
         brightness = state.get("brightness")
         editing_brightness = self.brightness_slider.isSliderDown() or self._brightness_timer.isActive()
-        if not editing_brightness and self._cap.supports_brightness and isinstance(brightness, int):
+        if editing_brightness or not self._cap.supports_brightness:
+            return
+        if isinstance(brightness, int) and not isinstance(brightness, bool):
             bounded = max(0, min(100, brightness))
             self.brightness_summary.setText(f"{bounded}%")
             blocked = self.brightness_slider.blockSignals(True)
             self.brightness_slider.setValue(bounded)
             self.brightness_slider.blockSignals(blocked)
-        elif not editing_brightness:
-            self.brightness_summary.setText("Unknown")
-
-        color = state.get("color")
-        if isinstance(color, (tuple, list)) and len(color) >= 3:
-            self._current_color = QColor(
-                int(color[0]), int(color[1]), int(color[2])
-            )
+        else:
+            self.brightness_summary.setText(UNKNOWN_VALUE)
 
     def _on_brightness_slider_changed(self, value: int) -> None:
         self.brightness_summary.setText(f"{value}%")
         self._brightness_timer.start()
 
     def _commit_brightness(self) -> None:
-        if self._index >= 0 and self._cap.supports_brightness and not self._group_selection_mode:
-            self.brightness_changed.emit(
-                self._index, self.brightness_slider.value()
-            )
+        if self._index >= 0 and self._cap.supports_brightness:
+            self.brightness_changed.emit(self._index, self.brightness_slider.value())
 
-    def _set_power_visual(self, state: str) -> None:
-        if getattr(self, "_power_visual_state", None) == state:
+    def _set_power_visual(self, state: str, last_known: Optional[bool] = None) -> None:
+        visual = (state, last_known if state == "offline" else None)
+        if getattr(self, "_power_visual_state", None) == visual:
             return
-        self._power_visual_state = state
-        is_on = state == "on"
-        self.power_button.setProperty("powerState", state)
-        self.power_button.setIcon(
-            tinted_icon(
-                IconKey.POWER,
-                "#FFFFFF" if is_on else qcolor("text_dim"),
-                20,
-            )
-        )
-        self.power_button.setToolTip(
-            "Turn off"
-            if is_on
-            else "Turn on"
-            if state == "off"
-            else "Power state unknown · click to turn on"
-        )
-        self.power_button.setAccessibleDescription(
-            "On" if is_on else "Off" if state == "off" else "Unknown"
-        )
-        style = self.power_button.style()
-        style.unpolish(self.power_button)
-        style.polish(self.power_button)
+        self._power_visual_state = visual
+        set_power_button_state(self.power_button, state, last_known=last_known)
+
+    # ------------------------------------------------------------------ colour
+
+    def _set_swatch(self, color: Optional[QColor], kelvin: Optional[int]) -> None:
+        self.color_swatch.set_color(color, kelvin)
+        tip = swatch_tooltip(color, kelvin)
+        self.color_swatch.setToolTip(tip)
+        self.color_swatch.setAccessibleDescription(tip)
+
+    def current_color(self) -> Optional[QColor]:
+        return self.color_swatch.color()
+
+    def color_flyout(self) -> Optional[ColorFlyout]:
+        return self._flyout
+
+    def _open_color_flyout(self) -> None:
+        if self._index < 0 or not self._cap.supports_color:
+            return
+        if self._flyout is not None:
+            try:
+                self._flyout.close()
+            except RuntimeError:
+                pass
+        flyout = ColorFlyout(self, white=white_range(self._cap), current=self.color_swatch.color())
+        flyout.color_chosen.connect(self._choose_color)
+        flyout.temperature_chosen.connect(self._choose_temperature)
+        # Bound to the card: a card rebuilt before the popup has closed never
+        # receives the request.
+        flyout.more_requested.connect(lambda: QTimer.singleShot(0, self, self._request_custom_color))
+        flyout.destroyed.connect(self._forget_flyout)
+        self._flyout = flyout
+        flyout.popup_below(self.color_swatch)
+
+    def _forget_flyout(self, *_args) -> None:
+        self._flyout = None
+
+    def _alive(self) -> bool:
+        return shiboken6.isValid(self) and shiboken6.isValid(self.color_swatch)
+
+    def preview_color(self, color: QColor) -> None:
+        """Show a colour chosen elsewhere at once (the state confirms it)."""
+        if self._alive() and self._cap.supports_color:
+            self._set_swatch(QColor(color), None)
+
+    def _choose_color(self, color: QColor) -> None:
+        if not self._alive() or self._index < 0 or not self._cap.supports_color:
+            return
+        self._set_swatch(QColor(color), None)
+        self.color_picked.emit(self._index, QColor(color))
+
+    def _choose_temperature(self, kelvin: int) -> None:
+        if not self._alive() or self._index < 0:
+            return
+        self._set_swatch(QColor(*kelvin_to_rgb(int(kelvin))), int(kelvin))
+        self.color_temp_changed.emit(self._index, int(kelvin))
+
+    def _request_custom_color(self) -> None:
+        if self._alive() and self._index >= 0 and self._cap.supports_color:
+            self.custom_color_requested.emit(self._index)
 
     def _repolish(self) -> None:
         self.style().unpolish(self)
@@ -569,10 +564,47 @@ class DeviceCard(QFrame):
         self.update()
 
 
+def set_power_button_state(button: QToolButton, state: str, *, last_known: Optional[bool] = None) -> None:
+    """Shared look for the round power button on cards and the inspector.
+
+    ``offline`` keeps the button neutral (never the accent "on" fill) and
+    names the last known power in the tooltip.
+    """
+    is_on = state == "on"
+    button.setProperty("powerState", state)
+    icon_color = {
+        "on": qcolor("fl_accent_on"),
+        "off": qcolor("fl_text"),
+        "offline": qcolor("fl_text_disabled"),
+    }.get(state, qcolor("fl_text_secondary"))
+    button.setIcon(tinted_icon(IconKey.POWER, icon_color, 20))
+    if state == "offline":
+        known = "On" if last_known is True else "Off" if last_known is False else None
+        button.setToolTip(
+            f"Offline · last known: {known}. Click to try turning it {'off' if last_known else 'on'}." if known
+            else "Offline · power state unknown. Click to try turning it on."
+        )
+        button.setAccessibleDescription(f"Offline, last known {known.lower()}" if known else "Offline")
+    else:
+        button.setToolTip(
+            "Turn off" if is_on else "Turn on" if state == "off" else "Power state unknown · click to turn on"
+        )
+        button.setAccessibleDescription("On" if is_on else "Off" if state == "off" else "Unknown")
+    style = button.style()
+    style.unpolish(button)
+    style.polish(button)
+
+
 __all__ = [
     "DeviceCard",
+    "DeviceStatus",
     "CARD_WIDTH",
     "CARD_MIN_WIDTH",
-    "CARD_MIN_HEIGHT",
-    "format_device_output",
+    "UNKNOWN_VALUE",
+    "apply_status",
+    "connection_name",
+    "describe_device_status",
+    "device_subline",
+    "power_visual_state",
+    "set_power_button_state",
 ]

@@ -17,7 +17,7 @@ from lumisync.accounts.tuya_energy import (
 from lumisync.drivers.cloud import CloudLightAdapter
 from lumisync.drivers.tuya_lan import TuyaLightAdapter
 from lumisync.gui.controllers.device_controller import DeviceController
-from lumisync.gui.widgets.device_card import DeviceCard, format_device_output
+from lumisync.gui.widgets.device_card import DeviceCard, describe_device_status
 from lumisync.gui.widgets.device_energy import DeviceEnergy
 from lumisync.gui.widgets.device_inspector import DeviceInspector
 
@@ -130,7 +130,8 @@ class DeviceCapabilityUiTests(unittest.TestCase):
         self.assertTrue(inspector.controls_panel.isHidden())
         self.assertTrue(inspector.default_button.isHidden())
         self.assertTrue(inspector.zones_button.isHidden())
-        self.assertEqual(format_device_output(state, CloudLightAdapter(device).capabilities), "Showing · On")
+        cap = CloudLightAdapter(device).capabilities
+        self.assertEqual(describe_device_status(dict(state, online=True), cap).text, "On")
         with patch("lumisync.gui.widgets.device_inspector.QColorDialog.getColor") as picker:
             inspector._pick_color()
         picker.assert_not_called()
@@ -167,12 +168,8 @@ class DeviceCapabilityUiTests(unittest.TestCase):
         card = DeviceCard(0, device)
         card.set_state(state)
         self.assertEqual(card.name_label.text(), "Desk plug")
-        self.assertEqual(card.metering_summary.text(), "12.3 W · 230.1 V")
+        self.assertEqual(card.status_label.text(), "On · 12.3 W")
         self.assertTrue(card.brightness_controls.isHidden())
-        card.set_group_selection_mode(True)
-        self.assertFalse(card.isEnabled())
-        card.set_group_selection_mode(False)
-        self.assertTrue(card.isEnabled())
         panel = DeviceEnergy()
         panel.set_device(device, state)
         panel.show()

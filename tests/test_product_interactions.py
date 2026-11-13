@@ -31,6 +31,14 @@ class PixelStrokeTests(unittest.TestCase):
 
 
 class PackagedSettingsPathTests(unittest.TestCase):
+    def setUp(self):
+        # These tests cover the real path logic, not the suite's isolated
+        # settings file (tests/__init__.py sets LUMISYNC_SETTINGS_FILE).
+        environment = patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop(devices.SETTINGS_FILE_ENV, None)
+
     def test_source_checkout_keeps_relative_settings_path(self):
         with patch.object(sys, "frozen", False, create=True):
             self.assertEqual(devices.settings_path(), Path("settings.json"))
