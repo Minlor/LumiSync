@@ -26,20 +26,48 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
       - name: Build Windows artifacts
         shell: pwsh
         run: .\tools\build_windows.ps1 -Clean -RunTests -PythonVersion "3.13"
+
+      - name: Smoke-test the Windows installer
+        shell: pwsh
+        run: |
+          $testDir = Join-Path $env:RUNNER_TEMP "LumiSync-install-test"
+          $install = Start-Process -FilePath "dist\LumiSync-Setup.exe" `
+            -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=$testDir") `
+            -PassThru -Wait
+          if ($install.ExitCode -ne 0) {
+            throw "Installer failed with exit code $($install.ExitCode)"
+          }
+          $check = Start-Process -FilePath (Join-Path $testDir "LumiSync.exe") `
+            -ArgumentList "--check-gui" -PassThru -Wait
+          if ($check.ExitCode -ne 0) {
+            throw "Installed app failed its GUI check with exit code $($check.ExitCode)"
+          }
+          $uninstall = Start-Process -FilePath (Join-Path $testDir "unins000.exe") `
+            -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART") `
+            -PassThru -Wait
+          if ($uninstall.ExitCode -ne 0) {
+            throw "Uninstaller failed with exit code $($uninstall.ExitCode)"
+          }
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v7
         with:
           name: LumiSync-Windows-x64
           path: |
-            dist/LumiSync.exe
+            dist/LumiSync-Setup.exe
+            dist/LumiSync-Windows-SHA256SUMS.txt
 
       - name: Attach artifacts to GitHub Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            dist/LumiSync.exe
+            dist/LumiSync-Setup.exe
+            dist/LumiSync-Windows-SHA256SUMS.txt

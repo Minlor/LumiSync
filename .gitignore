@@ -177,6 +177,11 @@ cython_debug/
 # Project specific ignores
 .idea/
 *.json
+# Backups and atomic-write temp files beside settings.json (may hold keys).
+*.json.bak
+*.json.*.tmp
+# Git Bash (msys) crash dumps.
+*.stackdump
 # Local agent notes; product setup belongs in README.md.
 docs/
 

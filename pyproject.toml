@@ -11,7 +11,7 @@ description = "A desktop app for syncing smart lights and pixel displays with sc
 readme = "README.md"
 requires-python = ">=3.11"
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Natural Language :: English",
   "Operating System :: Microsoft :: Windows",
   "Operating System :: POSIX :: Linux",
@@ -24,7 +24,7 @@ dependencies = [
   "dxcam>=0.3.0; sys_platform == 'win32'",
   "numpy>=2.2.4",
   "packaging>=24.0",
-  "pillow>=11.1.0",
+  "pillow>=13.0.0",
   "soundcard>=0.4.5",
   "webcolors>=24.11.1",
   # The app only imports QtCore/QtGui/QtWidgets/QtNetwork/QtSvg, all of which
@@ -35,12 +35,14 @@ dependencies = [
   # device family out of the box (no optional extras to remember).
   "bleak>=0.22.0",       # iDotMatrix pixel panels (Bluetooth LE)
   "tinytuya>=1.13.0",    # LSC / Tuya WiFi lights (local protocol)
-  "requests>=2.32.0",   # authenticated vendor APIs (TLS verified)
+  "requests>=2.34.2",   # authenticated vendor APIs (TLS verified)
+  "certifi>=2026.10.18", # TLS certificate bundle (audited floor)
+  "urllib3>=2.8.0",     # requests transport (audited floor)
   "keyring>=25.0",      # OS credential store; secrets never go in settings
   "qrcode>=8.0",        # Tuya account authorization QR codes
   "tuya-device-sharing-sdk>=0.2.15,<0.3",
   "paho-mqtt>=2.1,<3",  # Govee account control over TLS
-  "cryptography>=43.0", # Govee account-issued client certificate
+  "cryptography>=50.0.0", # Govee account-issued client certificate
   "pycaw>=20230407; sys_platform == 'win32'",  # read master volume to cancel it in music sync
   "pywin32>=310; sys_platform == 'win32'",
   "winrt-Windows-Media-Control>=3.2.1; sys_platform == 'win32'",
@@ -102,8 +104,10 @@ include = [
   "lumisync/accounts/tuya_mobile.py",
   "lumisync/gui/main_window.py",
   "lumisync/gui/controllers/discovery.py",
+  "lumisync/gui/controllers/firewall_monitor.py",
   "lumisync/gui/controllers/sync_controller.py",
   "lumisync/gui/controllers/update_controller.py",
+  "lumisync/gui/utils/firewall.py",
 ]
 exclude = ["**/__pycache__"]
 

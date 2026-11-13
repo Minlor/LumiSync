@@ -2,6 +2,8 @@
 param(
     [switch]$Clean,
     [switch]$RunTests,
+    # Local development can skip the installer when Inno Setup is unavailable.
+    [switch]$SkipInstaller,
     # Kept for workflow compatibility; the build itself is driven by uv.
     [string]$PythonCommand = "py",
     [string]$PythonVersion = "3.13",
@@ -19,7 +21,43 @@ $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 $DistDir = Join-Path $Root "dist"
 $OnedirPath = Join-Path $DistDir "LumiSync"
 $OnedirExe = Join-Path $OnedirPath "LumiSync.exe"
+# Retained only to clean a stale portable build from an older release.
 $OnefileExe = Join-Path $DistDir "LumiSync.exe"
+$InnoScript = Join-Path $Root "packaging\windows\LumiSync.iss"
+
+function Get-AppVersion {
+    $init = Join-Path $Root "lumisync\__init__.py"
+    $match = Select-String -Path $init -Pattern '__version__\s*=\s*"([^"]+)"'
+    if (-not $match) {
+        throw "Could not read __version__ from $init"
+    }
+    return $match.Matches[0].Groups[1].Value
+}
+
+function Find-Iscc {
+    $command = Get-Command iscc.exe -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+    $bases = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $bases += (Join-Path $env:LOCALAPPDATA "Programs")
+    }
+    foreach ($base in $bases) {
+        if ([string]::IsNullOrWhiteSpace($base)) {
+            continue
+        }
+        $directories = Get-ChildItem -Path $base -Directory -Filter "Inno Setup *" -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending
+        foreach ($directory in $directories) {
+            $candidate = Join-Path $directory.FullName "ISCC.exe"
+            if (Test-Path $candidate) {
+                return $candidate
+            }
+        }
+    }
+    return $null
+}
 
 function Write-Step {
     param([string]$Message)
@@ -99,6 +137,11 @@ if ($Clean) {
     Remove-RepoPath $PyInstallerBuildRoot
     Remove-RepoPath $OnedirPath
     Remove-RepoPath $OnefileExe
+    Remove-RepoPath (Join-Path $DistDir "SHA256SUMS.txt")
+    Remove-RepoPath (Join-Path $DistDir "LumiSync-Windows-SHA256SUMS.txt")
+    Remove-RepoPath (Join-Path $DistDir "LumiSync-Setup.exe")
+    Get-ChildItem -Path $DistDir -Filter "LumiSync-*-Setup.exe" -File -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-RepoPath $_.FullName }
 }
 
 if (-not (Get-Command $UvCommand -ErrorAction SilentlyContinue)) {
@@ -131,7 +174,7 @@ if ($RunTests) {
     Invoke-Checked $VenvPython @("-m", "unittest", "discover", "-s", (Join-Path $Root "tests"), "-t", $Root)
 }
 
-Write-Step "Building onedir bundle (packaging smoke check)"
+Write-Step "Building onedir bundle"
 Invoke-Checked $VenvPython @(
     "-m", "PyInstaller",
     "--noconfirm",
@@ -141,22 +184,55 @@ Invoke-Checked $VenvPython @(
     (Join-Path $Root "packaging\pyinstaller\lumisync_onedir.spec")
 )
 
-Write-Step "Building single-file executable"
-Invoke-Checked $VenvPython @(
-    "-m", "PyInstaller",
-    "--noconfirm",
-    "--clean",
-    "--distpath", $DistDir,
-    "--workpath", (Join-Path $PyInstallerBuildRoot "onefile"),
-    (Join-Path $Root "packaging\pyinstaller\lumisync_onefile.spec")
-)
-
 Write-Step "Running executable smoke checks"
 Invoke-SmokeCheck $OnedirExe
-Invoke-SmokeCheck $OnefileExe
+
+if (-not $SkipInstaller) {
+    Write-Step "Building Inno Setup installer"
+    $Iscc = Find-Iscc
+    if (-not $Iscc) {
+        throw "Inno Setup 6 (ISCC.exe) is required for the installer. Install it from https://jrsoftware.org/isinfo.php or pass -SkipInstaller."
+    }
+    $Version = Get-AppVersion
+    # Inno's VersionInfoVersion must be numeric; a pre-release suffix stays in
+    # the display name but is stripped here.
+    $NumericVersion = ($Version -replace '[^0-9.].*$', '')
+    Invoke-Checked $Iscc @(
+        "/Qp",
+        "/DMyAppVersion=$Version",
+        "/DMyAppVersionNumeric=$NumericVersion",
+        $InnoScript
+    )
+    $Installer = Join-Path $DistDir "LumiSync-Setup.exe"
+    if (-not (Test-Path $Installer)) {
+        throw "Expected installer was not created: $Installer"
+    }
+    $installerSize = (Get-Item $Installer).Length
+    if ($installerSize -lt 5MB) {
+        throw "Installer looks incomplete (${installerSize} bytes): $Installer"
+    }
+}
+
+if (-not $SkipInstaller) {
+    Write-Step "Generating SHA-256 checksums"
+    # Only the installer is published. The manifest has a per-platform name
+    # because the Linux release attaches its own to the same GitHub release.
+    $artifacts = Get-ChildItem -Path $DistDir -File -Filter "LumiSync-Setup.exe"
+    $checksumLines = foreach ($artifact in $artifacts) {
+        $hash = (Get-FileHash $artifact.FullName -Algorithm SHA256).Hash.ToLower()
+        "$hash  $($artifact.Name)"
+    }
+    $checksumLines | Set-Content (Join-Path $DistDir "LumiSync-Windows-SHA256SUMS.txt") -Encoding ascii
+}
 
 Write-Step "Build complete"
-Write-Host "Single-file exe: $OnefileExe"
+Write-Host "Onedir bundle: $OnedirPath"
+if (-not $SkipInstaller) {
+    Write-Host "Installer: $Installer"
+    Write-Host "Checksums: $(Join-Path $DistDir 'LumiSync-Windows-SHA256SUMS.txt')"
+} else {
+    Write-Host "Installer and checksums skipped (-SkipInstaller)"
+}
 }
 finally {
     Set-Location $OriginalLocation

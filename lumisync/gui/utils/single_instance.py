@@ -12,9 +12,10 @@ import hashlib
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QLockFile, QObject, Signal
+from PySide6.QtCore import QCoreApplication, QLockFile, QObject, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,71 @@ def _user_scope() -> str:
 
 _SCOPE = _user_scope()
 _SERVER_NAME = f"LumiSync-single-instance-{_SCOPE}"
+# LumiSync 0.8.x listened on an unscoped name and treats any message as
+# "show yourself". A 1.0 install must not run beside it: both would bind the
+# same LAN ports and drive the same lights.
+_LEGACY_SERVER_NAME = "LumiSync-single-instance"
 _LOCK_PATH = Path(tempfile.gettempdir()) / f"LumiSync-single-instance-{_SCOPE}.lock"
+
+# Kept alive while a helper process asks the GUI to quit.
+_QUIT_APP: QCoreApplication | None = None
+
+
+def _connect_to_existing(timeout: int = 750) -> QLocalSocket | None:
+    socket = QLocalSocket()
+    socket.connectToServer(_SERVER_NAME)
+    if not socket.waitForConnected(timeout):
+        return None
+    return socket
+
+
+def request_existing_quit(timeout: int = 12000) -> bool:
+    """Ask a running LumiSync instance to quit, then wait for it to disappear.
+
+    The installer calls ``LumiSync.exe --quit`` before replacing files. Waiting
+    for the single-instance socket to close avoids racing the file swap.
+    """
+    global _QUIT_APP
+    _QUIT_APP = QCoreApplication.instance() or QCoreApplication([])
+
+    socket = _connect_to_existing()
+    if socket is None:
+        return False
+    socket.write(b"quit")
+    socket.flush()
+    socket.waitForBytesWritten(500)
+    socket.disconnectFromServer()
+
+    deadline = time.monotonic() + max(0.0, timeout / 1000.0)
+    while time.monotonic() < deadline:
+        probe = _connect_to_existing(150)
+        if probe is None:
+            return True
+        # Say why we connected: a silent connection reads as "show the
+        # window", which used to pop the closing app back up every poll.
+        probe.write(b"probe")
+        probe.flush()
+        probe.waitForBytesWritten(100)
+        probe.disconnectFromServer()
+        time.sleep(0.15)
+    return False
+
+
+def legacy_instance_running(timeout: int = 300) -> bool:
+    """Return whether a LumiSync 0.8.x instance is running for this session.
+
+    Connecting brings that old window forward, which is what we want: the
+    user is about to be asked to quit it.
+    """
+    socket = QLocalSocket()
+    socket.connectToServer(_LEGACY_SERVER_NAME)
+    if not socket.waitForConnected(timeout):
+        return False
+    socket.write(b"activate")
+    socket.flush()
+    socket.waitForBytesWritten(200)
+    socket.disconnectFromServer()
+    return True
 
 
 class SingleInstance(QObject):
@@ -47,11 +112,14 @@ class SingleInstance(QObject):
 
     # Emitted when another launch attempt pinged us — bring the UI forward.
     activate_requested = Signal()
+    # Emitted when an installer (or `LumiSync --quit`) asks this instance to exit.
+    quit_requested = Signal()
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self._server: QLocalServer | None = None
         self._lock: QLockFile | None = None
+        self._quit_requested = False
 
     def _activate_existing(self) -> bool:
         probe = QLocalSocket()
@@ -104,22 +172,38 @@ class SingleInstance(QObject):
                 self._server.errorString(),
             )
             self._server = None
-            lock.unlock()
-            self._lock = None
             # If the listen failed because another process won the race, let
             # that instance come forward instead of starting a duplicate.
-            self._activate_existing()
-            return False
+            if self._activate_existing():
+                lock.unlock()
+                self._lock = None
+                return False
+            # Nobody else is running. Start anyway: the lock we hold still
+            # stops a duplicate, and a launch that silently does nothing is
+            # worse than a second launch that cannot bring us forward.
+            logger.warning("Continuing without the single-instance server")
         return True
 
     def _on_new_connection(self) -> None:
         if self._server is None:
             return
+        message = b""
         socket = self._server.nextPendingConnection()
         if socket is not None:
-            socket.readAll()
-            socket.disconnectFromServer()
-        self.activate_requested.emit()
+            try:
+                socket.waitForReadyRead(100)
+                message = socket.readAll().data()
+            finally:
+                socket.disconnectFromServer()
+                socket.deleteLater()
+        if message.startswith(b"probe"):
+            return  # An installer waiting for us to exit.
+        if b"quit" in message:
+            self._quit_requested = True
+            self.quit_requested.emit()
+        elif not self._quit_requested:
+            # Re-showing the window while it shuts down would only confuse.
+            self.activate_requested.emit()
 
 
-__all__ = ["SingleInstance"]
+__all__ = ["SingleInstance", "legacy_instance_running", "request_existing_quit"]

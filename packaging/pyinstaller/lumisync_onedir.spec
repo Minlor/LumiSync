@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import re
 import sys
 from pathlib import Path
 
@@ -11,6 +12,49 @@ from PyInstaller.utils.hooks import (
 
 
 ROOT = Path(SPECPATH).resolve().parents[1]
+
+
+def _version_file():
+    """Generate Windows file-version metadata from the package version."""
+    text = (ROOT / "lumisync" / "__init__.py").read_text(encoding="utf-8")
+    match = re.search(r'__version__\s*=\s*"([^"]+)"', text)
+    version = match.group(1) if match else "1.0.0"
+    parts = [int(part) for part in re.findall(r"\d+", version)[:4]]
+    while len(parts) < 4:
+        parts.append(0)
+    numeric = tuple(parts[:4])
+    content = f"""VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers={numeric},
+    prodvers={numeric},
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable('040904B0', [
+        StringStruct('CompanyName', 'Minlor'),
+        StringStruct('FileDescription', 'LumiSync'),
+        StringStruct('FileVersion', '{version}'),
+        StringStruct('InternalName', 'LumiSync'),
+        StringStruct('LegalCopyright', 'Copyright (C) 2026 Minlor'),
+        StringStruct('OriginalFilename', 'LumiSync.exe'),
+        StringStruct('ProductName', 'LumiSync'),
+        StringStruct('ProductVersion', '{version}')
+      ])
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"""
+    path = ROOT / "build" / "pyinstaller" / "version_info.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return str(path)
 
 
 def safe_collect_submodules(package_name):
@@ -70,6 +114,11 @@ hiddenimports += [
     "pythoncom",
     "pywintypes",
     "soundcard",
+    # Windows Firewall check (lumisync/gui/utils/firewall.py) imports these
+    # inside a function; listing them keeps the COM client in the bundle.
+    "win32com",
+    "win32com.client",
+    "win32com.client.dynamic",
     "win32timezone",
 ]
 
@@ -176,6 +225,7 @@ exe = EXE(
     disable_windowed_traceback=False,
     argv_emulation=False,
     icon=str(ROOT / "lumisync" / "gui" / "resources" / "icons" / "app.ico"),
+    version=_version_file(),
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,

@@ -28,6 +28,27 @@ class ReleasePackagingTests(unittest.TestCase):
 
         self.assertRegex(workflow, re.compile(r"skip-existing:\s*true"))
 
+    def test_dependency_audit_and_dependabot_are_configured(self):
+        dependabot = (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+        ci = (ROOT / ".github" / "workflows" / "ci.yaml").read_text(encoding="utf-8")
+
+        self.assertIn('package-ecosystem: "pip"', dependabot)
+        self.assertIn('package-ecosystem: "github-actions"', dependabot)
+        self.assertIn('package-ecosystem: "npm"', dependabot)
+        self.assertIn("pip-audit", ci)
+
+    def test_release_docs_and_metadata_match_the_installer_distribution(self):
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        releasing = (ROOT / "docs" / "releasing.md").read_text(encoding="utf-8")
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+        self.assertIn("## 1.0.0", changelog)
+        self.assertIn("LumiSync-Setup.exe", releasing)
+        self.assertIn("SHA256SUMS.txt", releasing)
+        self.assertNotIn("portable ZIP", releasing)
+        self.assertNotIn("single-file app", releasing)
+        self.assertNotIn("Development Status :: 3 - Alpha", pyproject)
+
 
 if __name__ == "__main__":
     unittest.main()

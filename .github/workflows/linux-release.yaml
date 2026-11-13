@@ -69,14 +69,23 @@ jobs:
               /workspace/dist/LumiSync-x86_64.AppImage
           '
 
+      - name: Generate checksums
+        # Per-platform name: the Windows workflow attaches its own manifest
+        # to the same release, and one shared name would overwrite the other.
+        run: (cd dist && sha256sum LumiSync-x86_64.AppImage > LumiSync-Linux-SHA256SUMS.txt)
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
           name: LumiSync-Linux-x86_64-AppImage
-          path: dist/LumiSync-x86_64.AppImage
+          path: |
+            dist/LumiSync-x86_64.AppImage
+            dist/LumiSync-Linux-SHA256SUMS.txt
 
       - name: Attach artifact to GitHub Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v3
         with:
-          files: dist/LumiSync-x86_64.AppImage
+          files: |
+            dist/LumiSync-x86_64.AppImage
+            dist/LumiSync-Linux-SHA256SUMS.txt

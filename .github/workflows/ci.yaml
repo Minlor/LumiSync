@@ -83,3 +83,23 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: uv run --frozen --no-dev python -m unittest discover -s tests -t . -v
+
+  audit:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Export locked runtime requirements
+        run: |
+          uv export --frozen --no-dev --no-emit-project \
+            --format requirements-txt -o requirements-audit.txt
+
+      - name: Audit runtime dependencies
+        run: uvx pip-audit -r requirements-audit.txt

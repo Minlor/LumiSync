@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
+from .app_settings import OVERRIDE_ENV
 from .main_window import LumiSyncMainWindow
 from .dialogs.accounts_dialog import AccountsDialog
 from .theme import apply_theme
@@ -23,12 +24,16 @@ def check_gui_startup() -> None:
     """
     previous_directory = Path.cwd()
     previous_appdata = os.environ.get("LOCALAPPDATA")
+    previous_ini = os.environ.get(OVERRIDE_ENV)
     with TemporaryDirectory(prefix="lumisync-gui-check-") as temporary:
         folder = Path(temporary)
         (folder / "LumiSync").mkdir()
         for file in (folder / "settings.json", folder / "LumiSync" / "settings.json"):
             file.write_text('{"devices":[],"selectedDevice":0}', encoding="utf-8")
         os.environ["LOCALAPPDATA"] = temporary
+        # On Windows QSettings("Minlor", "LumiSync") is the registry whatever
+        # the default format; without this the check rewrote real preferences.
+        os.environ[OVERRIDE_ENV] = str(folder / "LumiSync.ini")
         os.chdir(folder)
         try:
             QSettings.setDefaultFormat(QSettings.Format.IniFormat)
@@ -68,3 +73,7 @@ def check_gui_startup() -> None:
                 os.environ.pop("LOCALAPPDATA", None)
             else:
                 os.environ["LOCALAPPDATA"] = previous_appdata
+            if previous_ini is None:
+                os.environ.pop(OVERRIDE_ENV, None)
+            else:
+                os.environ[OVERRIDE_ENV] = previous_ini
