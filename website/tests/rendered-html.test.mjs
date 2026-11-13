@@ -8,7 +8,7 @@ test("builds the LumiSync product page as static HTML", async () => {
   assert.match(html, /<title>LumiSync — Screen\. Sound\. Light\. In sync\.<\/title>/i);
   assert.match(html, /Lights and plugs\./);
   assert.match(html, /optional vendor accounts for cloud control/);
-  assert.match(html, /Download LumiSync 0\.8\.2/);
+  assert.match(html, /Download LumiSync 1\.0\.0/);
   assert.match(html, /without an Android app package or developer account/);
   assert.match(html, /https:\/\/github\.com\/Minlor\/LumiSync#account-setup/);
   assert.doesNotMatch(html, /docs\/vendor-accounts\.md/);
@@ -17,8 +17,10 @@ test("builds the LumiSync product page as static HTML", async () => {
   assert.match(html, /<table class="deviceTable">/);
   assert.doesNotMatch(html, /No account · No cloud required|Single-file installer/);
   assert.match(html, /Different brands\./);
-  assert.match(html, /LumiSync\.exe/);
+  assert.match(html, /LumiSync-Setup\.exe/);
+  assert.doesNotMatch(html, /LumiSync\.exe/);
   assert.match(html, /LumiSync-x86_64\.AppImage/);
+  assert.match(html, /New in 1\.0\.0/);
   assert.match(html, /https:\/\/lumisync\.minlor\.net\/og\.png/);
   assert.doesNotMatch(html, /codex-preview|chatgpt\.site|react-loading-skeleton/i);
 });

@@ -14,14 +14,14 @@ Visit the website: [lumisync.minlor.net](https://lumisync.minlor.net)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![GitHub stars](https://img.shields.io/github/stars/Minlor/LumiSync.svg?style=social)](https://github.com/Minlor/LumiSync/stargazers)
 
-[Features](#features) • [Installation](#installation) • [Usage](#usage) • [Development](#development) • [Roadmap](#roadmap)
+[Features](#features) • [Installation](#installation) • [Usage](#usage) • [Development](#development) • [Roadmap](#roadmap) • [Changelog](CHANGELOG.md)
 
 </div>
 
 ---
 
 > [!NOTE]
-> This project is in active development. Windows is fully supported; Linux X11 is partial, macOS/Wayland are WIP.
+> LumiSync 1.0 supports Windows and Linux X11. Wayland and macOS screen capture remain in progress.
 
 ## Features
 
@@ -143,10 +143,24 @@ uv run lumisync
 `uv.lock` is committed so every checkout and release build resolves the same
 dependency versions.
 
+### Building the Windows installer
+
+`tools/build_windows.ps1` builds the onedir bundle and — when
+[Inno Setup 6](https://jrsoftware.org/isinfo.php) is installed —
+`dist/LumiSync-Setup.exe`. Pass `-SkipInstaller` for a local onedir-only build
+without Inno Setup. The release workflow installs Inno Setup and publishes the
+installer and `LumiSync-Windows-SHA256SUMS.txt`.
+
 ### Prebuilt downloads
 
-- **Windows** — a single-file **`LumiSync.exe`** is attached to each
-  [GitHub release](https://github.com/Minlor/LumiSync/releases).
+- **Windows** — **`LumiSync-Setup.exe`** is attached to each
+  [GitHub release](https://github.com/Minlor/LumiSync/releases). It installs
+  per-user under `%LOCALAPPDATA%\Programs\LumiSync`, so it does not need an
+  administrator prompt, and it adds Start Menu/uninstall entries. Its optional
+  **Allow LumiSync through Windows Firewall** task asks for administrator
+  approval once to add an inbound rule for private networks, so LumiSync can
+  hear Govee and LSC/Tuya lights; if you skip it, the Devices page offers
+  **Allow** later.
 - **Linux** — an `x86_64` **AppImage** is attached to each release; `chmod +x`
   it and run. Build it yourself with `tools/build_linux.sh` (needs Python 3.12+,
   `uv`, and the Qt X11 runtime libraries listed in
@@ -155,6 +169,10 @@ dependency versions.
   checked by opening the packaged GUI on X11 in a clean Ubuntu 22.04 runtime.
   A Flatpak is scaffolded in `packaging/flatpak/` but
   not yet finished.
+
+> **Windows SmartScreen:** release builds are not code-signed yet. If Windows
+> shows "unknown publisher", choose **More info → Run anyway**. Code signing is
+> planned for a future release.
 
 > **Platform notes:** Windows is fully supported. On Linux, device control,
 > music sync, and manual control work on X11 and Wayland; **screen (monitor)
@@ -202,10 +220,10 @@ Android installation or developer account is needed.
 ### Interface
 
 - **Devices** — Discover lights, switches and plugs; connect vendor accounts, choose local/cloud connections, create groups, and view supported electrical readings and energy history.
-- **Monitor Sync** — Map display colors to selected devices, groups, zones, and custom LED regions.
+- **Monitor Sync** — Map display colors to selected devices, groups, zones, and custom LED regions. A brightness boost lifts dim and midtone content without changing hue.
 - **Music Sync** — Choose reactions, palettes, targets and brightness, or use Auto Director.
 - **Draw** — Paint still images or frame-by-frame animations for compatible iDotMatrix panels. The device inspector's Panel Tools opens clock, countdown, scoreboard, and rotation controls.
-- **Settings** — Choose Acrylic, Mica or Solid Dark; tune sync, startup and system-tray behavior. About shows your version, account setup, update checks and the logs folder.
+- **Settings** — Choose Acrylic, Mica or Solid Dark; tune sync, startup and system-tray behavior. About shows your version, account setup, update checks (including one-click download/install on Windows) and the logs folder.
 
 The UI adapts to short/narrow windows: account actions and sync Start/Stop stay
 visible, Draw tools reflow above the canvas, and Settings uses a section dropdown
@@ -214,7 +232,7 @@ when space is tight. Daily readings and technical details expand on demand.
 ### Configuration
 
 - **LED Mapping** - Customize which screen regions map to which LEDs
-- **Brightness** - Adjust per-mode brightness (10-100%)
+- **Brightness** - Adjust per-mode brightness (10-100%), plus a 100-150% tone-map boost for Monitor Sync
 - **Display Selection** - Choose which monitor to capture (multi-monitor support)
 - **Sync Tuning** - Tune smoothing, saturation, frame rate, gamma and music response
 

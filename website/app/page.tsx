@@ -5,13 +5,13 @@ const lucideSource = (lucideIcons as typeof lucideIcons & { default?: typeof luc
 const { ArrowDownToLine, ArrowRight, Monitor, Music2, SlidersHorizontal } = lucideSource;
 
 const downloads = {
-  windows: "https://github.com/Minlor/LumiSync/releases/latest/download/LumiSync.exe",
+  windows: "https://github.com/Minlor/LumiSync/releases/latest/download/LumiSync-Setup.exe",
   linux: "https://github.com/Minlor/LumiSync/releases/latest/download/LumiSync-x86_64.AppImage",
   pypi: "https://pypi.org/project/lumisync/",
 };
 
 const accountGuide = "https://github.com/Minlor/LumiSync#account-setup";
-const releaseNotes = "https://github.com/Minlor/LumiSync/releases/tag/0.8.2";
+const releaseNotes = "https://github.com/Minlor/LumiSync/releases/latest";
 
 function Screenshot({ name, alt, caption }: { name: string; alt: string; caption: string }) {
   return <figure className="screenshot">
@@ -59,7 +59,7 @@ export default function Home() {
             <a className="button secondary" href={downloads.linux}><FaLinux aria-hidden="true" /> Download for Linux</a>
           </div>
           <p className="heroNote">Free &amp; open source · Windows &amp; Linux. Local sync, with optional vendor accounts for cloud control.</p>
-          <p className="releaseNote"><a href={releaseNotes}>New in 0.8.2: Tuya and LSC password sign-in without an Android package.</a></p>
+          <p className="releaseNote"><a href={releaseNotes}>New in 1.0.0: Windows installer, brighter monitor sync, and in-app updates.</a></p>
         </div>
         <div className="heroPreview">
           <Screenshot name="plug-energy" alt="LumiSync device inventory and smart plug readings" caption="Device controls and supported plug readings." />
@@ -151,7 +151,7 @@ export default function Home() {
         <h2>Download LumiSync 1.0.0.</h2>
         <p>Discover local devices or connect your vendor account. Prebuilt downloads include the runtime; Python is only needed for pip or source installs.</p>
         <div className="downloadGrid">
-          <a className="downloadOption featured" href={downloads.windows}><FaWindows aria-hidden="true" /><span><strong>Windows</strong><small>Single-file app · x64</small></span><ArrowDownToLine aria-hidden="true" /></a>
+          <a className="downloadOption featured" href={downloads.windows}><FaWindows aria-hidden="true" /><span><strong>Windows</strong><small>Installer · x64</small></span><ArrowDownToLine aria-hidden="true" /></a>
           <a className="downloadOption" href={downloads.linux}><FaLinux aria-hidden="true" /><span><strong>Linux</strong><small>AppImage · x86_64</small></span><ArrowDownToLine aria-hidden="true" /></a>
           <a className="downloadOption" href={downloads.pypi}><FaPython aria-hidden="true" /><span><strong>Install with pip</strong><small>Python 3.11+ · advanced</small></span><ArrowRight aria-hidden="true" /></a>
         </div>
