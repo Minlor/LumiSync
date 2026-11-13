@@ -39,15 +39,20 @@ class ReleasePackagingTests(unittest.TestCase):
 
     def test_release_docs_and_metadata_match_the_installer_distribution(self):
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        releasing = (ROOT / "docs" / "releasing.md").read_text(encoding="utf-8")
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
         self.assertIn("## 1.0.0", changelog)
-        self.assertIn("LumiSync-Setup.exe", releasing)
-        self.assertIn("SHA256SUMS.txt", releasing)
-        self.assertNotIn("portable ZIP", releasing)
-        self.assertNotIn("single-file app", releasing)
         self.assertNotIn("Development Status :: 3 - Alpha", pyproject)
+
+        # docs/ holds the maintainer's local notes and is not in git, so a
+        # fresh checkout (CI) has no releasing guide to check.
+        guide = ROOT / "docs" / "releasing.md"
+        if guide.exists():
+            releasing = guide.read_text(encoding="utf-8")
+            self.assertIn("LumiSync-Setup.exe", releasing)
+            self.assertIn("SHA256SUMS.txt", releasing)
+            self.assertNotIn("portable ZIP", releasing)
+            self.assertNotIn("single-file app", releasing)
 
 
 if __name__ == "__main__":

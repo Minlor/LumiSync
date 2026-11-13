@@ -65,6 +65,9 @@ class SharedLanSocketTests(unittest.TestCase):
     def test_socket_can_be_recreated_after_the_last_consumer_closes(self):
         first = self.facade()
         first.close()
+        # On Linux the port stays bound while the reader is still inside a
+        # receive, so close() must not return before the reader has left.
+        self.assertFalse(first._core._thread.is_alive())
 
         second = self.facade()
         self.send(b"three")

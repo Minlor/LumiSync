@@ -93,6 +93,8 @@ _DEAD_SOCKET_ERRNOS = {
 # a dead socket (~10 s at the retry pace below).
 _MAX_READ_ERRORS = 50
 _READ_ERROR_PAUSE = 0.2
+# The reader wakes within its 0.25 s receive timeout at the latest.
+_READER_JOIN_TIMEOUT = 1.0
 
 
 class _LanSocketCore:
@@ -134,6 +136,7 @@ class _LanSocketCore:
         self._send_lock = threading.Lock()
         self._consumers: List["SharedLanSocket"] = []
         self._closed = False
+        self._released = False
         self._thread = threading.Thread(
             target=self._read_loop, name="lumisync-lan-reader", daemon=True
         )
@@ -162,12 +165,31 @@ class _LanSocketCore:
         Closing under the registry lock means a new consumer can never find
         this core registered while its port is still bound — it either gets
         here first or binds a fresh core on the freed port.
+
+        On Linux a closed socket stays bound while another thread is still
+        inside a receive on it, so a caller that reopened the port at once
+        got "address already in use". The reader is woken (shutdown) and
+        joined before the port counts as free. Runs once: the reader's own
+        ``_die`` and a last ``unregister`` may both get here.
         """
+        with self._lock:
+            if self._released:
+                return
+            self._released = True
         with _lan_cores_lock:
+            try:
+                # Unconnected UDP reports ENOTCONN, but Linux still wakes
+                # every thread waiting on the socket; Windows needs none.
+                self._socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             try:
                 self._socket.close()
             except OSError:
                 pass
+            reader = getattr(self, "_thread", None)
+            if reader is not None and reader is not threading.current_thread():
+                reader.join(_READER_JOIN_TIMEOUT)
             if _lan_cores.get(self.port) is self:
                 _lan_cores.pop(self.port, None)
 
