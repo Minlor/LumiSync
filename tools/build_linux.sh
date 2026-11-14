@@ -3,7 +3,8 @@
 #
 # Steps: create a locked build venv with uv, build the onedir bundle from the
 # shared spec, assemble an AppDir, and pack it with appimagetool into
-# dist/LumiSync-x86_64.AppImage.
+# dist/LumiSync-x86_64.AppImage, plus dist/LumiSync-x86_64.AppImage.tar.gz,
+# which keeps the executable bit through a download.
 #
 # Env vars:
 #   PYTHON=3.12         interpreter or version for uv to build with (default:
@@ -87,6 +88,15 @@ mkdir -p "$DIST"
 # --appimage-extract-and-run avoids needing FUSE on the build host (e.g. CI).
 ARCH=x86_64 "$TOOL" --appimage-extract-and-run \
     "$APPDIR" "$DIST/LumiSync-x86_64.AppImage"
+chmod 0755 "$DIST/LumiSync-x86_64.AppImage"
+
+step "Packing the download archive"
+# A browser download or a GitHub artifact zip never keeps the executable bit,
+# so the raw AppImage always needs chmod +x. A tar archive keeps the mode:
+# extracting it gives a file that runs straight away.
+tar -C "$DIST" --owner=0 --group=0 --numeric-owner \
+    -czf "$DIST/LumiSync-x86_64.AppImage.tar.gz" LumiSync-x86_64.AppImage
 
 step "Done"
 echo "Built: $DIST/LumiSync-x86_64.AppImage"
+echo "       $DIST/LumiSync-x86_64.AppImage.tar.gz (keeps the executable bit)"

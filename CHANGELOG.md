@@ -17,6 +17,8 @@ All notable changes to LumiSync are recorded here.
 - Installers and Linux AppImages now publish SHA-256 checksum files
   (`LumiSync-Windows-SHA256SUMS.txt`, `LumiSync-Linux-SHA256SUMS.txt`) alongside the
   release artifacts.
+- Linux releases also ship `LumiSync-x86_64.AppImage.tar.gz`: extracting it
+  gives an AppImage that is already executable, with no `chmod +x` step.
 - Sign-in launches start quietly in the system tray instead of opening the
   window.
 - Starting 1.0 while LumiSync 0.8 is still running in the tray now asks you

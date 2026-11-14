@@ -161,8 +161,11 @@ installer and `LumiSync-Windows-SHA256SUMS.txt`.
   approval once to add an inbound rule for private networks, so LumiSync can
   hear Govee and LSC/Tuya lights; if you skip it, the Devices page offers
   **Allow** later.
-- **Linux** — an `x86_64` **AppImage** is attached to each release; `chmod +x`
-  it and run. Build it yourself with `tools/build_linux.sh` (needs Python 3.12+,
+- **Linux** — an `x86_64` **AppImage** is attached to each release. Download
+  **`LumiSync-x86_64.AppImage.tar.gz`** and extract it to get an AppImage that
+  runs straight away (`tar -xzf LumiSync-x86_64.AppImage.tar.gz`). The plain
+  `LumiSync-x86_64.AppImage` needs `chmod +x` first, because no browser
+  download keeps the executable bit. Build it yourself with `tools/build_linux.sh` (needs Python 3.12+,
   `uv`, and the Qt X11 runtime libraries listed in
   [the Linux build workflow](.github/workflows/linux-release.yaml)). The
   AppImage requires glibc 2.35 or newer (Ubuntu 22.04+). Linux releases are
