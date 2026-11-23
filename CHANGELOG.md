@@ -2,6 +2,87 @@
 
 All notable changes to LumiSync are recorded here.
 
+## Unreleased
+
+- Gigabyte RGB Fusion 2 motherboard lighting over USB (Windows and Linux):
+  Find Devices now finds the board's lighting controller (verified on the B550
+  AORUS ELITE, ITE IT5702, under Windows and under a Linux kernel in WSL2), with
+  power, brightness and one colour for the whole board, and it can be a Monitor
+  or Music sync target. It has not been run on a native Linux desktop yet. On
+  Linux the controller
+  is driven through hidraw and needs the udev rule in
+  `packaging/linux/60-lumisync-pc-lighting.rules`; until it is installed the
+  board is still listed and the first command explains how to add it.
+- Logitech G502 HERO mouse lighting over USB, driven directly through the
+  mouse's HID++ 2.0 protocol with no Logitech software API: it shows up on the
+  PC page with power, brightness and one colour for the whole mouse (logo and
+  DPI lights), and it can be a Monitor or Music sync target, in the
+  background. Verified on a wired G502 HERO (`046D:C08B`) under Windows with
+  Logitech G HUB running; G HUB may put its own colour back when its profile
+  changes. Not yet tried with G HUB closed, and not run on Linux (the udev rule
+  file now covers the mouse too, so it can be tried there). Colours are only
+  shown, never saved to the mouse. Like the board, the mouse has colour
+  correction (sRGB to the LEDs' linear drive, with green at 88% so white is
+  no longer green-tinted; on by default) and a per-zone layout in the device
+  panel: during sync the DPI lights and the logo each get their own colour.
+  Both options apply at once, also during a running sync. The "Mouse
+  lighting" card also picks the mouse's own effects, fixed colour, breathing
+  or colour cycle, with a speed for the two animated ones (both checked on the
+  mouse), and an optional separate logo colour while the DPI lights keep the
+  main colour. Sync still sends fixed colours; when it stops, the chosen
+  effect and colours come back if they were set since LumiSync started.
+- The Lorgar keyboard no longer turns white when sync stops before any manual
+  colour, brightness or power change was made: it keeps the last sync colour.
+- Lorgar AZAR keyboard lighting over USB (`320F:5075`): one static colour for
+  the whole keyboard, plus brightness (the keyboard's five levels) and power,
+  set from the PC page. The "Keyboard lighting" card in the device panel also
+  picks one of the keyboard's 17 built-in effects (Wave, Breathing, Stars,
+  Rain and the rest, in the order of the vendor app), with speed, direction
+  and multicolour where the effect has them; effects run on the keyboard
+  itself. The keyboard saves every change to its internal memory, which wears
+  out with use, so manual changes are sent at most four times a second and
+  Monitor and Music sync is off by default: turning on "Monitor and Music
+  sync" on its card (after a warning) makes it a sync target. During sync the
+  whole keyboard follows one colour, updated at most every 10 seconds by
+  default ("Sync updates" also offers every 2 seconds or up to 4 a second) and
+  only when the colour changes noticeably; when sync stops the keyboard's own
+  lighting comes back. Static and Wave were checked on the keyboard; the other
+  effects' options follow the vendor app. Not yet run on Linux (the udev rule
+  file covers it).
+- The PC page finds supported hardware by itself: it scans this PC shortly
+  after start, when the page opens and every few seconds while it is shown, so
+  newly plugged lighting appears and unplugged lighting shows as not connected
+  without selecting Scan this PC.
+- Brightness per light for Monitor Sync and Music Sync: under each page's
+  Brightness slider, "Brightness per light" lists the selected lights (a
+  group's lights individually), each with its own 10-100% level on top of the
+  page's brightness. A light's level is shared by both modes, saved, and
+  applies to a running sync straight away; "Reset" puts the listed lights back
+  to 100%.
+- RGB Fusion 2 colours are converted from sRGB to the LEDs' linear drive, so
+  dim and pastel colours no longer look washed out (on by default; "Colour
+  correction" in the device panel turns it off). Colour correction also applies
+  a white balance (green 84%, blue 59%), tuned by eye on the B550 AORUS ELITE,
+  so white looks neutral instead of blue-green. The device panel also offers
+  a per-zone layout: each of the board's zones (seven on the B550 AORUS ELITE,
+  eight numbered zones on other boards) gets its own colour during sync.
+- New **PC** page in the navigation rail for lighting inside or attached to
+  this computer: RGB Fusion 2 motherboard lighting (which moves there from the
+  Devices page) and Logitech mouse lighting. **Scan this PC** looks for it without a network
+  search; Find Devices still finds it too, and a dot on the PC icon points to
+  anything new. Shown on Windows and Linux.
+- New motherboard, mouse and PC icons, and a clearer LED strip icon.
+- Fixed Mica and Acrylic windows showing the previous page, and old sidebar
+  markers, through the current one after switching pages, and slowly turning
+  opaque.
+- The Settings › Status bar option and the status bar itself have been
+  removed; progress messages still go to the log, and anything you need to
+  see appears as a notification.
+- Acrylic is more see-through (the background tint is 60% instead of 84%),
+  so the blur shows and the content sits closer to the title bar.
+- Sidebar icons are larger, and the Music and light bulb icons are redrawn
+  as outlines to match the rest.
+
 ## 1.0.0 — 2026-11-10
 
 ### Windows installer

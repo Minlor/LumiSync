@@ -46,6 +46,9 @@ support depends on its firmware, capabilities, and the account's authorization.
 | Govee strips/bulbs | LAN (UDP), account MQTT, Platform API | LAN for sync; account/API connections for manual controls |
 | iDotMatrix panels | Bluetooth LE | Drawing, animations, clock, rotation, countdown, scoreboard; sync uses an ambient colour |
 | LSC / Tuya WiFi lights, switches and plugs | Tuya LAN, personal account or Smart Life QR | LSC/Tuya Smart email/password; authorized local-key import; controls follow the device schema; RGBIC strips (Battletron, wall washers) sync up to 20 colour zones, see below; supported plug metering |
+| Gigabyte RGB Fusion 2 motherboards | USB HID (Windows and Linux; Linux needs a udev rule, see the platform notes) | Found by Find Devices; power, brightness and one colour for the whole board, also as a sync target; verified on the B550 AORUS ELITE (IT5702, `048D:5702`) under Windows and under Linux (WSL2 kernel with USB passthrough; not yet on a native Linux desktop) |
+| Logitech G502 HERO mouse (wired) | USB HID++ 2.0 (Windows; Linux untested and needs a udev rule, see the platform notes) | Found by Find Devices and Scan this PC; power, brightness and colour for the whole mouse (logo and DPI lights), with colour correction and an optional per-zone layout (DPI lights and logo each get their own colour during sync), also as a sync target; fixed colour, breathing and colour cycle with a speed, and an optional separate logo colour; no Logitech software needed. Verified on a wired G502 HERO (`046D:C08B`) under Windows with G HUB running, which may put its own colour back when its profile changes; not yet tried with G HUB closed or on Linux |
+| Lorgar AZAR keyboard | USB HID (Windows; Linux untested and needs a udev rule, see the platform notes) | Found by Find Devices and Scan this PC; one static colour for the whole keyboard or one of its 17 built-in effects (with speed, direction and multicolour where the effect has them), brightness and power, set from the PC page. Monitor and Music sync only after turning on "Monitor and Music sync" on its card: the whole keyboard follows one colour, with updates limited (every 10 s by default) because the keyboard saves every change to its memory, which wears it |
 
 See [account setup](#account-setup). LSC and Tuya Smart password login
 use built-in client configuration; no Android package, installation or developer
@@ -181,6 +184,24 @@ installer and `LumiSync-Windows-SHA256SUMS.txt`.
 > music sync, and manual control work on X11 and Wayland; **screen (monitor)
 > sync currently requires an X11/Xorg session** — Wayland capture is planned.
 
+> **PC lighting on Linux:** the Gigabyte board's lighting controller, the
+> Logitech mouse and the Lorgar keyboard are `/dev/hidraw` devices that only root can open by default.
+> Find Devices still lists them, but LumiSync can only drive them once a udev
+> rule gives your user access. Install the rules from
+> [`packaging/linux/60-lumisync-pc-lighting.rules`](packaging/linux/60-lumisync-pc-lighting.rules)
+> once:
+>
+> ```bash
+> sudo cp packaging/linux/60-lumisync-pc-lighting.rules /etc/udev/rules.d/
+> sudo udevadm control --reload
+> sudo udevadm trigger
+> ```
+>
+> (or reboot instead of the last two commands). The AppImage cannot install
+> the rules itself; this step is needed once per machine, with any build. The
+> Logitech mouse and Lorgar keyboard drivers have not been run on Linux yet;
+> their rules are there so they can be tried.
+
 ## Usage
 
 ### Launch the App
@@ -225,6 +246,7 @@ Android installation or developer account is needed.
 - **Devices** — Discover lights, switches and plugs; connect vendor accounts, choose local/cloud connections, create groups, and view supported electrical readings and energy history.
 - **Monitor Sync** — Map display colors to selected devices, groups, zones, and custom LED regions. A brightness boost lifts dim and midtone content without changing hue.
 - **Music Sync** — Choose reactions, palettes, targets and brightness, or use Auto Director.
+- **PC** — Lighting inside or attached to this computer: Gigabyte RGB Fusion 2 motherboard lighting (colour, brightness, colour correction and per-zone layout) the Logitech G502 HERO mouse (colour, brightness, colour correction, per-zone layout, fixed colour, breathing or colour cycle with a speed, and an optional separate logo colour) and the Lorgar AZAR keyboard (one colour or a built-in effect, brightness and power; a sync target only after opting in on its card, as one colour with limited updates, because every change wears the keyboard's memory). The page finds this hardware by itself while it is open; **Scan this PC** looks again at once, without a network search (Windows and Linux).
 - **Draw** — Paint still images or frame-by-frame animations for compatible iDotMatrix panels. The device inspector's Panel Tools opens clock, countdown, scoreboard, and rotation controls.
 - **Settings** — Choose Acrylic, Mica or Solid Dark; tune sync, startup and system-tray behavior. About shows your version, account setup, update checks (including one-click download/install on Windows) and the logs folder.
 
@@ -235,7 +257,7 @@ when space is tight. Daily readings and technical details expand on demand.
 ### Configuration
 
 - **LED Mapping** - Customize which screen regions map to which LEDs
-- **Brightness** - Adjust per-mode brightness (10-100%), plus a 100-150% tone-map boost for Monitor Sync
+- **Brightness** - Adjust per-mode brightness (10-100%), plus a 100-150% tone-map boost for Monitor Sync. "Brightness per light" dims or brightens individual lights (10-100% of the mode's brightness); a light's level is shared by Monitor and Music Sync
 - **Display Selection** - Choose which monitor to capture (multi-monitor support)
 - **Sync Tuning** - Tune smoothing, saturation, frame rate, gamma and music response
 
