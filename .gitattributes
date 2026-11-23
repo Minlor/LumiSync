@@ -5,3 +5,6 @@
 # or their shebang breaks when run on Linux.
 *.sh text eol=lf
 AppRun text eol=lf
+# udev reads rules files on Linux; a CRLF copy from a Windows checkout could
+# stop the rule from matching.
+*.rules text eol=lf

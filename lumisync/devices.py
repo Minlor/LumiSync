@@ -5,6 +5,7 @@ This module handles device discovery and management.
 
 import copy
 import datetime
+import importlib
 import json
 import os
 from pathlib import Path
@@ -307,7 +308,7 @@ def _load_saved_settings(filename: str | os.PathLike[str] = "settings.json") -> 
     copied["devices"] = [
         as_device(device)
         for device in devices
-        if isinstance(device, (dict, Device))
+        if isinstance(device, (dict, Device)) and _has_driver(device)
     ]
     copied["selectedDevice"] = selected
     try:
@@ -346,6 +347,27 @@ def _device_keys(raw_device: DeviceLike) -> List[str]:
     return keys
 
 
+def _has_driver(device: Any) -> bool:
+    """False for a saved device whose connection type this version cannot drive.
+
+    Such an entry (written by a newer or experimental build) is left out of
+    the loaded list instead of crashing every view that asks for its driver.
+    """
+    from .drivers.registry import is_supported_device
+
+    if is_supported_device(as_device(device)):
+        return True
+    try:
+        label = device.get("name") or device.get("device_id") or "a saved device"
+        transport = device.get("transport")
+    except AttributeError:
+        label, transport = "a saved device", None
+    logger.warning(
+        "Leaving out %s: this version has no driver for connection type %r.", label, transport
+    )
+    return False
+
+
 def _normalize_settings(data: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize every device once, at the settings boundary."""
     copied = dict(data)
@@ -355,7 +377,7 @@ def _normalize_settings(data: Dict[str, Any]) -> Dict[str, Any]:
     copied["devices"] = [
         as_device(device)
         for device in devices
-        if isinstance(device, (dict, Device))
+        if isinstance(device, (dict, Device)) and _has_driver(device)
     ]
     copied["selectedDevice"] = _selected_index(copied, len(copied["devices"]))
     return copied
@@ -409,6 +431,31 @@ def merge_discovered_devices(
             index_by_key.setdefault(key, matching_index)
 
     return merged
+
+
+# Driver modules (under lumisync.drivers) whose discover() lists lighting on
+# this PC. Each returns descriptors and never raises; adding a driver is one
+# entry here.
+LOCAL_HARDWARE_DRIVERS = ("gigabyte_fusion", "logitech_hidpp", "lorgar_keyboard")
+
+
+def discover_local_hardware() -> List[Dict[str, Any]]:
+    """Descriptors of lighting attached to this PC, never raising.
+
+    Each driver in :data:`LOCAL_HARDWARE_DRIVERS` is asked separately, so
+    one failing never hides another's devices. These are not LAN replies:
+    callers merge them into the inventory but keep them out of
+    ``lastDiscoveryCount``, which only counts devices that answered on the
+    network (firewall and no-device hints key off it).
+    """
+    found: List[Dict[str, Any]] = []
+    for name in LOCAL_HARDWARE_DRIVERS:
+        try:
+            driver = importlib.import_module(f".drivers.{name}", __package__)
+            found.extend(dict(device) for device in driver.discover())
+        except Exception:
+            logger.warning("Local hardware discovery failed (%s)", name, exc_info=True)
+    return found
 
 
 def discover_lan_devices(

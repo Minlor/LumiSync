@@ -56,3 +56,48 @@ def _run_with_timeout(self, result=None):
 
 
 unittest.TestCase.run = _run_with_timeout
+
+
+# No test may find or open the developer's real Logitech mouse: by default
+# the HID++ driver's HID layer lists nothing and opens nothing. Tests of the
+# driver patch ``logitech_hidpp._hid`` with their own scripted fake.
+class _NoHidpp:
+    """An empty HID layer for the Logitech driver."""
+
+    @staticmethod
+    def enumerate(_vendor_id, _product_id):
+        return []
+
+    @staticmethod
+    def HidStream(path):  # noqa: N802 - mirrors hid_feature.HidStream
+        raise AssertionError(f"A test opened a real HID device ({path}) through the Logitech driver.")
+
+
+try:
+    from lumisync.drivers import logitech_hidpp as _logitech_hidpp  # noqa: E402
+except ImportError:  # A bare Python without the app's dependencies: nothing to isolate.
+    pass
+else:
+    _logitech_hidpp._hid = _NoHidpp()
+
+
+# The same for the Lorgar keyboard driver: tests of it patch
+# ``lorgar_keyboard._hid`` with their own fake keyboard.
+class _NoLorgar:
+    """An empty HID layer for the Lorgar keyboard driver."""
+
+    @staticmethod
+    def enumerate(_vendor_id, _product_id):
+        return []
+
+    @staticmethod
+    def HidStream(path):  # noqa: N802 - mirrors hid_feature.HidStream
+        raise AssertionError(f"A test opened a real HID device ({path}) through the Lorgar driver.")
+
+
+try:
+    from lumisync.drivers import lorgar_keyboard as _lorgar_keyboard  # noqa: E402
+except ImportError:
+    pass
+else:
+    _lorgar_keyboard._hid = _NoLorgar()

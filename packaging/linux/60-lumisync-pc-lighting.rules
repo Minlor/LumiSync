@@ -1,0 +1,12 @@
+# LumiSync: let the logged-in user drive PC lighting through hidraw, without root.
+# Install: sudo cp 60-lumisync-pc-lighting.rules /etc/udev/rules.d/
+#          sudo udevadm control --reload && sudo udevadm trigger
+
+# Gigabyte RGB Fusion 2 motherboard lighting (ITE IT5702, USB 048d:5702).
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="048d", ATTRS{idProduct}=="5702", TAG+="uaccess"
+
+# Logitech G502 HERO mouse lighting (HID++, USB 046d:c08b). Not yet tested on Linux.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c08b", TAG+="uaccess"
+
+# Lorgar AZAR keyboard lighting (USB 320f:5075). Not yet tested on Linux.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="320f", ATTRS{idProduct}=="5075", TAG+="uaccess"

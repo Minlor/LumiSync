@@ -1,9 +1,11 @@
-"""Shared persistent connections for BLE panels and encrypted Tuya sessions.
+"""Shared persistent connections for BLE panels, Tuya sessions and USB lighting.
 
 A BLE panel typically allows only one central connection and takes seconds to
 connect, so opening a fresh link for every action (and for sync) is slow and
 makes the panel visibly re-link each time. This pool hands out one long-lived
-adapter per BLE device, shared by manual controls and the sync engine.
+adapter per BLE device, shared by manual controls and the sync engine. USB
+lighting controllers (RGB Fusion 2) are pooled too, so the optimistic lighting
+state and the open handle are kept between manual commands.
 
 LAN (Govee) devices are cheap to open and are not pooled — callers manage their
 own short-lived sockets there, exactly as before.
@@ -16,7 +18,7 @@ from typing import Any, Dict, Iterable
 import hashlib
 import threading
 
-from ..device import DeviceLike, as_device
+from ..device import DeviceLike, as_device, is_local_hardware
 from .base import TransportAdapter
 from .registry import create_adapter
 
@@ -29,6 +31,8 @@ def _ble_key(device: DeviceLike) -> str:
     typed = as_device(device)
     if typed.transport == "tuya":
         return f"tuya:{typed.device_id}:{typed.get('tuya_channel', '')}"
+    if typed.is_local_hardware:
+        return f"{typed.transport}:{typed.device_id}"
     return str(typed.ble_address or typed.mac or id(device))
 
 
@@ -78,6 +82,11 @@ def _same_connection_target(adapter, incoming) -> bool:
         created = getattr(adapter, "_pool_identity", None)
         live = _tuya_connection_key(stored) if isinstance(stored, Mapping) else None
         return wanted in (created, live)
+    if is_local_hardware(incoming):
+        # Lighting on this PC (a USB controller) is identified by its device
+        # id alone; a refreshed name or firmware string must not recycle the
+        # shared handle.
+        return isinstance(stored, Mapping) and as_device(stored).device_id == as_device(incoming).device_id
     return stored == incoming
 
 
@@ -129,8 +138,40 @@ def acquire(device: DeviceLike, server=None) -> TransportAdapter:
                 _pooled_adapters[key] = adapter
         if replaced is not None:
             _retire(replaced)
+        elif device.is_local_hardware:
+            _refresh_descriptor(adapter, device)
         return adapter
     return create_adapter(device, server)
+
+
+def _refresh_descriptor(adapter: TransportAdapter, device: DeviceLike) -> None:
+    """Hand a reused USB adapter the caller's descriptor.
+
+    A USB adapter is reused for the same device id however its descriptor
+    changes, so per-device options (layout, colour correction) edited since
+    it was created reach it here instead of needing a new connection.
+    """
+    update = getattr(adapter, "update_device", None)
+    if callable(update):
+        update(device)
+
+
+def refresh(device: DeviceLike) -> bool:
+    """Give an existing pooled USB adapter an edited descriptor.
+
+    Never creates an adapter or opens a connection. Returns whether a pooled
+    adapter took the descriptor; a sync session holding that adapter picks
+    the change up on its next frame.
+    """
+    typed = as_device(device)
+    if not typed.is_local_hardware:
+        return False
+    with _pool_lock:
+        adapter = _pooled_adapters.get(_ble_key(typed))
+    if adapter is None or not _same_connection_target(adapter, typed):
+        return False
+    _refresh_descriptor(adapter, typed.copy())
+    return True
 
 
 def is_pooled(device: DeviceLike) -> bool:

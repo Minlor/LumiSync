@@ -113,7 +113,25 @@ def _transport(data: Mapping[str, Any]) -> str:
         return "ble"
     if kind in ("tuya", "lsc"):
         return "tuya"
+    if kind in ("rgb_fusion2", "logitech_hidpp", "lorgar_keyboard"):
+        return "usb"
     return "lan"
+
+
+# Transports of lighting inside or attached to this PC (USB HID controllers):
+# no network, no readback, pooled, and polled locally by the PC page. A new
+# kind of PC hardware with its own transport is added here.
+LOCAL_HARDWARE_TRANSPORTS = frozenset({"usb"})
+
+
+def is_local_hardware(device: Any) -> bool:
+    """Whether a descriptor (Device or mapping) is lighting on this PC."""
+    if isinstance(device, Device):
+        return device.transport in LOCAL_HARDWARE_TRANSPORTS
+    try:
+        return str(device.get("transport") or "").strip().lower() in LOCAL_HARDWARE_TRANSPORTS
+    except AttributeError:
+        return False
 
 
 @dataclass(eq=False)
@@ -219,8 +237,16 @@ class Device(MutableMapping[str, Any]):
         return self.transport == "ble"
 
     @property
+    def is_usb(self) -> bool:
+        return self.transport == "usb"
+
+    @property
+    def is_local_hardware(self) -> bool:
+        return self.transport in LOCAL_HARDWARE_TRANSPORTS
+
+    @property
     def is_pooled(self) -> bool:
-        return self.transport in ("ble", "tuya")
+        return self.transport in ("ble", "tuya") or self.is_local_hardware
 
     @property
     def identity(self) -> str:
@@ -355,4 +381,13 @@ def normalize_device(device: DeviceLike | None) -> dict[str, Any]:
     return as_device(device).to_dict()
 
 
-__all__ = ["Device", "DeviceLike", "as_device", "normalize_device", "ALIASES", "CORE_FIELDS"]
+__all__ = [
+    "Device",
+    "DeviceLike",
+    "as_device",
+    "is_local_hardware",
+    "normalize_device",
+    "ALIASES",
+    "CORE_FIELDS",
+    "LOCAL_HARDWARE_TRANSPORTS",
+]
