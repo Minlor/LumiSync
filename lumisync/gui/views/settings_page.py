@@ -1,8 +1,9 @@
-"""Settings page — one scrolling page of groups, like Windows 11 Settings.
+"""Settings page — groups of settings cards behind four tabs.
 
-General · Monitor tuning · Music tuning · Groups · Updates · About. Every
-preference is a Fluent settings card: an icon, a title with a short
-description, and the control on the right.
+A slim selector row under the title picks a tab: General · Sync (Monitor
+tuning, Music tuning, Groups) · Updates · About. Only the selected tab's
+groups show in the scroll area below. Every preference is a Fluent settings
+card: an icon, a title with a short description, and the control on the right.
 """
 
 from __future__ import annotations
@@ -11,8 +12,8 @@ import platform
 import sys
 
 import shiboken6
-from PySide6.QtCore import QSettings, Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QCoreApplication, QEvent, QSettings, Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 from ..controllers.sync_controller import SYNC_SETTINGS_KEYS, load_sync_settings
 from ..utils import firewall
 from ..widgets.product_controls import ProductComboBox, ProductSlider, ToggleSwitch
+from ..widgets.selector_bar import TAB_PADDING_X, SelectorBar
 from ..widgets.settings_card import SettingsCard, SettingsGroup, SettingsList
 
 # Settings › General › Network access, per firewall status.
@@ -43,6 +45,23 @@ FIREWALL_CHECKING = "Checking…"
 
 def _bool_value(settings: QSettings, key: str, default: bool) -> bool:
     return str(settings.value(key, default)).lower() in ("true", "1")
+
+
+REPOSITORY_URL = "https://github.com/Minlor/LumiSync"
+AUTHOR_GITHUB_URL = "https://github.com/Minlor"
+SUPPORT_URL = "https://ko-fi.com/Minlor"
+
+# The tabs, in order: key, label, and the sections (groups) each one shows.
+SETTINGS_TABS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("general", "General", ("general",)),
+    ("sync", "Sync", ("monitor", "music", "groups")),
+    ("updates", "Updates", ("updates",)),
+    ("about", "About", ("about",)),
+)
+TAB_KEYS = tuple(key for key, _label, _sections in SETTINGS_TABS)
+# Section key -> the tab that shows it.
+SECTION_TABS = {section: key for key, _label, sections in SETTINGS_TABS for section in sections}
+LAST_TAB_KEY = "settings/last_tab"
 
 
 class SettingsPage(QWidget):
@@ -65,12 +84,25 @@ class SettingsPage(QWidget):
         self.header = QWidget()
         header_layout = QHBoxLayout(self.header)
         self._header_layout = header_layout
-        header_layout.setContentsMargins(28, 24, 28, 16)
+        header_layout.setContentsMargins(28, 24, 28, 6)
         title = QLabel("Settings")
         title.setProperty("role", "title")
         header_layout.addWidget(title)
         header_layout.addStretch(1)
         root.addWidget(self.header)
+
+        # The tab selector stays above the scroll area so it never scrolls
+        # away. The first tab's text lines up with the title and the cards.
+        self.tab_row = QWidget()
+        self.tab_row.setObjectName("SettingsTabRow")
+        tab_layout = QHBoxLayout(self.tab_row)
+        self._tab_layout = tab_layout
+        tab_layout.setContentsMargins(28 - TAB_PADDING_X, 0, 28, 8)
+        tab_layout.setSpacing(0)
+        self.tab_bar = SelectorBar([(key, label) for key, label, _sections in SETTINGS_TABS])
+        self.tab_bar.setAccessibleName("Settings sections")
+        tab_layout.addWidget(self.tab_bar, 1)
+        root.addWidget(self.tab_row)
 
         self.scroll = QScrollArea()
         self.scroll.setObjectName("SettingsScroll")
@@ -104,6 +136,39 @@ class SettingsPage(QWidget):
             body.addWidget(group)
         body.addStretch(1)
 
+        self._sections: dict[str, SettingsGroup] = {
+            "general": self.general_group,
+            "monitor": self.monitor_tuning_group,
+            "music": self.music_tuning_group,
+            "groups": self.groups_group,
+            "updates": self.updates_group,
+            "about": self.about_group,
+        }
+        self._pending_section: str | None = None
+        # The Updates tab's attention dot: set when an update shows up while
+        # another tab is open, cleared when the Updates tab is opened.
+        self._update_attention = False
+        self._known_update_version: str | None = None
+        self._seen_update_version: str | None = None
+
+        saved = str(self.settings.value(LAST_TAB_KEY, "general") or "").strip().lower()
+        self._apply_tab(saved if saved in TAB_KEYS else "general", remember=False)
+        self.tab_bar.current_changed.connect(self._on_tab_changed)
+
+        # Ctrl+Tab and Ctrl+Shift+Tab cycle the tabs while this page shows
+        # (a window shortcut only fires while its widget is visible).
+        self._tab_shortcuts = []
+        for sequence, offset in (
+            (QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Tab), 1),
+            (QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Backtab), -1),
+            (QKeySequence(Qt.Modifier.CTRL | Qt.Modifier.SHIFT | Qt.Key.Key_Backtab), -1),
+            (QKeySequence(Qt.Modifier.CTRL | Qt.Modifier.SHIFT | Qt.Key.Key_Tab), -1),
+        ):
+            shortcut = QShortcut(sequence, self)
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.activated.connect(lambda step=offset: self.cycle_tab(step))
+            self._tab_shortcuts.append(shortcut)
+
         self._latest_release_url = None
         self._connect_update_controller()
 
@@ -118,13 +183,128 @@ class SettingsPage(QWidget):
             self.about_group,
         ]
 
+    # ------------------------------------------------------------------- tabs
+
+    def tab_sections(self) -> list[tuple[str, str, list[SettingsGroup]]]:
+        """The tabs in order: key, label and the groups each one shows."""
+        return [
+            (key, label, [self._sections[section] for section in sections])
+            for key, label, sections in SETTINGS_TABS
+        ]
+
+    def current_tab(self) -> str:
+        return self.tab_bar.current_key() or "general"
+
+    def select_tab(self, key: str) -> None:
+        """Show the tab ``key`` (general, sync, updates or about)."""
+        if key not in TAB_KEYS:
+            raise ValueError(f"Unknown settings tab: {key!r}")
+        if key == self.current_tab():
+            self._apply_tab(key)
+        else:
+            self.tab_bar.set_current(key)  # current_changed applies it
+
+    def cycle_tab(self, offset: int) -> None:
+        if self.isVisible():
+            self.tab_bar.step(offset, wrap=True)
+
+    def show_section(self, key: str) -> None:
+        """Open the tab holding ``key`` and bring that section into view.
+
+        ``key`` is a tab (general, sync, updates, about) or a section on the
+        Sync tab (monitor, music, groups).
+        """
+        section = str(key).strip().lower()
+        if section in TAB_KEYS:
+            tab = section
+            section = SETTINGS_TABS[TAB_KEYS.index(tab)][2][0]
+        elif section in SECTION_TABS:
+            tab = SECTION_TABS[section]
+        else:
+            raise ValueError(f"Unknown settings section: {key!r}")
+        self.select_tab(tab)
+        self._scroll_to_section(section)
+        # A hidden page has no real geometry yet: scroll again once shown.
+        self._pending_section = None if self.isVisible() else section
+
+    def _on_tab_changed(self, key: str) -> None:
+        self._apply_tab(key)
+
+    def _apply_tab(self, key: str, *, remember: bool = True) -> None:
+        if self.tab_bar.current_key() != key:
+            blocked = self.tab_bar.blockSignals(True)
+            self.tab_bar.set_current(key)
+            self.tab_bar.blockSignals(blocked)
+        shown = SETTINGS_TABS[TAB_KEYS.index(key)][2]
+        for section, group in self._sections.items():
+            group.setVisible(section in shown)
+            # A tab with one group already names it: its heading would only
+            # repeat the tab label. The Sync tab keeps its three headings.
+            group.set_header_visible(len(shown) > 1)
+        self._pending_section = None
+        # Settle the scroll range now, so scrolling right after a tab change
+        # (show_section, ensureWidgetVisible) uses this tab's height.
+        self._flush_layout()
+        self.scroll.verticalScrollBar().setValue(0)
+        if key == "updates":
+            self._update_attention = False
+            self._seen_update_version = self._known_update_version
+        self._refresh_updates_badge()
+        if remember:
+            self.settings.setValue(LAST_TAB_KEY, key)
+
+    def _flush_layout(self) -> None:
+        content = self.scroll.widget()
+        if content is not None and content.layout() is not None:
+            content.layout().activate()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
+
+    def _scroll_to_section(self, section: str) -> None:
+        group = self._sections[section]
+        bar = self.scroll.verticalScrollBar()
+        if section == SETTINGS_TABS[TAB_KEYS.index(SECTION_TABS[section])][2][0]:
+            bar.setValue(0)
+            return
+        self._flush_layout()
+        top = self._body_layout.contentsMargins().top()
+        bar.setValue(max(0, min(bar.maximum(), group.y() - top)))
+
+    def _scroll_to_pending_section(self) -> None:
+        if not shiboken6.isValid(self):
+            return
+        section = self._pending_section
+        if section is None or section not in SETTINGS_TABS[TAB_KEYS.index(self.current_tab())][2]:
+            self._pending_section = None
+            return
+        self._scroll_to_section(section)
+        if self.isVisible():
+            self._pending_section = None
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().showEvent(event)
+        if self._pending_section is not None:
+            QTimer.singleShot(0, self._scroll_to_pending_section)
+
+    def _set_update_attention(self, visible: bool) -> None:
+        if not visible:
+            self._known_update_version = None
+            self._seen_update_version = None
+        elif self.current_tab() == "updates":
+            self._seen_update_version = self._known_update_version
+        self._update_attention = bool(visible) and self.current_tab() != "updates"
+        self._refresh_updates_badge()
+
+    def _refresh_updates_badge(self) -> None:
+        self.tab_bar.set_badge("updates", self._update_attention and self.current_tab() != "updates")
+
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
         super().resizeEvent(event)
         if not hasattr(self, "_body_layout"):
             return
         compact = self.height() < 680 or self.width() < 760
         inset = 16 if compact else 28
-        self._header_layout.setContentsMargins(inset, 16 if compact else 24, inset, 12 if compact else 16)
+        self._header_layout.setContentsMargins(inset, 16 if compact else 24, inset, 4 if compact else 6)
+        self._tab_layout.setContentsMargins(inset - TAB_PADDING_X, 0, inset, 4 if compact else 8)
         self._body_layout.setContentsMargins(inset, 2 if compact else 4, inset, 16 if compact else 28)
         self._body_layout.setSpacing(20 if compact else 28)
 
@@ -476,8 +656,12 @@ class SettingsPage(QWidget):
 
         self.auto_update_toggle = ToggleSwitch()
         self.auto_update_toggle.setAccessibleName("Download updates automatically")
+        on_linux = sys.platform.startswith("linux")
         self.auto_update_toggle.setToolTip(
-            "Downloads a verified update when one is found; installation still asks first."
+            "Downloads and installs a verified update when one is found; "
+            "the new version starts the next time LumiSync starts."
+            if on_linux
+            else "Downloads a verified update when one is found; installation still asks first."
         )
         self.auto_update_toggle.setChecked(_bool_value(self.settings, "updates/auto_download", False))
         self.auto_update_toggle.toggled.connect(
@@ -485,7 +669,7 @@ class SettingsPage(QWidget):
         )
         group.add_card(SettingsCard(
             "download.svg", "Download updates automatically",
-            "Installing still asks first",
+            "Restarting still asks first" if on_linux else "Installing still asks first",
             self.auto_update_toggle,
         ))
         return group
@@ -511,8 +695,24 @@ class SettingsPage(QWidget):
         self.repository_button.setAccessibleName("Open the GitHub repository")
         self.repository_button.clicked.connect(self._open_repository)
         links.add_row(SettingsCard(
-            "link.svg", "GitHub repository", "Source code, issues and release notes",
+            "github.svg", "GitHub repository", "Source code, issues and release notes",
             self.repository_button, in_list=True,
+        ))
+        self.author_button = QPushButton("Open")
+        self.author_button.setObjectName("LinkButton")
+        self.author_button.setAccessibleName("Open Minlor's GitHub profile")
+        self.author_button.clicked.connect(self._open_author_profile)
+        links.add_row(SettingsCard(
+            "github.svg", "Minlor on GitHub", "Other projects by the author of LumiSync",
+            self.author_button, in_list=True,
+        ))
+        self.support_button = QPushButton("Open")
+        self.support_button.setObjectName("LinkButton")
+        self.support_button.setAccessibleName("Open the Ko-fi page to support LumiSync")
+        self.support_button.clicked.connect(self._open_support)
+        links.add_row(SettingsCard(
+            "kofi.svg", "Support on Ko-fi", "LumiSync is free. A tip helps keep it going",
+            self.support_button, in_list=True,
         ))
         self.account_setup_button = QPushButton("Open")
         self.account_setup_button.setObjectName("LinkButton")
@@ -544,7 +744,13 @@ class SettingsPage(QWidget):
         QDesktopServices.openUrl(QUrl("https://github.com/Minlor/LumiSync#account-setup"))
 
     def _open_repository(self) -> None:
-        QDesktopServices.openUrl(QUrl("https://github.com/Minlor/LumiSync"))
+        QDesktopServices.openUrl(QUrl(REPOSITORY_URL))
+
+    def _open_author_profile(self) -> None:
+        QDesktopServices.openUrl(QUrl(AUTHOR_GITHUB_URL))
+
+    def _open_support(self) -> None:
+        QDesktopServices.openUrl(QUrl(SUPPORT_URL))
 
     def _open_logs(self) -> None:
         from ...utils.logging import get_logs_directory
@@ -582,12 +788,15 @@ class SettingsPage(QWidget):
             window.show_update_dialog()
 
     def _on_update_downloaded(self, _path: str) -> None:
+        self._set_update_attention(True)
         self.install_update_button.setText("Restart && update")
         self.install_update_button.setVisible(True)
-        self._set_update_status(
-            "The update is downloaded and verified. Restart to install it.",
-            "active",
-        )
+        if sys.platform.startswith("linux"):
+            # The AppImage was already swapped; only the restart is left.
+            text = "The update is downloaded, verified and installed. Restart to finish updating."
+        else:
+            text = "The update is downloaded and verified. Restart to install it."
+        self._set_update_status(text, "active")
 
     def _open_latest_release(self) -> None:
         if self._latest_release_url:
@@ -603,6 +812,9 @@ class SettingsPage(QWidget):
         self.check_updates_button.setEnabled(True)
 
         if result.error:
+            # No update is offered now; a later check of a seen version stays quiet.
+            self._update_attention = False
+            self._refresh_updates_badge()
             self._latest_release_url = None
             self.open_release_button.setVisible(False)
             self.install_update_button.setVisible(False)
@@ -610,6 +822,10 @@ class SettingsPage(QWidget):
             return
 
         if result.is_update_available and result.latest_version:
+            self._known_update_version = str(result.latest_version)
+            # A periodic recheck of a version already seen stays quiet.
+            if self._known_update_version != self._seen_update_version:
+                self._set_update_attention(True)
             self._latest_release_url = result.release_url
             self.open_release_button.setVisible(bool(result.release_url))
             controller = getattr(self._main_window, "update_controller", None)
@@ -626,6 +842,7 @@ class SettingsPage(QWidget):
             )
             return
 
+        self._set_update_attention(False)
         self._latest_release_url = None
         self.open_release_button.setVisible(False)
         self.install_update_button.setVisible(False)

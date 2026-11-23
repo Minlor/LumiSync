@@ -24,9 +24,10 @@ from PySide6.QtCore import (
     QRectF,
     QSize,
     Qt,
+    QUrl,
     Signal,
 )
-from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -246,6 +247,8 @@ class NavigationShell(QWidget):
 
     # A page's key, whenever the rail opens that page.
     page_activated = Signal(str)
+    # A link's key, whenever the rail opens that link in the browser.
+    link_activated = Signal(str)
 
     def __init__(
         self,
@@ -299,6 +302,26 @@ class NavigationShell(QWidget):
         sb_layout.addWidget(self.nav_list)
 
         sb_layout.addStretch(1)
+
+        # Links that open in the browser (GitHub, Support). They sit above
+        # the bottom pages, are never "selected" and own no page.
+        self._links: Dict[str, str] = {}
+        self.link_nav_list = QListWidget()
+        self.link_nav_list.setObjectName("SidebarNavBottom")
+        self.link_nav_list.setAccessibleName("Links")
+        self.link_nav_list.setIconSize(QSize(RAIL_ICON_SIZE, RAIL_ICON_SIZE))
+        self.link_nav_list.setMovement(QListWidget.Movement.Static)
+        self.link_nav_list.setUniformItemSizes(True)
+        self.link_nav_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.link_nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.link_nav_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.link_nav_list.setMouseTracking(True)
+        self.link_nav_list.setFrameShape(QFrame.Shape.NoFrame)
+        self.link_nav_list.setFixedHeight(0)
+        self.link_nav_list.itemClicked.connect(self._on_link_item)
+        self.link_nav_list.itemActivated.connect(self._on_link_item)
+        self.link_nav_list.setItemDelegate(NavRailItemDelegate(self.link_nav_list))
+        sb_layout.addWidget(self.link_nav_list)
 
         self.bottom_nav_list = QListWidget()
         self.bottom_nav_list.setObjectName("SidebarNavBottom")
@@ -370,6 +393,30 @@ class NavigationShell(QWidget):
 
         if self.nav_list.currentRow() < 0 and not bottom:
             self.nav_list.setCurrentRow(0)
+
+    def add_link(self, *, key: str, title: str, svg: str, url: str) -> None:
+        """Add a rail item above the bottom pages that opens ``url`` in the browser."""
+        self._links[key] = url
+        list_item = QListWidgetItem("")
+        list_item.setToolTip(title)
+        list_item.setData(Qt.ItemDataRole.AccessibleTextRole, title)
+        list_item.setData(Qt.ItemDataRole.AccessibleDescriptionRole, f"Open {title} in the browser")
+        list_item.setData(Qt.ItemDataRole.UserRole, key)
+        list_item.setData(NavRailItemDelegate.SVG_ROLE, svg)
+        list_item.setData(NavRailItemDelegate.LABEL_ROLE, title)
+        list_item.setSizeHint(QSize(self._rail_width, RAIL_ITEM_HEIGHT))
+        self.link_nav_list.addItem(list_item)
+        self._fit_list_height(self.link_nav_list)
+
+    def _on_link_item(self, item: QListWidgetItem) -> None:
+        key = item.data(Qt.ItemDataRole.UserRole)
+        url = self._links.get(key)
+        # A link is an action, not a destination: leave nothing focused on it.
+        self.link_nav_list.setCurrentRow(-1)
+        if not url:
+            return
+        QDesktopServices.openUrl(QUrl(url))
+        self.link_activated.emit(str(key))
 
     def set_page_visible(self, key: str, visible: bool) -> None:
         """Show or hide a page's rail item.

@@ -367,12 +367,18 @@ class ResponsiveAppUiTests(unittest.TestCase):
         page.window_material_combo.setFocus()
         QTest.keyClick(page.window_material_combo, Qt.Key.Key_End)
         self.assertEqual(self.settings.value("ui/window_material"), "solid")
-        for group in page.groups():
-            self.assert_scrolls_into_view(group.header_label, page.scroll)
+        sections = ("general", "monitor", "music", "groups", "updates", "about")
+        for group, section in zip(page.groups(), sections):
+            page.show_section(section)
+            # Single-group tabs hide the heading that repeats the tab label.
+            target = group.header_label if group.header_visible() else group.findChild(
+                QWidget, "SettingsCard")
+            self.assert_scrolls_into_view(target, page.scroll)
             self.assertEqual(page.scroll.horizontalScrollBar().maximum(), 0)
         page.resize(1020, 760)
         self.app.processEvents()
         self.assertEqual(page.scroll.horizontalScrollBar().maximum(), 0)
+        page.show_section("monitor")
         page.smoothing_slider.setFocus()
         QTest.keyClick(page.smoothing_slider, Qt.Key.Key_Home)
         self.assertAlmostEqual(float(self.settings.value(SYNC_SETTINGS_KEYS["smoothing"])), 0.05)
@@ -392,23 +398,30 @@ class ResponsiveAppUiTests(unittest.TestCase):
                 patch("lumisync.gui.utils.autostart.is_enabled", return_value=False), \
                 patch("lumisync.gui.utils.autostart.set_enabled") as startup:
             page = self.show(SettingsPage(self.settings, host), 1020, 760)
+            page.show_section("general")
             self.click(page.autostart_check)
             startup.assert_called_once_with(True)
-        for control, key in ((page.smoothing_slider, "smoothing"), (page.saturation_slider, "saturation"),
-                             (page.fps_slider, "monitor_fps"), (page.gain_slider, "music_gain"),
-                             (page.music_smoothing_slider, "music_smoothing")):
+        for control, key, section in ((page.smoothing_slider, "smoothing", "monitor"),
+                                      (page.saturation_slider, "saturation", "monitor"),
+                                      (page.fps_slider, "monitor_fps", "monitor"),
+                                      (page.gain_slider, "music_gain", "music"),
+                                      (page.music_smoothing_slider, "music_smoothing", "music")):
+            page.show_section(section)
             self.assert_scrolls_into_view(control, page.scroll)
             control.setFocus()
             QTest.keyClick(control, Qt.Key.Key_End)
             self.assertIsNotNone(self.settings.value(SYNC_SETTINGS_KEYS[key]))
+        page.show_section("monitor")
         before = page.gamma_check.isChecked()
         self.click(page.gamma_check)
         self.assertEqual(self.settings.value(SYNC_SETTINGS_KEYS["gamma_correct"]), not before)
         self.assertFalse(hasattr(page, "display_combo"))
+        page.show_section("groups")
         delete = next(button for button in page.findChildren(QPushButton) if button.text() == "Delete")
         with patch("lumisync.gui.views.settings_page.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
             self.click(delete)
         host.device_controller.delete_group.assert_called_once_with("Fixture desk group")
+        page.show_section("updates")
         auto_before = page.auto_update_toggle.isChecked()
         self.click(page.auto_update_toggle)
         self.assertEqual(page.auto_update_toggle.isChecked(), not auto_before)
@@ -423,11 +436,16 @@ class ResponsiveAppUiTests(unittest.TestCase):
                                                        release_url="https://github.com/Minlor/LumiSync/releases"))
         with patch("lumisync.gui.views.settings_page.QDesktopServices.openUrl", return_value=True) as open_url:
             self.click(page.open_release_button)
+            page.show_section("about")
             self.click(page.repository_button)
+            self.click(page.author_button)
+            self.click(page.support_button)
             self.click(page.account_setup_button)
             self.assertEqual([call.args[0].toString() for call in open_url.call_args_list], [
                 "https://github.com/Minlor/LumiSync/releases",
                 "https://github.com/Minlor/LumiSync",
+                "https://github.com/Minlor",
+                "https://ko-fi.com/Minlor",
                 "https://github.com/Minlor/LumiSync#account-setup",
             ])
         logs = str(Path(self.temporary.name) / "logs")
@@ -441,9 +459,11 @@ class ResponsiveAppUiTests(unittest.TestCase):
             page.resize(width, height)
             self.app.processEvents()
             self.assertEqual(page.scroll.horizontalScrollBar().maximum(), 0)
-            for control in (page.check_updates_button, page.install_update_button, page.open_release_button,
-                            page.auto_update_toggle, page.open_logs_button,
-                            page.account_setup_button, page.repository_button):
+            for control, section in ((page.check_updates_button, "updates"), (page.install_update_button, "updates"),
+                                     (page.open_release_button, "updates"), (page.auto_update_toggle, "updates"),
+                                     (page.open_logs_button, "about"), (page.account_setup_button, "about"),
+                                     (page.repository_button, "about")):
+                page.show_section(section)
                 self.assert_scrolls_into_view(control, page.scroll)
 
     def test_device_toolbar_inspector_and_group_controls_dispatch_to_the_correct_device(self):

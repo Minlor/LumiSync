@@ -235,5 +235,56 @@ class SidebarGeometryTests(unittest.TestCase):
         self.assertTrue(close_enough(at(1, y), qcolor("fl_accent")))
 
 
+class SidebarLinkTests(unittest.TestCase):
+    """Links above Settings open in the browser and are never a destination."""
+
+    @classmethod
+    def setUpClass(cls):
+        existing = QApplication.instance()
+        cls.app = existing if isinstance(existing, QApplication) else QApplication([])
+
+    def shell(self) -> NavigationShell:
+        shell = NavigationShell(title="LumiSync", icon_only=True)
+        self.addCleanup(shell.deleteLater)
+        shell.add_page(key="devices", title="Devices", icon=QIcon(), widget=QWidget())
+        shell.add_link(key="github", title="LumiSync on GitHub", svg="github.svg",
+                       url="https://github.com/Minlor/LumiSync")
+        shell.add_link(key="support", title="Support LumiSync on Ko-fi", svg="kofi.svg",
+                       url="https://ko-fi.com/Minlor")
+        shell.add_page(key="settings", title="Settings", icon=QIcon(), widget=QWidget(), bottom=True)
+        return shell
+
+    def test_links_sit_between_the_pages_and_settings(self):
+        shell = self.shell()
+        layout = shell.sidebar.layout()
+        order = [layout.itemAt(i).widget() for i in range(layout.count())]
+        self.assertLess(order.index(shell.nav_list), order.index(shell.link_nav_list))
+        self.assertLess(order.index(shell.link_nav_list), order.index(shell.bottom_nav_list))
+        self.assertEqual(shell.link_nav_list.count(), 2)
+        self.assertEqual(shell.link_nav_list.height(), 2 * RAIL_ITEM_HEIGHT)
+        self.assertEqual(shell.link_nav_list.item(0).toolTip(), "LumiSync on GitHub")
+
+    def test_a_link_opens_its_address_and_leaves_the_page_alone(self):
+        from unittest.mock import patch
+
+        shell = self.shell()
+        opened = []
+        shell.link_activated.connect(opened.append)
+        with patch("lumisync.gui.widgets.navigation_shell.QDesktopServices.openUrl", return_value=True) as open_url:
+            shell.link_nav_list.itemClicked.emit(shell.link_nav_list.item(0))
+            shell.link_nav_list.itemActivated.emit(shell.link_nav_list.item(1))
+        self.assertEqual([call.args[0].toString() for call in open_url.call_args_list],
+                         ["https://github.com/Minlor/LumiSync", "https://ko-fi.com/Minlor"])
+        self.assertEqual(opened, ["github", "support"])
+        self.assertEqual(shell.current_key(), "devices")
+        self.assertEqual(shell.link_nav_list.currentRow(), -1)
+
+    def test_the_logo_files_exist(self):
+        from lumisync.gui.resources import ResourceManager
+
+        for name in ("github.svg", "kofi.svg"):
+            self.assertIsNotNone(ResourceManager.get_icon_path(name), name)
+
+
 if __name__ == "__main__":
     unittest.main()

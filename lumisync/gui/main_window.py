@@ -13,10 +13,24 @@ from PySide6.QtWidgets import (
     QProgressDialog,
     QSystemTrayIcon,
 )
-from PySide6.QtCore import QProcess, Qt, QThread, QThreadPool, QTimer, QUrl
+from PySide6.QtCore import (
+    QProcess,
+    QProcessEnvironment,
+    Qt,
+    QThread,
+    QThreadPool,
+    QTimer,
+    QUrl,
+)
 from PySide6.QtGui import QDesktopServices
 
-from ..updates import is_installed_build, select_update_asset
+from ..updates import (
+    appimage_child_environment,
+    appimage_restart_command,
+    appimage_update_target,
+    is_installed_build,
+    select_update_asset,
+)
 
 from .app_settings import app_settings
 
@@ -89,6 +103,8 @@ class LumiSyncMainWindow(QMainWindow):
         self._update_offer_version: str | None = None
         self._update_download_interactive = True
         self._tray_message_is_update = False
+        # Whether the Settings rail item shows the update dot.
+        self._update_badge_visible = False
 
         self.setup_controller_connections()
         self.setup_ui()
@@ -127,7 +143,7 @@ class LumiSyncMainWindow(QMainWindow):
         from .views.devices_view import DevicesView
         from .views.draw_view import DrawView
         from .views.modes_view import ModesView
-        from .views.settings_page import SettingsPage
+        from .views.settings_page import REPOSITORY_URL, SUPPORT_URL, SettingsPage
 
         self.devices_view = DevicesView(self.device_controller, self.firewall_monitor)
         # Lighting inside or attached to this PC (RGB Fusion 2 boards today).
@@ -177,6 +193,13 @@ class LumiSyncMainWindow(QMainWindow):
             icon=app_icon(IconKey.DRAW), widget=self.draw_view,
         )
         self.nav_shell.set_page_svg("draw", "pencil.svg")
+
+        self.nav_shell.add_link(
+            key="github", title="LumiSync on GitHub", svg="github.svg", url=REPOSITORY_URL,
+        )
+        self.nav_shell.add_link(
+            key="support", title="Support LumiSync on Ko-fi", svg="kofi.svg", url=SUPPORT_URL,
+        )
 
         self.settings_page = SettingsPage(self.settings, self)
         self.nav_shell.add_page(
@@ -234,6 +257,19 @@ class LumiSyncMainWindow(QMainWindow):
     def _on_page_activated(self, key: str) -> None:
         if key == "pc":
             self.nav_shell.set_page_badge("pc", False)
+        elif key == "settings" and getattr(self, "_update_badge_visible", False):
+            # The dot on the Settings rail item stands for an update: land on it.
+            settings_page = getattr(self, "settings_page", None)
+            if settings_page is not None:
+                settings_page.show_section("updates")
+
+    def open_settings_section(self, section: str) -> None:
+        """Open Settings on the tab holding ``section`` (see SettingsPage.show_section)."""
+        settings_page = getattr(self, "settings_page", None)
+        if settings_page is None:
+            return
+        self.nav_shell.set_current_by_key("settings")
+        settings_page.show_section(section)
 
     def _update_draw_page_visibility(self, *_args) -> None:
         from ..drivers.registry import capabilities_for_device
@@ -296,6 +332,8 @@ class LumiSyncMainWindow(QMainWindow):
         self._tray_message_is_update = False
         if not is_update:
             return
+        # The notification said "Open Settings to update": show that tab.
+        self.open_settings_section("updates")
         if self.update_controller.ready_installer:
             QTimer.singleShot(0, self._offer_ready_update)
         elif self._update_offer_version:
@@ -448,10 +486,17 @@ class LumiSyncMainWindow(QMainWindow):
     def can_install_update(self, result) -> bool:
         """Whether this copy can download and run the release installer.
 
-        Only the packaged Windows app replaces itself. A source checkout or a
-        pip install opens the release page instead of installing a second copy.
+        Only the packaged Windows app and a Linux AppImage the user can
+        replace update themselves. A source checkout, a pip install or a
+        read-only AppImage opens the release page instead.
         """
-        if result is None or sys.platform != "win32" or not is_installed_build():
+        if result is None:
+            return False
+        if sys.platform.startswith("linux"):
+            if appimage_update_target(frozen=is_installed_build()) is None:
+                return False
+            return select_update_asset(result.assets, platform="linux") is not None
+        if sys.platform != "win32" or not is_installed_build():
             return False
         asset = select_update_asset(result.assets)
         return asset is not None and "setup" in asset.name.casefold()
@@ -466,6 +511,7 @@ class LumiSyncMainWindow(QMainWindow):
         logger.info("Notice: %s", message)
 
     def _set_update_badge(self, visible: bool) -> None:
+        self._update_badge_visible = bool(visible)
         try:
             self.nav_shell.set_page_badge("settings", visible)
         except Exception:
@@ -514,10 +560,13 @@ class LumiSyncMainWindow(QMainWindow):
         box.setText(f"LumiSync v{latest} is available.")
         note = " You skipped this version earlier." if skipped else ""
         if can_install:
+            replaced = (
+                "it replaces this AppImage" if sys.platform.startswith("linux") else "it runs"
+            )
             box.setInformativeText(
                 f"You are running v{result.current_version}.{note} Download and "
                 "install it now? The download is checked against the release's "
-                "SHA-256 checksum before it runs, and your settings are kept."
+                f"SHA-256 checksum before {replaced}, and your settings are kept."
             )
             download_button = box.addButton(
                 "Download && Install", QMessageBox.ButtonRole.AcceptRole
@@ -614,6 +663,11 @@ class LumiSyncMainWindow(QMainWindow):
             return
         result = self.update_controller.last_result
         latest = getattr(result, "latest_version", None) or "The update"
+        if sys.platform.startswith("linux"):
+            self._notify(
+                f"LumiSync v{latest} is installed. Restart LumiSync to finish updating."
+            )
+            return
         self._notify(
             f"LumiSync v{latest} is downloaded. Open Settings to restart and update."
         )
@@ -625,11 +679,18 @@ class LumiSyncMainWindow(QMainWindow):
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Information)
         box.setWindowTitle("LumiSync Update Ready")
-        box.setText("The update was downloaded and verified.")
-        box.setInformativeText(
-            "LumiSync closes while the installer runs, then starts again. "
-            "Your devices and settings are kept."
-        )
+        if sys.platform.startswith("linux"):
+            box.setText("The update was downloaded, verified and installed.")
+            box.setInformativeText(
+                "Restart to finish updating: LumiSync closes and starts the new "
+                "version. Your devices and settings are kept."
+            )
+        else:
+            box.setText("The update was downloaded and verified.")
+            box.setInformativeText(
+                "LumiSync closes while the installer runs, then starts again. "
+                "Your devices and settings are kept."
+            )
         install_button = box.addButton(
             "Restart && Update", QMessageBox.ButtonRole.AcceptRole
         )
@@ -639,7 +700,12 @@ class LumiSyncMainWindow(QMainWindow):
         if box.clickedButton() is install_button:
             self.install_ready_update()
         else:
-            self.show_status("The update is ready. Install it from Settings when you like.")
+            if sys.platform.startswith("linux"):
+                self.show_status(
+                    "The update is installed. Restart LumiSync to finish updating."
+                )
+            else:
+                self.show_status("The update is ready. Install it from Settings when you like.")
 
     def install_ready_update(self) -> None:
         """Run the verified installer silently and quit so it can replace us."""
@@ -651,6 +717,9 @@ class LumiSyncMainWindow(QMainWindow):
                 "Update Installer",
                 "The downloaded update is no longer available. Check for updates again.",
             )
+            return
+        if sys.platform.startswith("linux"):
+            self._restart_appimage(path)
             return
         try:
             # /launch=1 restarts the new version; /update=1 keeps the user's
@@ -681,6 +750,36 @@ class LumiSyncMainWindow(QMainWindow):
                 "Open its folder and run it manually.",
             )
             QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
+            return
+
+        self.quit_app()
+
+    def _restart_appimage(self, path: str) -> None:
+        """Start the already-replaced AppImage once this copy has quit."""
+        program, arguments = appimage_restart_command(path)
+        started = False
+        try:
+            process = QProcess()
+            process.setProgram(program)
+            process.setArguments(arguments)
+            environment = QProcessEnvironment()
+            for name, value in appimage_child_environment().items():
+                environment.insert(name, value)
+            process.setProcessEnvironment(environment)
+            started = process.startDetached()
+            if isinstance(started, tuple):
+                started = started[0]
+        except Exception as exc:
+            logger.warning("Could not restart LumiSync after the update: %s", exc)
+            started = False
+
+        if not started:
+            QMessageBox.warning(
+                self,
+                "Update Installer",
+                "The update is installed, but LumiSync could not restart itself. "
+                "Quit LumiSync and start it again to use the new version.",
+            )
             return
 
         self.quit_app()

@@ -245,6 +245,19 @@ class SettingsGroup(QWidget):
         # Only now is the label parented; see _CardContent on why it matters.
         self.header_label.setVisible(bool(title))
 
+    def set_header_visible(self, visible: bool) -> None:
+        """Show or hide the title row without removing it.
+
+        A hidden row takes no space: the first card starts where the title
+        would have been.
+        """
+        visible = bool(visible) and bool(self.header_label.text())
+        self.header_label.setVisible(visible)
+        self._header.setContentsMargins(1, 0, 0, 4 if visible else 0)
+
+    def header_visible(self) -> bool:
+        return not self.header_label.isHidden()
+
     def add_header_action(self, widget: QWidget) -> None:
         self._header.addWidget(widget, 0, Qt.AlignmentFlag.AlignBottom)
 

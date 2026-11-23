@@ -101,7 +101,7 @@ def main():
             dialog.reject()
             dialog.deleteLater()
             window.nav_shell.set_current_by_key("settings")
-            window.settings_page.section_nav.setCurrentRow(4)
+            window.settings_page.show_section("about")
             save(window, "about")
         finally:
             window.quit_app()
