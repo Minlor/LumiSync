@@ -27,6 +27,19 @@ atexit.register(shutil.rmtree, _ISOLATED_PROFILE, True)
 os.environ["LUMISYNC_SETTINGS_INI"] = os.path.join(_ISOLATED_PROFILE, "LumiSync.ini")
 os.environ["LUMISYNC_SETTINGS_FILE"] = os.path.join(_ISOLATED_PROFILE, "settings.json")
 
+# Never touch the developer's real credential store (Windows Credential
+# Manager, macOS Keychain, Secret Service): every account saved there under
+# "LumiSync" is the developer's own. keyring's "fail" backend is not a secure
+# store, so the vault reports "unavailable" unless a test supplies a fake
+# backend (patch ``CredentialVault._backend``).
+try:
+    import keyring as _keyring  # noqa: E402
+    from keyring.backends import fail as _keyring_fail  # noqa: E402
+except ImportError:  # A bare Python without the app's dependencies.
+    pass
+else:
+    _keyring.set_keyring(_keyring_fail.Keyring())
+
 # Widgets render off screen. On a desktop session every test that shows a
 # widget would otherwise flash a real window over whatever the developer is
 # doing. LUMISYNC_TEST_SHOW_WINDOWS=1 opts back in for debugging.

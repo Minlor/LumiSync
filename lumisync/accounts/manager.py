@@ -10,6 +10,12 @@ from .errors import AccountError
 from .secrets import protect_device, vault
 
 
+def _logger():
+    from ..utils.logging import get_logger
+
+    return get_logger(__name__)
+
+
 def make_client(provider: str, credentials: dict):
     if provider == "govee_api":
         from .govee import GoveePlatformClient
@@ -35,15 +41,41 @@ class AccountManager:
         self._lock = threading.RLock()
 
     def register(self, provider: str, client, *, remember: bool = True, identity: str | None = None) -> dict:
+        """Hold *client* under *identity* (a new id when None) and store its credentials.
+
+        With *remember*, a system store that refuses the save does not undo
+        the sign-in: the credentials are kept for this session and
+        ``vault.is_session_only(metadata["credential_ref"])`` is then True.
+        """
+        reused = identity is not None
         identity = identity or uuid.uuid4().hex
         reference = "account/" + identity
-        vault.put(reference, {"provider": provider, "credentials": client.credentials, "remember": remember}, remember=remember)
+        if remember:
+            vault.put_or_keep(reference, {"provider": provider, "credentials": client.credentials, "remember": remember})
+        else:
+            if reused and not vault.is_session_only(reference):
+                # Reconnected without Remember: the copy saved earlier must not
+                # outlive the account (settings forget session accounts).
+                vault.discard_durable(reference)
+            vault.put(reference, {"provider": provider, "credentials": client.credentials, "remember": remember}, remember=False)
         with self._lock:
             previous = self._clients.get(identity)
             if previous is not None and previous is not client:
                 previous.close()
             self._clients[identity] = client
-        client.credentials_updated = lambda credentials: vault.put(reference, {"provider": provider, "credentials": credentials, "remember": remember}, remember=remember)
+
+        def save_refreshed(credentials) -> None:
+            # Runs on whichever thread refreshed the token: it must not raise.
+            payload = {"provider": provider, "credentials": credentials, "remember": remember}
+            try:
+                if remember:
+                    vault.put_or_keep(reference, payload)
+                else:
+                    vault.put(reference, payload, remember=False)
+            except Exception as exc:
+                _logger().warning("Could not keep refreshed credentials: provider=%s error=%s", provider, type(exc).__name__)
+
+        client.credentials_updated = save_refreshed
         return {"id": identity, "provider": provider, "credential_ref": reference, "remember": remember}
 
     def client_for(self, device: dict):
@@ -65,7 +97,7 @@ class AccountManager:
     def descriptors(self, metadata: dict, raw_devices: list[dict]) -> list[dict]:
         result = []
         for raw in raw_devices:
-            device = protect_device(raw, remember=metadata["remember"])
+            device = protect_device(raw, remember=metadata["remember"], keep_for_session=True)
             device["account_id"] = metadata["id"]
             result.append(device)
         return result

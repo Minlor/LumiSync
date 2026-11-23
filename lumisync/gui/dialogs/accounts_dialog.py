@@ -971,7 +971,12 @@ class AccountsDialog(QDialog):
                                 "package override" if client.credentials["profile"].get("source") == "package" else "built-in")
                     client.login(credentials["email"], credentials["password"], credentials["country_code"],
                                  mfa_code=credentials["mfa_code"], region=credentials["region"])
-                    vault.put("vendor-app/" + provider.removesuffix("_account"), client.credentials["profile"], remember=remember)
+                    profile_key = "vendor-app/" + provider.removesuffix("_account")
+                    if remember:
+                        # A refused save must not cost the sign-in (see _save_connection).
+                        vault.put_or_keep(profile_key, client.credentials["profile"])
+                    else:
+                        vault.put(profile_key, client.credentials["profile"], remember=False)
                 return client, client.list_devices()
             except AccountError as exc:
                 if exc.code in ("verification_required", "verification"):
@@ -1088,12 +1093,12 @@ class AccountsDialog(QDialog):
         except Exception:
             client.close()
             raise
-        metadata["label"] = PROVIDER_NAMES[self.provider.currentData()]
-        if self._provider_pending in ("tuya_account", "lsc_account") and self._country_pending:
-            metadata["country_iso"] = self._country_pending
-        if client.credentials.get("email"):
-            metadata["label"] += " · " + mask_email(client.credentials["email"])
         try:
+            metadata["label"] = PROVIDER_NAMES[self.provider.currentData()]
+            if self._provider_pending in ("tuya_account", "lsc_account") and self._country_pending:
+                metadata["country_iso"] = self._country_pending
+            if client.credentials.get("email"):
+                metadata["label"] += " · " + mask_email(client.credentials["email"])
             descriptors = account_manager.descriptors(metadata, raw_devices)
             if self.controller.import_account_devices(metadata, descriptors) is False:
                 raise AccountError(
@@ -1117,9 +1122,27 @@ class AccountsDialog(QDialog):
         self.entries["email"].clear()
         count = len(descriptors)
         logger.info("Account connected: provider=%s supported_devices=%d", self._provider_pending, count)
-        self._show_status(f"Account connected. {count} supported device{'s' if count != 1 else ''} imported. Open Devices to control them.", "success")
+        if self._remember_pending and self._unsaved_credentials(metadata, descriptors):
+            from ...utils.logging import get_logs_directory
+            logger.warning("Account connected for this session only: provider=%s", self._provider_pending)
+            self._show_status(
+                "Connected for now, but LumiSync could not save this sign-in in the system credential "
+                "store. After you restart LumiSync you will need to sign in again. "
+                f"Details are in the log folder: {get_logs_directory()}",
+                "error",
+            )
+        else:
+            self._show_status(f"Account connected. {count} supported device{'s' if count != 1 else ''} imported. Open Devices to control them.", "success")
         for key in ("api_key",):
             self.entries[key].clear()
+
+    def _unsaved_credentials(self, metadata: dict, descriptors) -> bool:
+        """Whether any secret of this sign-in is held for this session only."""
+        references = [str(metadata.get("credential_ref") or "account/" + str(metadata.get("id") or ""))]
+        references += [str(d["local_key_ref"]) for d in descriptors if isinstance(d, Mapping) and d.get("local_key_ref")]
+        if self._provider_pending in ("tuya_account", "lsc_account"):
+            references.append("vendor-app/" + self._provider_pending.removesuffix("_account"))
+        return any(vault.is_session_only(reference) for reference in references)
 
     @staticmethod
     def _same_account(metadata: dict, client) -> bool:

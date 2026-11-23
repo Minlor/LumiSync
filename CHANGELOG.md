@@ -4,6 +4,10 @@ All notable changes to LumiSync are recorded here.
 
 ## Unreleased
 
+- Account sign-ins no longer fail with "Could not save the connection in the
+  system credential store" when a long token exceeds the Windows limit: long
+  values are now saved in parts. If the store still refuses, the account
+  stays connected until you close LumiSync, and the log records why.
 - Settings is split into four tabs, General, Sync, Updates and About, picked
   from a row under the title (arrow keys or Ctrl+Tab also switch). The last
   tab opened comes back on the next start, and an update notification or the

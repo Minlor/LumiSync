@@ -470,6 +470,7 @@ class AccountsDialogTests(_Base):
         manager.descriptors.return_value = []
         client = SimpleNamespace(credentials={"email": email}, close=Mock())
         vault = Mock()
+        vault.is_session_only.return_value = False  # The store accepted the save.
         if saved_email is None:
             from lumisync.accounts.errors import AccountError
 
