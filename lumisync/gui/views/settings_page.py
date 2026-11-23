@@ -163,16 +163,6 @@ class SettingsPage(QWidget):
             self.autostart_check,
         ))
 
-        self.statusbar_check = ToggleSwitch()
-        self.statusbar_check.setAccessibleName("Show the status bar")
-        self.statusbar_check.setChecked(_bool_value(self.settings, "ui/status_bar", True))
-        self.statusbar_check.toggled.connect(self._on_statusbar_toggled)
-        group.add_card(SettingsCard(
-            "statusbar.svg", "Status bar",
-            "Show progress messages along the bottom of the window",
-            self.statusbar_check,
-        ))
-
         self.window_material_combo = ProductComboBox()
         self.window_material_combo.setAccessibleName("Window material")
         self.window_material_combo.setMinimumWidth(200)
@@ -263,11 +253,6 @@ class SettingsPage(QWidget):
             main_window = self._main_window
             if main_window is not None and hasattr(main_window, "show_error"):
                 main_window.show_error("Error: could not update the Windows autostart entry.")
-
-    def _on_statusbar_toggled(self, checked: bool) -> None:
-        self.settings.setValue("ui/status_bar", bool(checked))
-        if self._main_window is not None:
-            self._main_window.statusBar().setVisible(bool(checked))
 
     def _on_window_material_changed(self) -> None:
         requested = str(self.window_material_combo.currentData() or "solid")

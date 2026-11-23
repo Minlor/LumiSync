@@ -31,6 +31,7 @@ from ..resources.icons import IconKey, tinted_pixmap, tinted_icon
 from ..theme import qcolor
 from ..utils import firewall
 from ..utils.device_grid import DeviceGridLayout
+from ..utils.device_identity import is_pc_hardware
 from ..widgets.color_flyout import remember_recent_color
 from ..widgets.device_card import CARD_MIN_WIDTH, DeviceCard
 from ..widgets.device_inspector import DeviceInspector
@@ -48,6 +49,42 @@ FIREWALL_BLOCK_ALL_MESSAGE = (
     "Windows Firewall is set to block all incoming connections, so LumiSync can't hear your "
     "lights. Turn that off in Windows Security › Firewall & network protection."
 )
+SCOPE_LIGHTS = "lights"
+SCOPE_PC = "pc"
+
+LIGHTS_EMPTY_TEXT = (
+    "No devices yet\n\nChoose Find devices to search your local network and "
+    "nearby Bluetooth panels, or add a device using its connection details."
+)
+PC_EMPTY_TEXT = (
+    "No PC lighting found yet\n\nLighting on supported Gigabyte motherboards, Logitech mice and Lorgar "
+    "keyboards shows up here automatically."
+)
+PC_FOOTNOTE = "More PC lighting will appear here as support is added."
+# The PC page's automatic scan: every this many ms while the page is shown,
+# and once shortly after it becomes the visible page.
+PC_AUTO_SCAN_INTERVAL_MS = 5_000
+PC_AUTO_SCAN_SHOW_DELAY_MS = 250
+
+
+def confirm_lighting_sync(parent: Optional[QWidget], sync) -> bool:
+    """Ask before allowing sync on a device that wears with every change.
+
+    ``sync`` is the driver's :class:`~lumisync.drivers.led_color.SyncOptions`
+    (title, text and button labels). Tests replace this function.
+    """
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setWindowTitle(sync.confirm_title)
+    box.setText(sync.confirm_title)
+    box.setInformativeText(sync.confirm_text)
+    allow = box.addButton(sync.confirm_accept, QMessageBox.ButtonRole.AcceptRole)
+    cancel = box.addButton(sync.confirm_reject, QMessageBox.ButtonRole.RejectRole)
+    box.setDefaultButton(cancel)
+    box.setEscapeButton(cancel)
+    box.exec()
+    return box.clickedButton() is allow
+
 FIREWALL_PUBLIC_TITLE = "Your network is set to Public"
 FIREWALL_PUBLIC_MESSAGE = (
     "Windows Firewall keeps LumiSync from hearing your lights on public networks. If this is "
@@ -65,8 +102,19 @@ class SearchButton(QPushButton):
     IDLE_TEXT = "Find devices"
     BUSY_TEXT = "Searching…"
 
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(self.IDLE_TEXT, parent)
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        *,
+        idle_text: Optional[str] = None,
+        busy_text: Optional[str] = None,
+    ):
+        idle = self.IDLE_TEXT if idle_text is None else idle_text
+        busy = self.BUSY_TEXT if busy_text is None else busy_text
+        super().__init__(idle, parent)
+        self.IDLE_TEXT = idle
+        self.BUSY_TEXT = busy
+        self._busy_description = "Searching for devices" if busy_text is None else busy.rstrip("…")
         self._searching = False
         self._angle = 0
         self._spin = QTimer(self)
@@ -87,7 +135,7 @@ class SearchButton(QPushButton):
         else:
             self._spin.stop()
             self._angle = 0
-        self.setAccessibleDescription("Searching for devices" if searching else "")
+        self.setAccessibleDescription(self._busy_description if searching else "")
         self._update_icon()
 
     def _tick(self) -> None:
@@ -211,19 +259,35 @@ class ProgressLine(QWidget):
 
 
 class DevicesView(QWidget):
-    """Stable page actions above a responsive inventory and device inspector."""
+    """Stable page actions above a responsive inventory and device inspector.
+
+    ``scope`` picks the page: ``"lights"`` (the Devices page: network and
+    Bluetooth lights) or ``"pc"`` (the PC page: lighting inside or attached
+    to this computer, see :func:`is_pc_hardware`). Both share the card grid
+    and inspector; a device appears on exactly one of them. Cards and the
+    inspector keep the controller's own device indexes, so every signal
+    reaches the right device whatever the page filters out.
+    """
 
     def __init__(
         self,
         device_controller: DeviceController,
         firewall_monitor: Optional[FirewallMonitor] = None,
+        *,
+        scope: str = SCOPE_LIGHTS,
     ):
         super().__init__()
+        if scope not in (SCOPE_LIGHTS, SCOPE_PC):
+            raise ValueError(f"Unknown devices page scope: {scope!r}")
+        self.scope = scope
         self.controller = device_controller
         # Shared Windows Firewall state; None for pages built without one.
-        self._firewall = firewall_monitor
+        # The PC page shows no network problems, so it never uses one.
+        self._firewall = firewall_monitor if scope == SCOPE_LIGHTS else None
 
+        # Cards in display order; each keeps its controller index (card._index).
         self._cards: list[DeviceCard] = []
+        self._card_by_index: Dict[int, DeviceCard] = {}
         self._inspected_index = -1
         self._inspected_key = ""
         self._inspector_animation = None
@@ -244,12 +308,34 @@ class DevicesView(QWidget):
         self._status_poll_timer.start()
         self._status_tick = 0
 
+        # PC page: find newly plugged (and unplugged) hardware by itself, with
+        # a quiet enumerate-only scan while the page is shown. Started and
+        # stopped by showEvent/hideEvent; the tick also skips a minimised window.
+        self._auto_scan_timer = QTimer(self)
+        self._auto_scan_timer.setInterval(PC_AUTO_SCAN_INTERVAL_MS)
+        self._auto_scan_timer.timeout.connect(self._auto_scan_tick)
+
         self._build()
         self._connect_signals()
         self._rebuild_cards()
 
+    def is_pc_page(self) -> bool:
+        return self.scope == SCOPE_PC
+
+    def shows_device(self, device) -> bool:
+        """Whether this page has a card for *device*."""
+        return is_pc_hardware(device) == self.is_pc_page()
+
+    def shown_indexes(self) -> list[int]:
+        """Controller indexes of the devices this page shows, in order."""
+        return [index for index, device in enumerate(self.controller.devices) if self.shows_device(device)]
+
     def _poll_status(self) -> None:
         if not self.isVisible():
+            return
+        if self.is_pc_page():
+            # Only local hardware here: no account pass, no network re-check.
+            self.controller.refresh_pc_hardware_states()
             return
         self._status_tick += 1
         if self._status_tick % 4 == 0:
@@ -260,8 +346,36 @@ class DevicesView(QWidget):
             self.controller.refresh_local_device_states()
         self._recheck_network()
 
+    def auto_scan(self) -> bool:
+        """Run one quiet PC scan now (PC page only); False when skipped."""
+        if not self.is_pc_page():
+            return False
+        return self.controller.auto_scan_local_hardware()
+
+    def _auto_scan_tick(self) -> None:
+        """The periodic PC scan: only while this page is shown and the window is not minimised."""
+        if not self.is_pc_page() or not self.isVisible():
+            return
+        window = self.window()
+        if window is not None and window.isMinimized():
+            return
+        self.auto_scan()
+
+    def stop_auto_scan(self) -> None:
+        """Stop the periodic PC scan (page hidden, app shutting down)."""
+        self._auto_scan_timer.stop()
+
+    def hideEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().hideEvent(event)
+        self.stop_auto_scan()
+
     def showEvent(self, event) -> None:  # noqa: N802 - Qt API
         super().showEvent(event)
+        if self.is_pc_page():
+            QTimer.singleShot(400, self, self.controller.refresh_pc_hardware_states)
+            QTimer.singleShot(PC_AUTO_SCAN_SHOW_DELAY_MS, self, self._auto_scan_tick)
+            self._auto_scan_timer.start()
+            return
         # Refresh everything once when the page is opened rather than waiting
         # for the slower local/cloud cadence (the page may have been hidden for
         # hours). Local Tuya devices still fall back to cloud if LAN is down.
@@ -281,21 +395,31 @@ class DevicesView(QWidget):
         # Header: the page title with its actions on the same row.
         header_row = self.header_row = QHBoxLayout()
         header_row.setSpacing(8)
-        header = QLabel("Devices")
+        pc_page = self.is_pc_page()
+        header = self.title_label = QLabel("PC" if pc_page else "Devices")
         header.setProperty("role", "title")
         header_row.addWidget(header, 0, Qt.AlignmentFlag.AlignVCenter)
         header_row.addStretch(1)
 
-        self.find_devices_button = SearchButton()
+        if pc_page:
+            self.find_devices_button = SearchButton(idle_text="Scan this PC", busy_text="Scanning…")
+            self.find_devices_button.setToolTip("Look for lighting inside or attached to this PC")
+            self.find_devices_button.setAccessibleName("Scan this PC for lighting")
+            self.find_devices_button.clicked.connect(self.controller.scan_local_hardware)
+        else:
+            self.find_devices_button = SearchButton()
+            self.find_devices_button.setToolTip(
+                "Search Wi-Fi and Bluetooth, refresh linked accounts, and update saved device readings"
+            )
+            self.find_devices_button.setAccessibleName("Find and refresh devices")
+            self.find_devices_button.clicked.connect(self.controller.find_devices)
         self.find_devices_button.setObjectName("Primary")
         self.find_devices_button.setProperty("role", "primary")
-        self.find_devices_button.setToolTip(
-            "Search Wi-Fi and Bluetooth, refresh linked accounts, and update saved device readings"
-        )
-        self.find_devices_button.setAccessibleName("Find and refresh devices")
-        self.find_devices_button.clicked.connect(self.controller.find_devices)
         header_row.addWidget(self.find_devices_button)
 
+        # The PC page has no manual add or accounts: its hardware is found on
+        # this computer. The buttons exist (hidden) so shared code needs no
+        # special cases.
         self.add_button = QPushButton("Add device")
         self.add_button.setIcon(tinted_icon(IconKey.ADD, qcolor("text")))
         self.add_button.setToolTip("Add a device using its connection details")
@@ -307,6 +431,9 @@ class DevicesView(QWidget):
         self.accounts_button.clicked.connect(lambda: self._open_accounts())
         header_row.addWidget(self.accounts_button)
         root.addLayout(header_row)
+        if pc_page:
+            self.add_button.hide()
+            self.accounts_button.hide()
         root.addSpacing(12)
 
         # Page-level problems (accounts, network, Bluetooth) as InfoBars. They
@@ -367,6 +494,15 @@ class DevicesView(QWidget):
         self.grid_layout = DeviceGridLayout(self.grid_host, h_spacing=12, v_spacing=12)
         self.grid_layout.setContentsMargins(0, 0, 0, 0)
         scroll_body_layout.addWidget(self.grid_host)
+        self.footnote_label: Optional[QLabel] = None
+        if pc_page:
+            # One quiet line about what is coming; not a card, no controls.
+            self.footnote_label = QLabel(PC_FOOTNOTE)
+            self.footnote_label.setObjectName("PcFootnote")
+            self.footnote_label.setProperty("role", "subtle")
+            self.footnote_label.setWordWrap(True)
+            self.footnote_label.setContentsMargins(0, 16, 0, 0)
+            scroll_body_layout.addWidget(self.footnote_label)
         scroll_body_layout.addStretch(1)
 
         self.scroll.setWidget(scroll_body)
@@ -390,6 +526,37 @@ class DevicesView(QWidget):
             self._on_card_zone_count_reset
         )
         self.inspector.remove_requested.connect(self._on_card_remove)
+        self.inspector.color_correction_changed.connect(self._on_color_correction_changed)
+        self.inspector.lighting_layout_changed.connect(self._on_lighting_layout_changed)
+        self.inspector.lighting_effect_changed.connect(
+            lambda index, value: self._on_lighting_option(self.controller.set_lighting_effect_at, index, value)
+        )
+        self.inspector.lighting_effect_speed_changed.connect(
+            lambda index, value: self._on_lighting_option(self.controller.set_lighting_effect_speed_at, index, value)
+        )
+        self.inspector.lighting_effect_reversed_changed.connect(
+            lambda index, value: self._on_lighting_option(self.controller.set_lighting_effect_reversed_at, index, value)
+        )
+        self.inspector.lighting_effect_multicolor_changed.connect(
+            lambda index, value: self._on_lighting_option(
+                self.controller.set_lighting_effect_multicolor_at, index, value
+            )
+        )
+        self.inspector.lighting_secondary_color_enabled_changed.connect(
+            lambda index, value: self._on_lighting_option(
+                self.controller.set_lighting_secondary_color_enabled_at, index, value
+            )
+        )
+        self.inspector.lighting_secondary_color_changed.connect(
+            lambda index, color: self._on_lighting_option(
+                lambda i, c: self.controller.set_lighting_secondary_color_at(i, c.red(), c.green(), c.blue()),
+                index, color,
+            )
+        )
+        self.inspector.lighting_sync_enabled_changed.connect(self._on_lighting_sync_enabled)
+        self.inspector.lighting_sync_interval_changed.connect(
+            lambda index, value: self._on_lighting_option(self.controller.set_lighting_sync_interval_at, index, value)
+        )
 
         self.inspector_scroll = QScrollArea()
         self.inspector_scroll.setObjectName("DeviceInspectorScroll")
@@ -422,10 +589,7 @@ class DevicesView(QWidget):
         root.addWidget(self.content_host, 1)
 
         # Empty state label
-        self.empty_label = QLabel(
-            "No devices yet\n\nChoose Find devices to search your local network and "
-            "nearby Bluetooth panels, or add a device using its connection details."
-        )
+        self.empty_label = QLabel(PC_EMPTY_TEXT if pc_page else LIGHTS_EMPTY_TEXT)
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_label.setWordWrap(True)
         self.empty_label.setProperty("role", "empty")
@@ -481,8 +645,12 @@ class DevicesView(QWidget):
         self.controller.device_removed.connect(lambda *_: self._sync_cards())
         self.controller.device_updated.connect(lambda *_: self._sync_cards())
         self.controller.device_state_updated.connect(self._on_device_state_updated)
+        # Find devices also scans this PC, so both pages show it running.
         self.controller.device_search_started.connect(self._on_search_started)
         self.controller.device_search_finished.connect(self._on_search_finished)
+        if self.is_pc_page():
+            self.controller.local_hardware_scan_started.connect(self._on_search_started)
+            self.controller.local_hardware_scan_finished.connect(self._on_local_scan_finished)
         self.controller.account_issues_changed.connect(lambda *_: self._update_info_bars())
         if self._firewall is not None:
             self._firewall.changed.connect(lambda *_: self._update_info_bars())
@@ -514,9 +682,15 @@ class DevicesView(QWidget):
         self.find_devices_button.set_searching(True)
         self.search_progress.set_running(True)
 
+    def _on_local_scan_finished(self, _summary: dict) -> None:
+        self.find_devices_button.set_searching(False)
+        self.search_progress.set_running(False)
+
     def _on_search_finished(self, summary: dict) -> None:
         self.find_devices_button.set_searching(False)
         self.search_progress.set_running(False)
+        if self.is_pc_page():
+            return
         summary = summary if isinstance(summary, dict) else {}
         lan = summary.get("lan")
         if isinstance(lan, dict):
@@ -639,6 +813,13 @@ class DevicesView(QWidget):
         bar.setVisible(self._dismissed.get(key) != self._signature(key))
 
     def _update_info_bars(self) -> None:
+        if self.is_pc_page():
+            # Accounts, network, firewall and Bluetooth never affect PC
+            # hardware; those bars belong to the Devices page only.
+            for bar in self._info_bars():
+                bar.hide()
+            self.info_host.hide()
+            return
         parts = self.account_issue_parts()
         self._issue_account_ids = list(parts)
         if len(parts) == 1:
@@ -679,7 +860,10 @@ class DevicesView(QWidget):
 
     # ------------------------------------------------------------------ cards
 
-    _CARD_SIGNATURE_FIELDS = ("name", "model", "sku", "transport", "device_id", "mac")
+    # The USB lighting layout changes the card's zone count, so it rebuilds too.
+    _CARD_SIGNATURE_FIELDS = (
+        "name", "model", "sku", "transport", "device_id", "mac", "rgb_fusion_layout", "lighting_layout",
+    )
 
     def _card_signature(self, device: dict) -> tuple:
         return tuple(str(device.get(field) or "") for field in self._CARD_SIGNATURE_FIELDS)
@@ -695,13 +879,15 @@ class DevicesView(QWidget):
     def _apply_device_list(self) -> None:
         self._card_sync_pending = False
         devices = self.controller.devices
-        current = [self._card_signature(card.device()) for card in self._cards]
-        wanted = [self._card_signature(device) for device in devices]
+        # The controller index is part of the signature: a device the other
+        # page shows can move this page's devices to new indexes.
+        current = [(card._index, self._card_signature(card.device())) for card in self._cards]
+        wanted = [(index, self._card_signature(devices[index])) for index in self.shown_indexes()]
         if current == wanted:
             # Same devices in the same order: keep the existing cards. States
             # arrive via device_state_updated, so nothing visible goes stale.
-            for index, card in enumerate(self._cards):
-                card.set_inspected(index == self._inspected_index)
+            for card in self._cards:
+                card.set_inspected(card._index == self._inspected_index)
             return
         self._rebuild_cards()
 
@@ -713,20 +899,20 @@ class DevicesView(QWidget):
             if w is not None:
                 w.deleteLater()
         self._cards.clear()
+        self._card_by_index.clear()
+        shown = self.shown_indexes()
+        devices = self.controller.devices
         # Refreshes can reorder devices or remove a preceding row. Keep the
         # open inspector attached to the same device identity.
         self._inspected_index = next(
-            (
-                index
-                for index, device in enumerate(self.controller.devices)
-                if self._device_key(device) == self._inspected_key
-            ),
+            (index for index in shown if self._device_key(devices[index]) == self._inspected_key),
             -1,
         )
         if self._inspected_index < 0:
             self._inspected_key = ""
 
-        for idx, device in enumerate(self.controller.devices):
+        for idx in shown:
+            device = devices[idx]
             card = DeviceCard(idx, device, self.grid_host)
             card.set_inspected(idx == self._inspected_index)
             card.set_state(self.controller.get_device_state_at(idx))
@@ -737,6 +923,7 @@ class DevicesView(QWidget):
             card.color_temp_changed.connect(self.controller.set_color_temperature_at)
             card.custom_color_requested.connect(self._pick_custom_color)
             self._cards.append(card)
+            self._card_by_index[idx] = card
             self.grid_layout.addWidget(card)
 
         if self._inspected_index >= 0:
@@ -747,10 +934,15 @@ class DevicesView(QWidget):
         self._update_empty_state()
         # A Bluetooth panel may have been added or removed.
         self._update_info_bars()
-        self.controller.refresh_device_states()
+        if self.is_pc_page():
+            self.controller.refresh_pc_hardware_states()
+        else:
+            self.controller.refresh_device_states()
 
     def _update_empty_state(self) -> None:
-        empty = not self.controller.devices
+        # Only devices this page shows count: a PC-only inventory leaves the
+        # Devices page empty (and the other way round).
+        empty = not self.shown_indexes()
         self.empty_label.setVisible(empty)
         self.content_host.setVisible(not empty)
 
@@ -761,6 +953,8 @@ class DevicesView(QWidget):
     def _open_inspector(self, index: int) -> None:
         if not (0 <= index < len(self.controller.devices)):
             return
+        if not self.shows_device(self.controller.devices[index]):
+            return  # The other page owns this device.
         self._stop_inspector_animation()
         self._inspected_index = index
         self._inspected_key = self._device_key(self.controller.devices[index])
@@ -817,7 +1011,7 @@ class DevicesView(QWidget):
 
     def _card_for_key(self, key: str) -> tuple[int, Optional[DeviceCard]]:
         index = next((i for i, device in enumerate(self.controller.devices) if self._device_key(device) == key), -1)
-        card = self._cards[index] if 0 <= index < len(self._cards) else None
+        card = self._card_by_index.get(index)
         if card is not None and (not shiboken6.isValid(card) or self._device_key(card.device()) != key):
             card = None  # Deleted, or a rebuild for the new order is still pending.
         return index, card
@@ -847,8 +1041,9 @@ class DevicesView(QWidget):
         self.controller.set_color_at(index, chosen.red(), chosen.green(), chosen.blue())
 
     def _on_device_state_updated(self, index: int, state: dict) -> None:
-        if 0 <= index < len(self._cards):
-            self._cards[index].set_state(state)
+        card = self._card_by_index.get(index)
+        if card is not None and shiboken6.isValid(card):
+            card.set_state(state)
         if index == self._inspected_index:
             self.inspector.set_state(state)
 
@@ -860,7 +1055,7 @@ class DevicesView(QWidget):
             device.get("ble_address")
             or device.get("ip")
             or device.get("mac")
-            or "unknown address"
+            or ("USB" if str(device.get("transport") or "").lower() == "usb" else "")            or "unknown address"
         )
         reply = QMessageBox.question(
             self, "Remove device",
@@ -889,6 +1084,31 @@ class DevicesView(QWidget):
 
     def _on_card_zone_count_reset(self, index: int) -> None:
         self.controller.set_zone_count_at(index, None)
+
+    def _on_color_correction_changed(self, index: int, enabled: bool) -> None:
+        if not self.controller.set_color_correction_at(index, enabled) and index == self._inspected_index:
+            self._populate_inspector()  # Not saved: show the saved setting again.
+
+    def _on_lighting_layout_changed(self, index: int, layout: str) -> None:
+        if not self.controller.set_lighting_layout_at(index, layout) and index == self._inspected_index:
+            self._populate_inspector()  # Refused (busy) or not saved: show the saved layout again.
+
+    def _on_lighting_option(self, setter, index: int, value) -> None:
+        """An effect option from the inspector (effect, speed, direction, multicolour, second colour)."""
+        if not setter(index, value) and index == self._inspected_index:
+            self._populate_inspector()  # Not saved: show the saved setting again.
+
+    def _on_lighting_sync_enabled(self, index: int, enabled: bool) -> None:
+        """Opt-in sync: turning it on asks first; Cancel leaves it off."""
+        if enabled:
+            sync = self.inspector.sync_options()
+            if sync is None or not confirm_lighting_sync(self, sync):
+                if index == self._inspected_index:
+                    self._populate_inspector()  # Show it off again.
+                return
+        self.controller.set_lighting_sync_enabled_at(index, enabled)
+        if index == self._inspected_index:
+            self._populate_inspector()  # The saved setting, with the interval row when on.
 
     # ------------------------------------------------------------------ misc
 

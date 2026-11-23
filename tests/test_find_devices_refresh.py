@@ -11,6 +11,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
+from lumisync import devices
 from lumisync.gui.controllers.device_controller import DeviceController
 from lumisync.accounts.tuya import normalize_devices
 from lumisync.gui.views.devices_view import DevicesView
@@ -34,6 +35,10 @@ class FindDevicesRefreshTests(unittest.TestCase):
         tasks = []
 
         def start(action, completed):
+            if action is devices.discover_local_hardware:
+                # The no-network USB lighting search: nothing attached here.
+                completed([], None)
+                return Mock()
             tasks.append((action, completed))
             return Mock()
 
@@ -44,6 +49,29 @@ class FindDevicesRefreshTests(unittest.TestCase):
             controller.find_devices()
             controller.find_devices()  # Repeated presses cannot duplicate the requests.
         return tasks
+
+    def test_usb_lighting_is_found_without_a_network(self):
+        controller = self.controller()
+        board = {"device_id": "rgbfusion2-048d-5702", "name": "Board lighting",
+                 "transport": "usb", "type": "rgb_fusion2", "device_kind": "motherboard"}
+        finished = []
+        controller.device_search_finished.connect(finished.append)
+
+        def start(action, completed):
+            self.assertIs(action, devices.discover_local_hardware)
+            completed([dict(board)], None)
+            return Mock()
+
+        with patch.object(controller, "get_accounts", return_value=[]), \
+                patch.object(controller, "_local_network_available", return_value=False), \
+                patch.object(controller, "_start_ble_scan", return_value=False), \
+                patch.object(controller, "refresh_device_states"), \
+                patch.object(controller._store, "save"), \
+                patch("lumisync.gui.controllers.device_controller.start_task", side_effect=start):
+            controller.find_devices()
+        self.assertEqual([d.get("transport") for d in controller.devices], ["usb"])
+        self.assertEqual(finished[0]["new_devices"], 1)
+        self.assertFalse(finished[0]["lan"]["available"])
 
     def test_find_devices_reads_every_account_and_finishes_with_a_status_refresh(self):
         controller = self.controller()

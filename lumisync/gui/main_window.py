@@ -24,6 +24,7 @@ from .resources.icons import IconKey, icon as app_icon
 from .widgets import NavigationShell
 from .widgets.toast import ToastManager
 from .theme import apply_theme
+from .utils.window_effects import clear_backdrop_region, has_backdrop_material
 from ..utils.logging import setup_logger
 
 from .controllers.device_controller import DeviceController
@@ -32,6 +33,9 @@ from .controllers.sync_controller import SyncController
 from .controllers.update_controller import UpdateController
 
 logger = setup_logger('lumisync_gui')
+
+# The quiet PC scan after start: once the window has settled.
+PC_STARTUP_SCAN_DELAY_MS = 2_000
 
 # Prevent a repeating timer's exception from stacking modal error dialogs.
 _error_dialog_open = False
@@ -79,6 +83,7 @@ class LumiSyncMainWindow(QMainWindow):
         self._shutdown_started = False
         self._shutdown_ready = False
         self._shutdown_deadline = None
+        self._shutdown_notice_shown = False
         self._update_progress: QProgressDialog | None = None
         self._update_timer: QTimer | None = None
         self._update_offer_version: str | None = None
@@ -87,7 +92,6 @@ class LumiSyncMainWindow(QMainWindow):
 
         self.setup_controller_connections()
         self.setup_ui()
-        self.setup_status_bar()
         self.set_icon()
         self.setup_tray()
         self.restore_geometry()
@@ -126,6 +130,8 @@ class LumiSyncMainWindow(QMainWindow):
         from .views.settings_page import SettingsPage
 
         self.devices_view = DevicesView(self.device_controller, self.firewall_monitor)
+        # Lighting inside or attached to this PC (RGB Fusion 2 boards today).
+        self.pc_view = DevicesView(self.device_controller, scope="pc")
         self.monitor_sync_view = ModesView(
             self.sync_controller, self.device_controller, mode="monitor"
         )
@@ -161,6 +167,12 @@ class LumiSyncMainWindow(QMainWindow):
         self.nav_shell.set_page_svg("music", "music.svg")
 
         self.nav_shell.add_page(
+            key="pc", title="PC", label="PC",
+            icon=app_icon(IconKey.PC), widget=self.pc_view,
+        )
+        self.nav_shell.set_page_svg("pc", "pc.svg")
+
+        self.nav_shell.add_page(
             key="draw", title="Draw",
             icon=app_icon(IconKey.DRAW), widget=self.draw_view,
         )
@@ -182,6 +194,46 @@ class LumiSyncMainWindow(QMainWindow):
         ):
             signal.connect(self._update_draw_page_visibility)
         self._update_draw_page_visibility()
+        self._setup_pc_page()
+
+    def _setup_pc_page(self) -> None:
+        """Offer the PC page where USB HID lighting works; badge new finds."""
+        from ..drivers import hid_feature
+
+        self.nav_shell.set_page_visible("pc", hid_feature.supported())
+        # PC hardware that Find devices (on the Devices page) turns up shows
+        # on the PC page; a rail badge says so until that page is opened.
+        self._pc_keys_before_search: set[str] | None = None
+        self.device_controller.device_search_started.connect(self._on_device_search_started)
+        self.device_controller.device_search_finished.connect(self._on_device_search_finished)
+        self.nav_shell.page_activated.connect(self._on_page_activated)
+
+    def auto_scan_pc_on_startup(self) -> None:
+        """One quiet PC scan after start, so new hardware shows without a click."""
+        pc_view = getattr(self, "pc_view", None)
+        if pc_view is not None and self.nav_shell.is_page_visible("pc"):
+            pc_view.auto_scan()
+
+    def _pc_hardware_keys(self) -> set[str]:
+        from ..groups import device_key
+        from .utils.device_identity import is_pc_hardware
+
+        return {device_key(device) for device in self.device_controller.devices if is_pc_hardware(device)}
+
+    def _on_device_search_started(self) -> None:
+        self._pc_keys_before_search = self._pc_hardware_keys()
+
+    def _on_device_search_finished(self, *_args) -> None:
+        before = self._pc_keys_before_search
+        self._pc_keys_before_search = None
+        if before is None or not (self._pc_hardware_keys() - before):
+            return
+        if self.nav_shell.is_page_visible("pc") and self.nav_shell.current_key() != "pc":
+            self.nav_shell.set_page_badge("pc", True)
+
+    def _on_page_activated(self, key: str) -> None:
+        if key == "pc":
+            self.nav_shell.set_page_badge("pc", False)
 
     def _update_draw_page_visibility(self, *_args) -> None:
         from ..drivers.registry import capabilities_for_device
@@ -266,13 +318,6 @@ class LumiSyncMainWindow(QMainWindow):
             pass
         self.close()
 
-    def setup_status_bar(self):
-        raw = self.settings.value("ui/status_bar", True)
-        show_status = str(raw).lower() in ("true", "1")
-        self.statusBar().setVisible(show_status)
-        if show_status:
-            self.statusBar().showMessage("Ready")
-
     def set_window_material(self, material: str, *, notify: bool = True) -> str:
         """Apply and persist the requested window material.
 
@@ -320,22 +365,25 @@ class LumiSyncMainWindow(QMainWindow):
                 )
         return active
 
+    def paintEvent(self, event):  # noqa: N802 - Qt API
+        # With Mica or Acrylic every repaint must start from transparent, or
+        # the previous page and rail marker show through the new ones.
+        if has_backdrop_material(self):
+            clear_backdrop_region(self, event.region())
+        super().paintEvent(event)
+
     def show_status(self, message: str, timeout: int = 5000):
-        """Status: the status bar (when shown) and the log. Never a toast.
+        """Status: the log only. Never a toast.
 
         Progress and confirmations ("Imported 4 devices", "Searching…") are
         status. Anything the user must see now is a notice (show_notice) or
         an error (show_error); page-level problems are InfoBars on the page.
+        The window has no status bar; ``timeout`` stays for callers.
         """
-        configured = str(
-            self.settings.value("ui/status_bar", True)
-        ).lower() in ("true", "1")
-        if configured:
-            self.statusBar().showMessage(message, timeout)
         logger.info(f"Status: {message}")
 
     def show_notice(self, message: str, kind: str = "info"):
-        """Notice: a toast. Controllers also send it as a status for the bar."""
+        """Notice: a toast. Controllers also send it as a status for the log."""
         if kind == "error":
             self.toasts.error(message)
             logger.warning("Notice: %s", message)
@@ -349,7 +397,6 @@ class LumiSyncMainWindow(QMainWindow):
         logger.info("Notice: %s", message)
 
     def show_error(self, message: str):
-        self.statusBar().showMessage(message, 8000)
         self.toasts.error(message)
         logger.error(f"Error: {message}")
 
@@ -709,6 +756,9 @@ class LumiSyncMainWindow(QMainWindow):
         # running QThread or closing its pooled connection can crash Qt.
         event.ignore()
         try:
+            pc_view = getattr(self, "pc_view", None)
+            if pc_view is not None:
+                pc_view.stop_auto_scan()
             self.device_controller.shutdown()
             self.update_controller.shutdown()
             if hasattr(self.sync_controller, 'shutdown'):
@@ -818,7 +868,11 @@ class LumiSyncMainWindow(QMainWindow):
                 if overdue:
                     self._force_exit()
                     return
-                self.statusBar().showMessage("Finishing device connections before closing…")
+                if not self._shutdown_notice_shown:
+                    self._shutdown_notice_shown = True
+                    message = "Finishing device connections before closing…"
+                    logger.info("Status: %s", message)
+                    self.toasts.show(message, duration=10000)
                 QTimer.singleShot(100, self._finish_shutdown)
                 return
             # Sync may have taught a pooled adapter new Tuya data points just
@@ -926,6 +980,8 @@ def main():
         guard.quit_requested.connect(window.quit_app)
         app.aboutToQuit.connect(window._on_about_to_quit)
         QTimer.singleShot(1000, window.check_for_updates_on_startup)
+        # Newly plugged PC lighting shows up without selecting Scan this PC.
+        QTimer.singleShot(PC_STARTUP_SCAN_DELAY_MS, window.auto_scan_pc_on_startup)
         # After the window settles: a COM read of the firewall policy.
         QTimer.singleShot(3000, window.check_firewall_on_startup)
 

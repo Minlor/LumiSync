@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from ... import connection
+from ...device import is_local_hardware
 from ...drivers.registry import capabilities_for_device, is_cloud
 from ...groups import device_key
 from ..resources.icons import IconKey
@@ -43,6 +44,10 @@ _ICON_FILES = {
     IconKey.LIGHT_SWITCH: "light-switch.svg",
     IconKey.LED_STRIP: "led-strip.svg",
     IconKey.MATRIX_PANEL: "matrix-panel.svg",
+    IconKey.MOTHERBOARD: "motherboard.svg",
+    IconKey.MOUSE: "mouse.svg",
+    IconKey.KEYBOARD: "keyboard.svg",
+    IconKey.PC: "pc.svg",
     IconKey.LIGHT_BULB: "lightbulb-on.svg",
 }
 
@@ -64,6 +69,8 @@ def _connection_name(device: Dict[str, Any]) -> str:
         return "Bluetooth"
     if transport == "tuya":
         return "Local Wi-Fi"
+    if transport == "usb":
+        return "USB"
     if is_cloud(device):
         return "Account"
     return "Local network"
@@ -81,6 +88,10 @@ def light_summary(device: Dict[str, Any]) -> str:
         cap = capabilities_for_device(device)
         if transport == "ble" or cap.is_matrix:
             parts.append(str(device.get("matrix_size") or "32x32").replace("x", "×"))
+        elif is_local_hardware(device):
+            # Whole board or device: one colour, no count. Per zone: the zones.
+            if cap.segment_count > 1:
+                parts.append(f"{cap.segment_count} zones")
         elif cap.supports_segments:
             count = connection.get_segment_count(device)
             parts.append(f"{count} zone" + ("" if count == 1 else "s"))

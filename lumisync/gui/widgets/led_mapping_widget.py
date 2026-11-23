@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from ... import connection, led_mapping, utils
+from ...device import is_local_hardware
 from ...drivers import pool
 from ...drivers.registry import capabilities_for_device
 from ...led_mapping import NormalizedRect
@@ -759,9 +760,10 @@ class LedMappingWidget(QWidget):
             # live sync run does. Adapter work is queued off the GUI thread:
             # connecting to a Tuya device takes seconds and froze the mapping
             # dialog when done inline.
+            # Lighting on this PC (RGB Fusion 2) has no IP either; same path.
             tuya_devices = [
                 d for d in devices
-                if str(d.get("transport", "lan")).lower() == "tuya"
+                if str(d.get("transport", "lan")).lower() == "tuya" or is_local_hardware(d)
             ]
             govee = [d for d in devices if d not in tuya_devices]
 

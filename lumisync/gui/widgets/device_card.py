@@ -59,6 +59,10 @@ _NO_READBACK = (
     "This device can't report its state, so LumiSync shows the last "
     "command it sent."
 )
+_ATTACHED = (
+    "Connected to this PC. The controller can't report its lighting, so "
+    "LumiSync shows the last command it sent."
+)
 
 
 @dataclass(frozen=True)
@@ -76,6 +80,8 @@ def connection_name(device: Dict[str, Any]) -> str:
         return "Bluetooth"
     if transport == "tuya":
         return "Local Wi-Fi"
+    if transport == "usb":
+        return "USB"
     if is_cloud(device):
         return "Account"
     return "Local network"
@@ -203,6 +209,10 @@ def describe_device_status(
         return DeviceStatus(_via_account(phrase, state), TONE_ONLINE, _NO_READBACK)
     if source == "seen" and online:
         return DeviceStatus("Nearby", TONE_ONLINE, "Visible during the latest Bluetooth search.")
+    if source == "attached" and online:
+        # Lighting on this PC: present, state is whatever was last sent.
+        phrase = _output_phrase(state, cap, meters, lead="Sent")
+        return DeviceStatus(phrase or "Connected", TONE_ONLINE, _ATTACHED)
     if source == "unknown":
         tooltip = _NEVER_ANSWERED if state.get("readback_supported", True) else _NO_READBACK
         phrase = _output_phrase(state, cap, meters, lead="Sent")

@@ -14,7 +14,8 @@ from ... import connection, devices, groups
 from ...device import Device, DeviceLike, as_device
 from ...utils.logging import get_logger
 from ...drivers import pool, tuya_presence
-from ...drivers.registry import create_adapter, is_cloud, capabilities_for_device
+from ...drivers.registry import create_adapter, is_cloud, capabilities_for_device, lighting_options
+from ..utils.device_identity import is_pc_hardware
 from .background import start_task
 from .command_queue import CoalescingCommandQueue
 from .device_admin import DeviceAdminMixin
@@ -48,6 +49,8 @@ SETTINGS_UNWRITABLE = (
 NOTICE_INFO = "info"
 NOTICE_SUCCESS = "success"
 NOTICE_ERROR = "error"
+
+OPTION_UNAVAILABLE_MESSAGE = "This lighting option is not available for this device."
 
 PROVIDER_DISPLAY_NAMES = {
     "govee_account": "Govee Home", "govee_api": "Govee API", "tuya_account": "Tuya Smart",
@@ -91,7 +94,7 @@ class DeviceController(DeviceAdminMixin, QObject):
     STATUS_PASS_BUDGET = 20.0
 
     # Signals
-    # Status bar + log only. Never shown as a toast.
+    # Log only. Never shown as a toast.
     status_updated = Signal(str)  # Status message
     # Something the user should see now (a toast): message, kind
     # (NOTICE_INFO / NOTICE_SUCCESS / NOTICE_ERROR). Also sent as a status.
@@ -111,6 +114,8 @@ class DeviceController(DeviceAdminMixin, QObject):
     ble_scan_finished = Signal()  # Bluetooth scan finished
     device_search_started = Signal()  # Combined LAN + Bluetooth search started
     device_search_finished = Signal(dict)  # Per-transport availability/results
+    local_hardware_scan_started = Signal()  # "Scan this PC" started
+    local_hardware_scan_finished = Signal(dict)  # {"found", "new_devices", "error"}
     groups_changed = Signal(list)  # Updated list of sync groups
     tuya_device_seen = Signal(str, str)  # Device ID, announced address (presence thread)
 
@@ -180,6 +185,14 @@ class DeviceController(DeviceAdminMixin, QObject):
         # so the outcome can say how many devices are actually new.
         self._search_known_keys: Optional[set[str]] = None
         self._search_has_network = True
+        # "Scan this PC" (local hardware only, no network search) running.
+        self._local_scan_active = False
+        self._usb_task = None
+        # The PC page's automatic, quiet "Scan this PC" (see auto_scan_local_hardware).
+        self._auto_scan_task = None
+        self._auto_scan_active = False
+        # Identity key of each saved PC device -> present in the last automatic scan.
+        self._auto_scan_presence: Optional[Dict[str, bool]] = None
         self._account_refresh_tasks = {}
         # Account id -> (account label, user-facing reason).
         self._account_issues: Dict[str, tuple[str, str]] = {}
@@ -246,7 +259,7 @@ class DeviceController(DeviceAdminMixin, QObject):
     # ------------------------------------------------------------------ notices
 
     def _notify(self, message: str, kind: str = NOTICE_INFO) -> None:
-        """Show *message* now (toast) and keep it in the status bar/log."""
+        """Show *message* now (toast) and keep it in the log."""
         self.status_updated.emit(message)
         self.notice.emit(message, kind)
 
@@ -568,6 +581,7 @@ class DeviceController(DeviceAdminMixin, QObject):
             return
         if (
             self._combined_search_active
+            or self._local_scan_active
             or self._discovery_running()
             or self._ble_scan_running()
         ):
@@ -603,6 +617,10 @@ class DeviceController(DeviceAdminMixin, QObject):
             self._search_pending.add("lan")
             self._search_pending.add("tuya")
             self._search_results["tuya"] = {"available": None, "found": 0, "error": None}
+        else:
+            # USB lighting (RGB Fusion 2) needs no network. The LAN worker
+            # normally reports it; without a network it gets its own search.
+            self._search_pending.add("usb")
 
         self.device_search_started.emit()
         self.status_updated.emit("Searching for devices…")
@@ -622,11 +640,138 @@ class DeviceController(DeviceAdminMixin, QObject):
                     {"available": False, "error": "Search could not be started"}
                 )
                 self._finish_search_transport("lan")
+        else:
+            try:
+                self._usb_task = start_task(
+                    devices.discover_local_hardware, self._on_local_hardware_found)
+            except Exception:
+                self._finish_search_transport("usb")
         if not self._start_ble_scan(announce=False):
             self._search_results["bluetooth"].update(
                 {"available": False, "error": "Search could not be started"}
             )
             self._finish_search_transport("bluetooth")
+
+    def _merge_local_hardware(self, found, error) -> None:
+        """Merge, save and announce lighting found attached to this PC."""
+        if found and not error:
+            self.devices = devices.merge_discovered_devices(self.devices, list(found))
+            try:
+                self._store.save()
+            except Exception as exc:
+                self._report_settings_failure(exc, "Could not save the device search results.")
+            self.devices_discovered.emit(self.devices)
+
+    def _on_local_hardware_found(self, found, error) -> None:
+        """Merge USB lighting found by a search that had no network to scan."""
+        if self._closing:
+            return
+        self._merge_local_hardware(found, error)
+        self._finish_search_transport("usb")
+
+    def scan_local_hardware(self) -> bool:
+        """Look for lighting attached to this PC only ("Scan this PC").
+
+        No network, Bluetooth or account search runs. Emits
+        ``local_hardware_scan_started`` and, when done,
+        ``local_hardware_scan_finished``. Returns False when a search is
+        already running (Find devices scans this PC too).
+        """
+        if self._closing:
+            return False
+        if self._local_scan_active or self._combined_search_active:
+            self.status_updated.emit("A device search is already in progress.")
+            return False
+        self._local_scan_active = True
+        known = self._identity_keys(self.devices)
+        self.local_hardware_scan_started.emit()
+        self.status_updated.emit("Scanning this PC for lighting…")
+
+        def finished(found, error) -> None:
+            self._on_local_scan_finished(found, error, known)
+
+        try:
+            self._usb_task = start_task(devices.discover_local_hardware, finished)
+        except Exception:
+            finished(None, "The scan could not start. Try again.")
+        return True
+
+    def _on_local_scan_finished(self, found, error, known: set[str]) -> None:
+        self._usb_task = None
+        self._local_scan_active = False
+        if self._closing:
+            return
+        self._merge_local_hardware(found, error)
+        new_devices = self._count_new_devices(known)
+        self.local_hardware_scan_finished.emit(
+            {"found": len(found or ()) if not error else 0, "new_devices": new_devices,
+             "error": str(error) if error else None}
+        )
+        if error:
+            self.status_updated.emit("Scan this PC finished: the scan could not complete.")
+        elif new_devices:
+            self.notice.emit(
+                f"Found {new_devices} new device{'s' if new_devices != 1 else ''} in this PC", NOTICE_SUCCESS
+            )
+        else:
+            self.status_updated.emit("Scan this PC finished. No new lighting.")
+        self.refresh_pc_hardware_states()
+
+    def auto_scan_local_hardware(self) -> bool:
+        """A quiet "Scan this PC" for the PC page's automatic refresh.
+
+        The same enumerate-only search as :meth:`scan_local_hardware`
+        (``devices.discover_local_hardware`` on a background task: HID
+        collections are listed, nothing is opened), but with no started or
+        finished signal, no status text and no toast. New hardware is merged
+        like a manual scan; when a saved PC device appeared or disappeared,
+        the PC hardware states are refreshed. Returns False when skipped
+        because a scan or search is already running.
+        """
+        if self._closing or self._auto_scan_active or self._local_scan_active or self._combined_search_active:
+            return False
+        self._auto_scan_active = True
+
+        def finished(found, error) -> None:
+            self._on_auto_scan_finished(found, error)
+
+        try:
+            self._auto_scan_task = start_task(devices.discover_local_hardware, finished)
+        except Exception:
+            self._auto_scan_task = None
+            self._auto_scan_active = False
+            logger.debug("The automatic PC scan could not start", exc_info=True)
+            return False
+        return True
+
+    def _pc_presence(self, found_keys: set[str]) -> Dict[str, bool]:
+        """Each saved PC device's identity -> whether the scan found it."""
+        presence: Dict[str, bool] = {}
+        for device in self.devices:
+            if is_pc_hardware(device):
+                keys = self._identity_keys([device])
+                presence[groups.device_key(device)] = bool(keys & found_keys)
+        return presence
+
+    def _on_auto_scan_finished(self, found, error) -> None:
+        self._auto_scan_task = None
+        self._auto_scan_active = False
+        if self._closing:
+            return
+        if error:
+            logger.debug("Automatic PC scan failed: %s", error)
+            return
+        found = [dict(device) for device in (found or ())]
+        found_keys = self._identity_keys(found)
+        known = self._identity_keys(self.devices)
+        new = [device for device in found if not (self._identity_keys([device]) & known)]
+        if new:
+            self._merge_local_hardware(found, None)
+        presence = self._pc_presence(found_keys)
+        previous, self._auto_scan_presence = self._auto_scan_presence, presence
+        if new or (previous is not None and presence != previous):
+            logger.debug("Automatic PC scan: %d new, presence %s", len(new), presence)
+            self.refresh_pc_hardware_states()
 
     @staticmethod
     def _list_account_devices(metadata: dict) -> list[dict] | AccountFailure:
@@ -812,16 +957,16 @@ class DeviceController(DeviceAdminMixin, QObject):
         return groups.device_key(device) or "?"
 
     def _default_state(self, device: Dict[str, Any]) -> Dict[str, Any]:
-        is_ble = self._is_ble(device)
+        no_readback = self._lacks_readback(device)
         return {
             "power_on": None,
             "brightness": None,
             "color": None,
             "color_temp": None,
             "online": False,
-            "stale": not is_ble,
-            "status_source": "unknown" if is_ble else "pending",
-            "readback_supported": not is_ble,
+            "stale": not no_readback,
+            "status_source": "unknown" if no_readback else "pending",
+            "readback_supported": not no_readback,
             "readback_seen": False,
             "last_seen": None,
             "last_command_at": None,
@@ -899,7 +1044,7 @@ class DeviceController(DeviceAdminMixin, QObject):
         if updates.get("status_source") == "confirmed":
             state["readback_seen"] = True
             state["status_misses"] = 0
-        elif updates.get("status_source") in ("commanded", "seen"):
+        elif updates.get("status_source") in ("commanded", "seen", "attached"):
             state["status_misses"] = 0
         elif updates.get("status_source") == "offline":
             misses = int(state.get("status_misses") or 0) + 1
@@ -915,12 +1060,15 @@ class DeviceController(DeviceAdminMixin, QObject):
                 updates["last_error"] = None
         if (updates.get("status_source") == "offline"
                 and updates.get("last_error")
+                and updates.get("readback_supported", True)
                 and not state.get("readback_seen")):
             # A failed status poll is not proof of absence: Govee LAN commands
             # are fire-and-forget, and some models (e.g. the H7020 string
             # lights) simply never answer status queries. Until one reply has
             # been confirmed, report "unknown" instead of "offline" so the
             # card does not flap to Offline after every command (issue #49).
+            # A no-readback device (USB lighting) reports offline only when
+            # it is really gone (it no longer enumerates), so that stays.
             updates["status_source"] = "unknown"
         for field, value in updates.items():
             if field == "color" and value is None and state.get("color") is not None:
@@ -953,16 +1101,16 @@ class DeviceController(DeviceAdminMixin, QObject):
         *,
         output: Optional[str] = None,
     ) -> None:
-        """Cache a successful command without pretending BLE has readback."""
+        """Cache a successful command without pretending BLE/USB have readback."""
         device = self._device_at(index)
         if not device:
             return
-        is_ble = self._is_ble(device)
+        no_readback = self._lacks_readback(device)
         payload = {
             "online": True,
-            "stale": not is_ble,
-            "status_source": "commanded" if is_ble else "pending",
-            "readback_supported": not is_ble,
+            "stale": not no_readback,
+            "status_source": "commanded" if no_readback else "pending",
+            "readback_supported": not no_readback,
             "last_seen": time.time(),
             "last_command_at": time.time(),
             "last_error": None,
@@ -1094,11 +1242,22 @@ class DeviceController(DeviceAdminMixin, QObject):
         indexes = [
             index
             for index, device in enumerate(self.devices)
-            if str(device.get("transport") or "lan").lower() in ("", "lan", "tuya")
+            if (str(device.get("transport") or "lan").lower() in ("", "lan", "tuya") or is_pc_hardware(device))
             and not self._is_ble(device)
             and not is_cloud(device)
             and not self._cloud_preferred(device)
         ]
+        if indexes:
+            self._start_status_refresh(indexes)
+
+    def refresh_pc_hardware_states(self) -> None:
+        """Poll lighting attached to this PC (the PC page's cadence)."""
+        if self._closing:
+            return
+        self._retry_settings_load()
+        if self._status_running():
+            return
+        indexes = [index for index, device in enumerate(self.devices) if is_pc_hardware(device)]
         if indexes:
             self._start_status_refresh(indexes)
 
@@ -1138,7 +1297,8 @@ class DeviceController(DeviceAdminMixin, QObject):
     def _schedule_status_refresh(self, index: int) -> None:
         """Restart one identity-bound confirmation sequence after each write."""
         device = self._device_at(index)
-        if self._closing or not device or self._is_ble(device):
+        # Nothing to confirm on a device that cannot report its state.
+        if self._closing or not device or self._lacks_readback(device):
             return
         key = self._device_key(device)
         timer = self._confirmation_timers.get(key)
@@ -1329,6 +1489,14 @@ class DeviceController(DeviceAdminMixin, QObject):
         return str(device.get("transport", "")).lower() == "ble"
 
     @staticmethod
+    def _is_usb(device: Dict[str, Any]) -> bool:
+        return str(device.get("transport", "")).lower() == "usb"
+
+    def _lacks_readback(self, device: Dict[str, Any]) -> bool:
+        """BLE panels and lighting on this PC cannot report their state."""
+        return self._is_ble(device) or is_pc_hardware(device)
+
+    @staticmethod
     def _cloud_fallback_device(device: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Return a cloud-transport copy for a local Tuya device, if available."""
         if str(device.get("cloud_transport", "")).lower() != "tuya_cloud":
@@ -1401,6 +1569,8 @@ class DeviceController(DeviceAdminMixin, QObject):
             try:
                 action(pool.acquire(device))
                 self._cloud_preferred_until.pop(self._device_key(device), None)
+                if self._is_usb(device):
+                    return "USB"
                 return "BLE" if self._is_ble(device) else "LAN"
             except Exception as local_error:
                 if fallback is None:
@@ -1719,7 +1889,7 @@ class DeviceController(DeviceAdminMixin, QObject):
 
         # One outcome only. New devices get a single success notice; problems
         # are shown by the Devices page as InfoBars; a quiet search says
-        # nothing beyond the status bar.
+        # nothing beyond the log.
         if new_devices:
             self.notice.emit(
                 f"Found {new_devices} new device{'s' if new_devices != 1 else ''}", NOTICE_SUCCESS
@@ -1797,6 +1967,304 @@ class DeviceController(DeviceAdminMixin, QObject):
             logger.warning("Zone count change failed", exc_info=True)
             self._notify("Could not change the zone count.", NOTICE_ERROR)
             return False
+
+    def set_color_correction_at(self, index: int, enabled: bool) -> bool:
+        """Turn sRGB colour correction on or off for USB lighting that has it."""
+        from ...drivers import led_color
+
+        device = self._device_at(index)
+        if not device:
+            return False
+        options = lighting_options(device)
+        if options is None or not options.color_correction:
+            self._notify(OPTION_UNAVAILABLE_MESSAGE, NOTICE_ERROR)
+            return False
+        value = led_color.COLOR_CORRECTION_SRGB if enabled else led_color.COLOR_CORRECTION_NONE
+        message = "colour correction " + ("on" if enabled else "off")
+        # No busy check: the correction does not change the frame size, so a
+        # running sync simply sends its next frame with the new setting.
+        return self._set_usb_lighting_option(
+            index, led_color.COLOR_CORRECTION_FIELD, value, led_color.COLOR_CORRECTION_SRGB,
+            message, failure="Could not save the colour correction.", while_busy=True,
+        )
+
+    def set_lighting_layout_at(self, index: int, layout: str) -> bool:
+        """Drive USB lighting as one light or one colour per zone.
+
+        The values are the driver's own (the board keeps its saved
+        ``rgb_fusion_layout`` values ``"board"``/``"zones"``; the mouse uses
+        ``lighting_layout`` with ``"whole"``/``"zones"``).
+        """
+        device = self._device_at(index)
+        if not device:
+            return False
+        options = lighting_options(device)
+        if options is None or not options.has_layout:
+            self._notify(OPTION_UNAVAILABLE_MESSAGE, NOTICE_ERROR)
+            return False
+        if layout not in (options.layout_whole, options.layout_zones):
+            self._notify(f"Unknown lighting layout: {layout}", NOTICE_ERROR)
+            return False
+        if layout == options.layout_zones:
+            message = f"lighting set to {options.zone_count} zones"
+        else:
+            message = f"lighting set to one colour for the whole {options.noun}"
+        return self._set_usb_lighting_option(
+            index, options.layout_field, layout, options.layout_whole,
+            message, failure="Could not save the lighting layout.", while_busy=False,
+        )
+
+    def set_rgb_fusion_layout_at(self, index: int, layout: str) -> bool:
+        """Board layout (``"board"``/``"zones"``); kept for existing callers."""
+        return self.set_lighting_layout_at(index, layout)
+
+    def _effect_options_at(self, index: int):
+        """The device's built-in effect options, or None (after telling the user)."""
+        device = self._device_at(index)
+        if not device:
+            return None
+        options = lighting_options(device)
+        if options is None or options.effects is None:
+            self._notify(OPTION_UNAVAILABLE_MESSAGE, NOTICE_ERROR)
+            return None
+        return options.effects
+
+    def set_lighting_effect_at(self, index: int, effect: str) -> bool:
+        """Choose one of the device's built-in lighting effects (by its key)."""
+        from ...drivers import led_color
+
+        effects = self._effect_options_at(index)
+        if effects is None:
+            return False
+        choice = effects.choice(str(effect))
+        if choice is None:
+            self._notify(f"Unknown lighting effect: {effect}", NOTICE_ERROR)
+            return False
+        # Effects are manual settings, not sync frames: no busy check.
+        return self._set_usb_lighting_option(
+            index, led_color.EFFECT_FIELD, choice.key, effects.default_effect,
+            f"effect set to {choice.name.lower()}", failure="Could not save the lighting effect.", while_busy=True,
+        )
+
+    def set_lighting_effect_speed_at(self, index: int, speed: int) -> bool:
+        """Set the effect speed step (1 slowest .. the device's fastest step)."""
+        from ...drivers import led_color
+
+        effects = self._effect_options_at(index)
+        if effects is None:
+            return False
+        try:
+            step = int(speed)
+        except (TypeError, ValueError):
+            step = 0
+        if not 1 <= step <= effects.speed_steps:
+            self._notify(f"Effect speed must be between 1 and {effects.speed_steps}.", NOTICE_ERROR)
+            return False
+        return self._set_usb_lighting_option(
+            index, led_color.EFFECT_SPEED_FIELD, step, effects.default_speed,
+            f"effect speed {step} of {effects.speed_steps}", failure="Could not save the effect speed.",
+            while_busy=True,
+        )
+
+    def set_lighting_effect_reversed_at(self, index: int, reversed_: bool) -> bool:
+        """Run the effect in its other direction (or back in its default one)."""
+        from ...drivers import led_color
+
+        effects = self._effect_options_at(index)
+        if effects is None:
+            return False
+        reversed_ = bool(reversed_)
+        directions = effects.current.directions
+        label = directions[1 if reversed_ else 0].lower() if len(directions) == 2 else (
+            "reversed" if reversed_ else "default")
+        return self._set_usb_lighting_option(
+            index, led_color.EFFECT_REVERSED_FIELD, reversed_, False,
+            f"effect direction {label}", failure="Could not save the effect direction.", while_busy=True,
+        )
+
+    def set_lighting_effect_multicolor_at(self, index: int, multicolor: bool) -> bool:
+        """Show the effect in its own colours instead of the chosen colour."""
+        from ...drivers import led_color
+
+        effects = self._effect_options_at(index)
+        if effects is None:
+            return False
+        multicolor = bool(multicolor)
+        return self._set_usb_lighting_option(
+            index, led_color.EFFECT_MULTICOLOR_FIELD, multicolor, False,
+            "multicolour " + ("on" if multicolor else "off"), failure="Could not save the multicolour setting.",
+            while_busy=True,
+        )
+
+    def _secondary_color_option_at(self, index: int):
+        """The device's second-colour option (a mouse's logo), or None (after telling the user)."""
+        device = self._device_at(index)
+        if not device:
+            return None
+        options = lighting_options(device)
+        if options is None or options.secondary_color is None:
+            self._notify(OPTION_UNAVAILABLE_MESSAGE, NOTICE_ERROR)
+            return None
+        return options.secondary_color
+
+    def set_lighting_secondary_color_enabled_at(self, index: int, enabled: bool) -> bool:
+        """Give part of the device (a mouse's logo) its own colour, or the main colour again."""
+        option = self._secondary_color_option_at(index)
+        if option is None:
+            return False
+        enabled = bool(enabled)
+        name = option.title[:1].lower() + option.title[1:]
+        # A manual setting, not a sync frame: no busy check.
+        return self._set_usb_lighting_option(
+            index, option.enabled_field, enabled, False,
+            f"{name} " + ("on" if enabled else "off"), failure="Could not save the colour setting.",
+            while_busy=True,
+        )
+
+    def set_lighting_secondary_color_at(self, index: int, r: int, g: int, b: int) -> bool:
+        """The second colour (a mouse's logo colour), saved as ``[r, g, b]``."""
+        option = self._secondary_color_option_at(index)
+        if option is None:
+            return False
+        try:
+            color = [max(0, min(255, int(value))) for value in (r, g, b)]
+        except (TypeError, ValueError):
+            self._notify("Choose a valid colour.", NOTICE_ERROR)
+            return False
+        name = option.color_title[:1].lower() + option.color_title[1:]
+        return self._set_usb_lighting_option(
+            index, option.color_field, color, None,
+            f"{name} set to #{color[0]:02X}{color[1]:02X}{color[2]:02X}", failure="Could not save the colour.",
+            while_busy=True,
+        )
+
+    def _sync_options_at(self, index: int):
+        """The device's opt-in sync options, or None (after telling the user)."""
+        device = self._device_at(index)
+        if not device:
+            return None
+        options = lighting_options(device)
+        if options is None or options.sync is None:
+            self._notify(OPTION_UNAVAILABLE_MESSAGE, NOTICE_ERROR)
+            return None
+        return options.sync
+
+    def set_lighting_sync_enabled_at(self, index: int, enabled: bool) -> bool:
+        """Allow (or stop) Monitor and Music sync for a device that needs an opt-in.
+
+        The view asks the user to confirm before turning it on. Turning it
+        off also drops the device from the saved Monitor and Music
+        selections, so the next sync start does not pick it up again.
+        """
+        from ...drivers import led_color
+
+        if self._sync_options_at(index) is None:
+            return False
+        enabled = bool(enabled)
+        device = self._device_at(index)
+        saved = self._set_usb_lighting_option(
+            index, led_color.SYNC_ENABLED_FIELD, enabled, False,
+            "Monitor and Music sync " + ("allowed" if enabled else "off"),
+            failure="Could not save the sync setting.", while_busy=True,
+        )
+        if saved and not enabled and device:
+            self._forget_sync_selection(device)
+        return saved
+
+    def set_lighting_sync_interval_at(self, index: int, interval: str) -> bool:
+        """How often sync may update a device that wears with every change."""
+        from ...drivers import led_color
+
+        sync = self._sync_options_at(index)
+        if sync is None:
+            return False
+        choice = sync.choice(str(interval))
+        if choice is None:
+            self._notify(f"Unknown sync update interval: {interval}", NOTICE_ERROR)
+            return False
+        return self._set_usb_lighting_option(
+            index, led_color.SYNC_INTERVAL_FIELD, choice.key, sync.default_interval,
+            f"sync updates {choice.label[0].lower()}{choice.label[1:]}",
+            failure="Could not save the sync update interval.", while_busy=True,
+        )
+
+    @staticmethod
+    def _forget_sync_selection(device: Dict[str, Any]) -> None:
+        """Remove a device from the saved Monitor and Music light selections."""
+        from ..app_settings import app_settings
+
+        key = groups.device_key(device)
+        if not key:
+            return
+        try:
+            settings = app_settings()
+            for mode in ("monitor", "music"):
+                name = f"sync/{mode}/devices"
+                saved = settings.value(name, None)
+                if saved is None:
+                    continue
+                ids = [s for s in saved.split(",") if s] if isinstance(saved, str) else [str(s) for s in saved]
+                if key in ids:
+                    settings.setValue(name, ",".join(i for i in ids if i != key))
+        except Exception:
+            logger.warning("Could not update the saved sync selections", exc_info=True)
+
+    def _set_usb_lighting_option(
+        self, index: int, field: str, value: Any, default: Any, message: str,
+        *, failure: str, while_busy: bool,
+    ) -> bool:
+        """Save one per-device option of USB lighting and apply it live.
+
+        The default value is stored as an absent field, like the zone count
+        override. The pooled adapter (shared with a running sync) takes the
+        edited descriptor at once, and an idle device re-shows its colour so
+        the change is visible without another command.
+        """
+        device = self._device_at(index)
+        if not device:
+            return False
+        if lighting_options(device) is None:
+            # Layout, colour correction and effects exist for USB lighting drivers only.
+            self._notify(OPTION_UNAVAILABLE_MESSAGE, NOTICE_ERROR)
+            return False
+        busy = self.is_device_busy(device)
+        if busy and not while_busy:
+            self._notify("Finish the current output before changing this device's layout.", NOTICE_ERROR)
+            return False
+        updated_device = as_device(device).copy()
+        updated_device[field] = None if value == default else value
+        updated = list(self.devices)
+        updated[index] = updated_device
+        if not self._write_settings(
+            {"devices": updated, "selectedDevice": self.selected_device_index},
+            failure=failure,
+        ):
+            return False
+        self.devices = updated
+        if pool.refresh(updated_device) and not busy and not self._closing:
+            self._reapply_usb_lighting(updated_device)
+        self.device_updated.emit(index, dict(updated_device))
+        self.devices_discovered.emit(self.devices)
+        selected = self.get_selected_device()
+        if selected and index == self.selected_device_index:
+            self.device_selected.emit(selected)
+        self.status_updated.emit(f"{self._device_name(updated_device)}: {message}")
+        return True
+
+    def _reapply_usb_lighting(self, device: Device) -> None:
+        """Re-show the board's colour with new options, off the GUI thread."""
+        snapshot = device.copy()
+
+        def action():
+            reapply = getattr(pool.acquire(snapshot), "reapply", None)
+            if callable(reapply):
+                reapply()
+
+        def finished(_value, error) -> None:
+            if error:
+                logger.info("Re-applying USB lighting after an option change failed: %s", error)
+
+        start_task(action, finished)
 
     def turn_on_off(self, on: bool = True):
         """Turn the selected device on or off.

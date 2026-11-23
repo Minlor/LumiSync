@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 
 from ... import connection
 from ...accounts.tuya_energy import meter_fields
-from ...drivers.registry import capabilities_for_device, is_cloud
+from ...drivers.registry import capabilities_for_device, is_cloud, lighting_options
 from ..resources.icons import IconKey, tinted_icon, tinted_pixmap
 from ..theme import TOKENS, qcolor
 from ..utils.animations import StatusDot
@@ -46,7 +46,7 @@ from .device_card import (
 )
 from .device_energy import DeviceEnergy
 from .elided_label import ElidedLabel
-from .product_controls import ProductSlider, ProductComboBox
+from .product_controls import ProductSlider, ProductComboBox, ToggleSwitch
 
 
 def _section(object_name: str = "InspectorSection") -> QFrame:
@@ -81,6 +81,17 @@ class DeviceInspector(QFrame):
     connection_changed = Signal(int, str)
     panel_tools_requested = Signal(int)
     refresh_requested = Signal(int)
+    # USB lighting options (each driver declares which it has).
+    color_correction_changed = Signal(int, bool)
+    lighting_layout_changed = Signal(int, str)
+    lighting_effect_changed = Signal(int, str)
+    lighting_effect_speed_changed = Signal(int, int)
+    lighting_effect_reversed_changed = Signal(int, bool)
+    lighting_effect_multicolor_changed = Signal(int, bool)
+    lighting_sync_enabled_changed = Signal(int, bool)
+    lighting_sync_interval_changed = Signal(int, str)
+    lighting_secondary_color_enabled_changed = Signal(int, bool)
+    lighting_secondary_color_changed = Signal(int, QColor)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -282,6 +293,8 @@ class DeviceInspector(QFrame):
         )
         root.addWidget(controls)
 
+        self._build_usb_lighting_options(root)
+
         self.energy = DeviceEnergy()
         self.energy.refresh_requested.connect(lambda: self.refresh_requested.emit(self._index))
         root.addWidget(self.energy)
@@ -363,6 +376,363 @@ class DeviceInspector(QFrame):
 
         self._show_color(None, None)
 
+    def _build_usb_lighting_options(self, root: QVBoxLayout) -> None:
+        """The driver's lighting options (colour correction, layout, effects, second colour), USB lighting only."""
+        self.usb_options_label = QLabel("Board lighting")  # Retitled per device by its driver.
+        self.usb_options_label.setProperty("role", "sectionTitle")
+        root.addWidget(self.usb_options_label)
+
+        self.usb_options_panel = panel = _section()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(10)
+        # Each row with the divider above it; only rows the driver offers show.
+        self._option_rows: list = []
+
+        def add_row(row: QWidget) -> QWidget:
+            divider = _divider()
+            layout.addWidget(divider)
+            layout.addWidget(row)
+            self._option_rows.append((divider, row))
+            return row
+
+        def option_row(title: str, hint: str, control: QWidget, *, wrap: bool = False) -> tuple:
+            container, _title, hint_label = titled_option_row(title, hint, control, wrap=wrap)
+            return container, hint_label
+
+        def titled_option_row(title: str, hint: str, control: QWidget, *, wrap: bool = False) -> tuple:
+            container = QWidget()
+            row = QHBoxLayout(container)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(10)
+            copy = QVBoxLayout()
+            copy.setSpacing(1)
+            title_label = QLabel(title)
+            copy.addWidget(title_label)
+            # A wrapping hint for text that names the zones ("DPI lights and logo, ...").
+            hint_label = QLabel(hint) if wrap else ElidedLabel(hint)
+            hint_label.setWordWrap(wrap)
+            hint_label.setProperty("role", "subtle")
+            copy.addWidget(hint_label)
+            row.addLayout(copy, 1)
+            row.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
+            add_row(container)
+            return container, title_label, hint_label
+
+        self.color_correction_switch = ToggleSwitch()
+        self.color_correction_switch.setAccessibleName("Colour correction")
+        self.color_correction_switch.setToolTip(
+            "Converts colours for the board's LEDs so dim and pastel colours look as on screen"
+        )
+        self.color_correction_switch.toggled.connect(self._color_correction_toggled)
+        self.color_correction_row, self.color_correction_hint = option_row(
+            "Colour correction", "Colours match the screen: neutral white, true pastels", self.color_correction_switch
+        )
+
+        self.layout_combo = ProductComboBox()
+        self.layout_combo.setAccessibleName("Lighting layout")
+        # Item labels and values come from the device's driver.
+        self.layout_combo.addItem("Whole board", "board")
+        self.layout_combo.addItem("Per zone", "zones")
+        self.layout_combo.currentIndexChanged.connect(self._layout_selected)
+        self.layout_row, self.layout_hint = option_row("Layout", "", self.layout_combo, wrap=True)
+
+        # Built-in effects (the driver lists them, with what each one takes).
+        self._effect_options = None
+        self.effect_combo = ProductComboBox()
+        self.effect_combo.setAccessibleName("Lighting effect")
+        self.effect_combo.currentIndexChanged.connect(self._effect_selected)
+        self.effect_row, self.effect_hint = option_row("Effect", "Runs on the device itself", self.effect_combo)
+
+        self.effect_speed_row = QWidget()
+        speed_layout = QVBoxLayout(self.effect_speed_row)
+        speed_layout.setContentsMargins(0, 0, 0, 0)
+        speed_layout.setSpacing(2)
+        speed_layout.addWidget(QLabel("Speed"))
+        self.effect_speed_slider = ProductSlider(Qt.Orientation.Horizontal)
+        self.effect_speed_slider.setRange(1, 5)
+        self.effect_speed_slider.setPageStep(1)
+        self.effect_speed_slider.setAccessibleName("Effect speed")
+        self.effect_speed_slider.valueChanged.connect(self._on_effect_speed)
+        speed_layout.addWidget(self.effect_speed_slider)
+        speed_ends = QHBoxLayout()
+        speed_ends.setContentsMargins(0, 0, 0, 0)
+        for text, stretch in (("Slow", 1), ("Fast", 0)):
+            label = QLabel(text)
+            label.setProperty("role", "subtle")
+            speed_ends.addWidget(label, stretch)
+        speed_layout.addLayout(speed_ends)
+        add_row(self.effect_speed_row)
+        self._effect_speed_timer = QTimer(self)
+        self._effect_speed_timer.setSingleShot(True)
+        self._effect_speed_timer.setInterval(250)
+        self._effect_speed_timer.timeout.connect(self._commit_effect_speed)
+
+        self.effect_direction_combo = ProductComboBox()
+        self.effect_direction_combo.setAccessibleName("Effect direction")
+        self.effect_direction_combo.addItem("", False)
+        self.effect_direction_combo.addItem("", True)
+        self.effect_direction_combo.currentIndexChanged.connect(self._effect_direction_selected)
+        self.effect_direction_row, _hint = option_row(
+            "Direction", "Which way the effect moves", self.effect_direction_combo
+        )
+
+        self.effect_multicolor_switch = ToggleSwitch()
+        self.effect_multicolor_switch.setAccessibleName("Multicolour")
+        self.effect_multicolor_switch.toggled.connect(self._effect_multicolor_toggled)
+        self.effect_multicolor_row, _hint = option_row(
+            "Multicolour", "The effect's own colours instead of yours", self.effect_multicolor_switch
+        )
+        self._effect_rows = (
+            self.effect_row, self.effect_speed_row, self.effect_direction_row, self.effect_multicolor_row,
+        )
+
+        # A second colour for part of the device (a mouse's logo); the driver
+        # supplies the labels. Hidden for effects that show no colour.
+        self._secondary_color = None
+        self._secondary_effect_has_color = True
+        self.secondary_color_switch = ToggleSwitch()
+        self.secondary_color_switch.toggled.connect(self._secondary_color_toggled)
+        self.secondary_color_row, self.secondary_color_title, self.secondary_color_hint = titled_option_row(
+            "", "", self.secondary_color_switch, wrap=True
+        )
+        self.secondary_color_button = ColorSwatchButton(None, self, diameter=30)
+        self.secondary_color_button.setObjectName("InspectorSecondaryColorSwatch")
+        self.secondary_color_button.clicked.connect(self._pick_secondary_color)
+        self.secondary_color_value_row, self.secondary_color_value_title, self.secondary_color_value_hint = (
+            titled_option_row("", "", self.secondary_color_button)
+        )
+
+        # Opt-in Monitor/Music sync (the driver supplies the labels and warning).
+        self._sync_options = None
+        self.sync_switch = ToggleSwitch()
+        self.sync_switch.setAccessibleName("Monitor and Music sync")
+        self.sync_switch.toggled.connect(self._sync_toggled)
+        self.sync_row, self.sync_hint = option_row(
+            "Monitor and Music sync", "", self.sync_switch, wrap=True
+        )
+        self.sync_interval_combo = ProductComboBox()
+        self.sync_interval_combo.setAccessibleName("Sync updates")
+        self.sync_interval_combo.currentIndexChanged.connect(self._sync_interval_selected)
+        self.sync_interval_row, interval_hint = option_row("Sync updates", "", self.sync_interval_combo)
+        interval_hint.hide()
+        root.addWidget(panel)
+
+    def _update_option_dividers(self) -> None:
+        """A divider above every shown row except the first."""
+        shown = False
+        for divider, row in self._option_rows:
+            divider.setVisible(shown and not row.isHidden())
+            shown = shown or not row.isHidden()
+
+    def _show_usb_lighting_options(self, device: Dict[str, Any]) -> None:
+        """The driver's lighting options for this device (None: hide the card)."""
+        self._effect_speed_timer.stop()
+        options = lighting_options(device)
+        visible = options is not None
+        self.usb_options_label.setVisible(visible)
+        self.usb_options_panel.setVisible(visible)
+        if options is None:
+            self._effect_options = None
+            self._secondary_color = None
+            return
+        from ...drivers import led_color
+
+        self.usb_options_label.setText(options.title)
+        self.color_correction_row.setVisible(options.color_correction)
+        self.color_correction_switch.setToolTip(options.correction_tip)
+        blocked = self.color_correction_switch.blockSignals(True)
+        self.color_correction_switch.setChecked(led_color.color_correction(device) == led_color.COLOR_CORRECTION_SRGB)
+        self.color_correction_switch.blockSignals(blocked)
+        self.layout_row.setVisible(options.has_layout)
+        names = options.zone_names
+        blocked = self.layout_combo.blockSignals(True)
+        self.layout_combo.setItemText(0, options.whole_label)
+        self.layout_combo.setItemData(0, options.layout_whole)
+        self.layout_combo.setItemText(1, options.zones_label)
+        self.layout_combo.setItemData(1, options.layout_zones)
+        self.layout_combo.setCurrentIndex(1 if options.per_zone else 0)
+        self.layout_combo.blockSignals(blocked)
+        self.layout_hint.setText(options.zones_description if options.per_zone else options.whole_description)
+        self.layout_combo.setToolTip("Zones in sync order: " + ", ".join(names))
+        self._show_sync_options(options.sync)
+        self._show_secondary_color_option(options.secondary_color)
+        self._show_effect_options(options.effects)
+
+    def _show_secondary_color_option(self, option: Any) -> None:
+        """The second-colour switch and, while it is on, its colour row (labels from the driver)."""
+        self._secondary_color = option
+        if option is None:
+            return
+        self.secondary_color_title.setText(option.title)
+        self.secondary_color_hint.setText(option.description)
+        self.secondary_color_switch.setAccessibleName(option.title)
+        blocked = self.secondary_color_switch.blockSignals(True)
+        self.secondary_color_switch.setChecked(option.enabled)
+        self.secondary_color_switch.blockSignals(blocked)
+        self.secondary_color_value_title.setText(option.color_title)
+        self.secondary_color_button.setAccessibleName(f"Choose the {option.color_title.lower()}")
+        self._show_secondary_color_value()
+
+    def _secondary_qcolor(self) -> Optional[QColor]:
+        """The saved second colour, or None (it follows the main colour)."""
+        option = self._secondary_color
+        if option is None or option.color is None:
+            return None
+        return QColor(*option.color)
+
+    def _show_secondary_color_value(self) -> None:
+        color = self._secondary_qcolor()
+        shown = color if color is not None else self._current_color
+        self.secondary_color_button.set_color(shown, None)
+        self.secondary_color_value_hint.setText(
+            "Same as the main colour" if color is None else swatch_tooltip(color, action="")
+        )
+        self.secondary_color_button.setToolTip(swatch_tooltip(shown, action="click to change"))
+
+    def _update_secondary_color_rows(self) -> None:
+        """Show the second-colour rows when the driver offers them and the effect takes a colour."""
+        option = self._secondary_color
+        offered = option is not None and self._secondary_effect_has_color
+        self.secondary_color_row.setVisible(offered)
+        self.secondary_color_value_row.setVisible(offered and self.secondary_color_switch.isChecked())
+
+    def _show_sync_options(self, sync: Any) -> None:
+        """The opt-in sync switch, and its interval row while it is on."""
+        self._sync_options = sync
+        if sync is None:
+            self.sync_row.setVisible(False)
+            self.sync_interval_row.setVisible(False)
+            return
+        self.sync_hint.setText(sync.description)
+        blocked = self.sync_switch.blockSignals(True)
+        self.sync_switch.setChecked(sync.enabled)
+        self.sync_switch.blockSignals(blocked)
+        blocked = self.sync_interval_combo.blockSignals(True)
+        self.sync_interval_combo.clear()
+        for choice in sync.choices:
+            self.sync_interval_combo.addItem(choice.label, choice.key)
+        self.sync_interval_combo.setCurrentIndex(max(0, self.sync_interval_combo.findData(sync.interval)))
+        self.sync_interval_combo.blockSignals(blocked)
+        self.sync_row.setVisible(True)
+        self.sync_interval_row.setVisible(sync.enabled)
+
+    def sync_options(self) -> Any:
+        """The shown device's opt-in sync options (None when it has none)."""
+        return self._sync_options
+
+    def _sync_toggled(self, checked: bool) -> None:
+        if self._index >= 0 and self._sync_options is not None:
+            self.lighting_sync_enabled_changed.emit(self._index, bool(checked))
+
+    def _sync_interval_selected(self, _index: int) -> None:
+        key = self.sync_interval_combo.currentData()
+        if self._index >= 0 and self._sync_options is not None and key:
+            self.lighting_sync_interval_changed.emit(self._index, str(key))
+
+    def _show_effect_options(self, effects: Any) -> None:
+        """The effect rows: the effect list, then the rows the chosen effect takes."""
+        self._effect_options = effects
+        if effects is None:
+            for row in self._effect_rows:
+                row.setVisible(False)
+            self._secondary_effect_has_color = True
+            self._update_secondary_color_rows()
+            self._update_option_dividers()
+            return
+        blocked = self.effect_combo.blockSignals(True)
+        self.effect_combo.clear()
+        for choice in effects.choices:
+            self.effect_combo.addItem(choice.name, choice.key)
+        self.effect_combo.setCurrentIndex(max(0, self.effect_combo.findData(effects.effect)))
+        self.effect_combo.blockSignals(blocked)
+        blocked = self.effect_speed_slider.blockSignals(True)
+        self.effect_speed_slider.setRange(1, effects.speed_steps)
+        self.effect_speed_slider.setValue(effects.speed)
+        self.effect_speed_slider.blockSignals(blocked)
+        self._describe_effect_speed(effects.speed)
+        blocked = self.effect_direction_combo.blockSignals(True)
+        self.effect_direction_combo.setCurrentIndex(1 if effects.reversed else 0)
+        self.effect_direction_combo.blockSignals(blocked)
+        blocked = self.effect_multicolor_switch.blockSignals(True)
+        self.effect_multicolor_switch.setChecked(effects.multicolor)
+        self.effect_multicolor_switch.blockSignals(blocked)
+        self.effect_row.setVisible(True)
+        self._show_effect_rows(effects.current)
+
+    def _show_effect_rows(self, choice: Any) -> None:
+        """Show speed, direction and multicolour only where the effect has them."""
+        self.effect_speed_row.setVisible(choice.has_speed)
+        self.effect_direction_row.setVisible(choice.has_direction)
+        if choice.has_direction:
+            for row, label in enumerate(choice.directions):
+                self.effect_direction_combo.setItemText(row, label)
+        self.effect_multicolor_row.setVisible(choice.multicolor)
+        self._secondary_effect_has_color = bool(choice.has_color)
+        self._update_secondary_color_rows()
+        self._update_option_dividers()
+
+    def _describe_effect_speed(self, value: int) -> None:
+        steps = self.effect_speed_slider.maximum()
+        self.effect_speed_slider.setAccessibleDescription(f"{value} of {steps}")
+        self.effect_speed_slider.setToolTip(f"Speed {value} of {steps}")
+
+    def _color_correction_toggled(self, checked: bool) -> None:
+        if self._index >= 0:
+            self.color_correction_changed.emit(self._index, bool(checked))
+
+    def _layout_selected(self, _index: int) -> None:
+        value = self.layout_combo.currentData()
+        if self._index >= 0 and value:
+            self.lighting_layout_changed.emit(self._index, str(value))
+
+    def _effect_selected(self, _index: int) -> None:
+        key = self.effect_combo.currentData()
+        effects = self._effect_options
+        if effects is None or not key:
+            return
+        choice = effects.choice(str(key))
+        if choice is not None:
+            self._show_effect_rows(choice)
+        if self._index >= 0:
+            self.lighting_effect_changed.emit(self._index, str(key))
+
+    def _on_effect_speed(self, value: int) -> None:
+        self._describe_effect_speed(value)
+        self._effect_speed_timer.start()
+
+    def _commit_effect_speed(self) -> None:
+        if self._index >= 0 and self._effect_options is not None:
+            self.lighting_effect_speed_changed.emit(self._index, self.effect_speed_slider.value())
+
+    def _effect_direction_selected(self, _index: int) -> None:
+        if self._index >= 0 and self._effect_options is not None:
+            self.lighting_effect_reversed_changed.emit(self._index, bool(self.effect_direction_combo.currentData()))
+
+    def _effect_multicolor_toggled(self, checked: bool) -> None:
+        if self._index >= 0 and self._effect_options is not None:
+            self.lighting_effect_multicolor_changed.emit(self._index, bool(checked))
+
+    def _secondary_color_toggled(self, checked: bool) -> None:
+        if self._secondary_color is None:
+            return
+        self._update_secondary_color_rows()
+        self._update_option_dividers()
+        if self._index >= 0:
+            self.lighting_secondary_color_enabled_changed.emit(self._index, bool(checked))
+
+    def _pick_secondary_color(self) -> None:
+        option = self._secondary_color
+        if self._index < 0 or option is None:
+            return
+        current = self._secondary_qcolor() or self._current_color or QColor("#FFFFFF")
+        chosen = QColorDialog.getColor(current, self, f"Choose the {option.color_title.lower()}")
+        if chosen.isValid() and self._index >= 0:
+            remember_recent_color(chosen)
+            self.secondary_color_button.set_color(chosen, None)
+            self.secondary_color_value_hint.setText(swatch_tooltip(chosen, action=""))
+            self.lighting_secondary_color_changed.emit(self._index, chosen)
+
     def _toggle_details(self, show: bool) -> None:
         self.details_panel.setVisible(show)
         self.details_toggle.setText("Hide device details" if show else "Device details")
@@ -375,7 +745,6 @@ class DeviceInspector(QFrame):
         title_label = QLabel(title)
         title_label.setProperty("role", "subtle")
         row.addWidget(title_label)
-        row.addStretch(1)
         value_label = QLabel(value)
         value_label.setWordWrap(True)
         value_label.setTextFormat(Qt.TextFormat.PlainText)
@@ -383,7 +752,10 @@ class DeviceInspector(QFrame):
         value_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
-        row.addWidget(value_label)
+        # The value takes the rest of the row (right-aligned), so a wrapping
+        # label is only as narrow as it must be (long connection names and
+        # identifiers stay on one line).
+        row.addWidget(value_label, 1)
         layout.addWidget(section)
         self._info_rows[title] = section
         self._info_titles[title] = title_label
@@ -433,12 +805,16 @@ class DeviceInspector(QFrame):
         )
         self.identifier_value.setText(str(identifier))
         self._info_rows["Control port"].setVisible(bool(port))
-        self._info_rows["Address"].setVisible(not is_cloud(device))
+        # USB lighting has no network address; its identifier is enough.
+        self._info_rows["Address"].setVisible(not is_cloud(device) and transport != "usb")
         self._info_rows["Identifier"].setVisible(is_cloud(device) or self.identifier_value.text() != self.address_value.text())
         self._info_titles["Layout"].setText("Device type" if device.get("device_kind") in ("light_switch", "smart_plug") else "Layout")
+        # USB lighting describes its layout only when its driver has one.
+        options = lighting_options(device)
+        self._info_rows["Layout"].setVisible(transport != "usb" or (options is not None and options.has_layout))
         self.readback_value.setText(
             "Live"
-            if state.get("readback_supported", transport != "ble")
+            if state.get("readback_supported", transport not in ("ble", "usb"))
             else "Last command only"
         )
         if device.get("device_kind") in ("light_switch", "smart_plug"):
@@ -447,6 +823,14 @@ class DeviceInspector(QFrame):
             self.zones_value.setText(
                 f"{device.get('matrix_size', '32x32')} matrix"
             )
+        elif options is not None and options.has_layout:
+            self.zones_value.setText(
+                f"{cap.segment_count} zones · per zone" if cap.segment_count > 1
+                else f"{options.whole_label} · one colour"
+            )
+        elif transport == "usb":
+            # USB lighting without a layout option is one colour throughout.
+            self.zones_value.setText("Whole device · one colour")
         elif transport == "tuya" or is_cloud(device):
             if cap.supports_segments and cap.segment_count > 1:
                 source = "custom" if device.get("segment_count_override") else "default"
@@ -475,6 +859,7 @@ class DeviceInspector(QFrame):
         lighting_controls = cap.supports_brightness or cap.supports_color or supported
         self.controls_label.setVisible(lighting_controls)
         self.controls_panel.setVisible(lighting_controls)
+        self._show_usb_lighting_options(device)
         if supported:
             self._ct_min = int(cap.color_temp_min)
             self._ct_max = int(cap.color_temp_max)
@@ -614,6 +999,8 @@ class DeviceInspector(QFrame):
         self.status_swatch.setToolTip(description)
         self.color_button.setToolTip(swatch_tooltip(self._current_color, kelvin, action="click for more colours"))
         self.color_presets.mark_current(self._current_color)
+        if self._secondary_color is not None:
+            self._show_secondary_color_value()  # It shows the main colour until one is chosen.
 
     def _refresh_presets(self) -> None:
         white = white_range(self._cap) if self._cap.supports_white else None

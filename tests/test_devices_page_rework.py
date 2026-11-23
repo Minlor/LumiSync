@@ -560,14 +560,15 @@ class NotificationPolicyTests(_Base):
 
     def test_status_messages_never_toast_and_notices_do(self):
         window = MagicMock()
-        window.settings.value.return_value = "false"
-        LumiSyncMainWindow.show_status(window, "Imported 4 account device(s)")
-        window.toasts.show.assert_not_called()
-        window.statusBar.return_value.showMessage.assert_not_called()
+        # A stale "show the status bar" preference from an older version
+        # changes nothing: status goes to the log only.
         window.settings.value.return_value = "true"
-        LumiSyncMainWindow.show_status(window, "Searching for devices…")
-        window.statusBar.return_value.showMessage.assert_called_once()
+        with self.assertLogs("lumisync_gui", level="INFO") as logs:
+            LumiSyncMainWindow.show_status(window, "Imported 4 account device(s)")
+            LumiSyncMainWindow.show_status(window, "Searching for devices…")
+        self.assertEqual(len([line for line in logs.output if "Status:" in line]), 2)
         window.toasts.show.assert_not_called()
+        window.statusBar.assert_not_called()
         LumiSyncMainWindow.show_notice(window, "Found 2 new devices", "success")
         window.toasts.success.assert_called_once_with("Found 2 new devices")
         LumiSyncMainWindow.show_notice(window, "Desk lamp: failed", "error")

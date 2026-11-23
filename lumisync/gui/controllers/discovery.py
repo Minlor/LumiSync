@@ -122,8 +122,12 @@ class DeviceDiscoveryWorker(QObject):
                     preserve_existing=True, deep=True, persist=False
                 )
 
+            # Lighting on this PC's USB is merged like any discovered device,
+            # but the third value still counts LAN replies only.
+            found = list(settings.get("lastDiscoveryDevices", settings["devices"]))
+            found.extend(devices.discover_local_hardware())
             self.finished.emit(
-                settings.get("lastDiscoveryDevices", settings["devices"]),
+                found,
                 settings["selectedDevice"],
                 int(settings.get("lastDiscoveryCount", 0)),
             )
@@ -273,6 +277,28 @@ class DeviceStatusWorker(QObject):
                     elif transport == "ble":
                         # BLE reachability comes from the scan, not a TCP poll.
                         status = None
+                    elif transport == "usb":
+                        # USB lighting (RGB Fusion 2 boards, Logitech mice, Lorgar keyboards):
+                        # reachable while the device enumerates, asked of its
+                        # own driver. No report is exchanged and there is no
+                        # readback, so power/colour stay as sent.
+                        from ...drivers.registry import local_hardware_presence
+
+                        present, missing_message = local_hardware_presence(device)
+                        usb_update: Dict[str, Any] = {
+                            "online": present,
+                            "stale": False,
+                            "status_source": "attached" if present else "offline",
+                            "status_origin": "local",
+                            "readback_supported": False,
+                            "last_error": None if present else missing_message,
+                            "device_key": groups.device_key(device),
+                            "query_started_at": query_started_at,
+                        }
+                        if present:
+                            usb_update["last_seen"] = time.time()
+                        self.state_updated.emit(index, usb_update)
+                        continue
                     else:
                         # Cloud transports query the vendor account directly.
                         cloud_attempted = cloud_device is not None

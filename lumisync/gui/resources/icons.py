@@ -44,6 +44,10 @@ class IconKey(str, Enum):
     LIGHT_SWITCH = "light_switch"
     LED_STRIP = "led_strip"
     MATRIX_PANEL = "matrix_panel"
+    MOTHERBOARD = "motherboard"
+    MOUSE = "mouse"
+    KEYBOARD = "keyboard"
+    PC = "pc"
     LIGHT_BULB = "light_bulb"
     ADD = "add"
     TRASH = "trash"
@@ -72,6 +76,10 @@ _ICON_FILES: Dict[IconKey, str] = {
     IconKey.LIGHT_SWITCH: "light-switch.svg",
     IconKey.LED_STRIP: "led-strip.svg",
     IconKey.MATRIX_PANEL: "matrix-panel.svg",
+    IconKey.MOTHERBOARD: "motherboard.svg",
+    IconKey.MOUSE: "mouse.svg",
+    IconKey.KEYBOARD: "keyboard.svg",
+    IconKey.PC: "pc.svg",
     IconKey.LIGHT_BULB: "lightbulb-on.svg",
     IconKey.ADD: "plus.svg",
     IconKey.TRASH: "trash.svg",

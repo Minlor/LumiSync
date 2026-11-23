@@ -1,8 +1,20 @@
 """Recognizable hardware types based on saved metadata, never nicknames."""
 
+from ...device import is_local_hardware
 from ...drivers.registry import capabilities_for_device
 from ...sku_catalog import capabilities_for
 from ..resources.icons import IconKey
+
+
+def is_pc_hardware(device) -> bool:
+    """Whether *device* is lighting inside or attached to this PC.
+
+    Such devices live on the PC page instead of the Devices page. Today that
+    is USB lighting (RGB Fusion 2 motherboards); see
+    :data:`lumisync.device.LOCAL_HARDWARE_TRANSPORTS`. Network and Bluetooth
+    lights, and anything unreadable, are not PC hardware.
+    """
+    return is_local_hardware(device)
 
 
 def device_identity(device: dict) -> tuple[str, IconKey]:
@@ -13,6 +25,9 @@ def device_identity(device: dict) -> tuple[str, IconKey]:
         "led_strip": ("LED strip", IconKey.LED_STRIP),
         "light_strip": ("LED strip", IconKey.LED_STRIP),
         "light_bulb": ("Light bulb", IconKey.LIGHT_BULB),
+        "motherboard": ("Motherboard lighting", IconKey.MOTHERBOARD),
+        "mouse": ("Mouse lighting", IconKey.MOUSE),
+        "keyboard": ("Keyboard lighting", IconKey.KEYBOARD),
     }
     if kind in known:
         return known[kind]
