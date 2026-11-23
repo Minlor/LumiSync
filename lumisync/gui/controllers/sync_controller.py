@@ -5,11 +5,11 @@ This module handles synchronization functionality with PySide6 signals.
 
 import sys
 import threading
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from PySide6.QtCore import QObject, Signal, QThread, QSettings, QTimer, Qt, Slot
 
-from ... import connection, devices, led_mapping
+from ... import connection, devices, groups, led_mapping
 from ...config.options import BRIGHTNESS, SYNC
 from ...config.sync_settings import SYNC_SETTINGS_KEYS, SyncSettings
 from ...device import Device, DeviceLike, as_device
@@ -272,6 +272,7 @@ class SyncController(QObject):
     sync_started = Signal(str)  # mode: "monitor" or "music"
     sync_stopped = Signal()
     brightness_changed = Signal(str, float)  # mode, value
+    device_sync_brightness_changed = Signal(str, float)  # device key, 0.1-1.0 level
     monitor_boost_changed = Signal(float)  # 1.0-1.5 tone-map gain
     sync_error = Signal(str)
     music_auto_state_changed = Signal(str, object)
@@ -408,6 +409,59 @@ class SyncController(QObject):
     def get_music_brightness(self) -> float:
         """Get brightness for music sync mode."""
         return self.sync_settings.music_brightness
+
+    # ------------------------------------------------------ per-light levels
+
+    @staticmethod
+    def _device_sync_key(device: Union[str, DeviceLike]) -> str:
+        """The stable key a light's level is stored under (``groups.device_key``)."""
+        if isinstance(device, str):
+            return device
+        try:
+            return groups.device_key(device)
+        except Exception:
+            return ""
+
+    def get_device_sync_brightness(self, device: Union[str, DeviceLike]) -> float:
+        """A light's sync brightness level (0.1-1.0) for Monitor and Music Sync."""
+        return self.sync_settings.device_level(self._device_sync_key(device))
+
+    def set_device_sync_brightness(self, device: Union[str, DeviceLike], value: float) -> None:
+        """Set and persist a light's level; a running sync uses it on its next frame.
+
+        The session reads the level from the same live ``SyncSettings`` object
+        every frame, exactly like the mode brightness, so nothing restarts.
+        """
+        key = self._device_sync_key(device)
+        if not key:
+            return
+        before = self.sync_settings.device_level(key)
+        level = self.sync_settings.set_device_level(key, value)
+        self._persist_device_sync_brightness()
+        if level != before:
+            self.device_sync_brightness_changed.emit(key, level)
+
+    def reset_device_sync_brightness(
+        self, devices: Optional[Iterable[Union[str, DeviceLike]]] = None
+    ) -> None:
+        """Put the given lights (default: every light) back to 100%."""
+        if devices is None:
+            keys = list(self.sync_settings.device_brightness)
+        else:
+            keys = [key for key in (self._device_sync_key(device) for device in devices) if key]
+        changed = [key for key in keys if self.sync_settings.device_level(key) != 1.0]
+        for key in changed:
+            self.sync_settings.set_device_level(key, 1.0)
+        self._persist_device_sync_brightness()
+        for key in changed:
+            self.device_sync_brightness_changed.emit(key, 1.0)
+
+    def _persist_device_sync_brightness(self) -> None:
+        self._settings.setValue(
+            SYNC_SETTINGS_KEYS["device_brightness"],
+            self.sync_settings.device_brightness_json(),
+        )
+        self._schedule_sync_persist()
 
     def set_music_auto_gain(self, enabled: bool) -> None:
         """Apply and persist whether loudness is normalized against master volume."""

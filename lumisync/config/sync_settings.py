@@ -9,8 +9,10 @@ worker; live edits mutate that one object instead of a process-wide global.
 
 from __future__ import annotations
 
+import json
+import math
 from dataclasses import asdict, dataclass, field, fields
-from typing import Any, Mapping
+from typing import Any, Dict, Mapping
 
 from ..sync import audio
 from .options import BRIGHTNESS, SYNC
@@ -31,7 +33,15 @@ SYNC_SETTINGS_KEYS = {
     "monitor_boost": "sync/monitor/boost",
     "music_brightness": "sync/music/brightness",
     "monitor_display": "sync/monitor_display",
+    # One JSON object {device key: level}, only lights not at 100%.
+    "device_brightness": "sync/device_brightness",
 }
+
+# Per-light sync brightness: a level per device key (``groups.device_key``),
+# multiplied with the mode's brightness. 100% is the default and not stored.
+DEVICE_BRIGHTNESS_MIN = 0.1
+DEVICE_BRIGHTNESS_MAX = 1.0
+DEVICE_BRIGHTNESS_DEFAULT = 1.0
 
 
 # Fields resolved at runtime and never written to settings.json or QSettings.
@@ -48,6 +58,47 @@ def _coerce_float(value: Any, fallback: float, low: float, high: float) -> float
 
 def _coerce_int(value: Any, fallback: int, low: int, high: int) -> int:
     return int(_coerce_float(value, float(fallback), float(low), float(high)))
+
+
+def coerce_device_level(value: Any) -> float:
+    """One per-light level, 0.1-1.0; anything unreadable is 100%."""
+    try:
+        level = float(value)
+    except (TypeError, ValueError):
+        return DEVICE_BRIGHTNESS_DEFAULT
+    if math.isnan(level) or math.isinf(level):
+        return DEVICE_BRIGHTNESS_DEFAULT
+    return max(DEVICE_BRIGHTNESS_MIN, min(DEVICE_BRIGHTNESS_MAX, level))
+
+
+def coerce_device_brightness(value: Any) -> Dict[str, float]:
+    """Read the per-light levels from a mapping or its JSON text.
+
+    Garbage (unreadable JSON, a non-object, empty keys, non-numeric levels)
+    is dropped, which reads as 100% for that light. Levels for lights that
+    are not in the inventory right now are kept.
+    """
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value) if value.strip() else {}
+        except ValueError:
+            return {}
+    if not isinstance(value, Mapping):
+        return {}
+    levels: Dict[str, float] = {}
+    for key, raw in value.items():
+        if not isinstance(key, str) or not key or isinstance(raw, bool):
+            continue
+        try:
+            float(raw)
+        except (TypeError, ValueError):
+            continue
+        level = coerce_device_level(raw)
+        if level != DEVICE_BRIGHTNESS_DEFAULT:
+            levels[key] = level
+    return levels
 
 
 def _coerce_bool(value: Any, fallback: bool) -> bool:
@@ -90,6 +141,11 @@ class SyncSettings:
     music_palette: str = audio.PALETTE_RGB
     music_reaction: str = audio.REACTION_FLOW
     music_brightness: float = 0.85
+
+    # Both modes: per-light level {device key: 0.1-1.0}, multiplied with the
+    # mode brightness. Lights not listed are at 100%. Replaced as a whole
+    # (never mutated in place) so a running session reads a consistent copy.
+    device_brightness: Dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def from_options(cls) -> "SyncSettings":
@@ -159,19 +215,25 @@ class SyncSettings:
             music_brightness=_coerce_float(
                 value("music_brightness"), base.music_brightness, 0.1, 1.0
             ),
+            device_brightness=(
+                coerce_device_brightness(value("device_brightness"))
+                if value("device_brightness") is not None
+                else dict(base.device_brightness)
+            ),
         )
 
     @classmethod
     def from_qsettings(cls, settings) -> "SyncSettings":
         """Load from Qt's ``QSettings`` (values often round-trip as strings)."""
         fallback = cls.from_options()
-        return cls.from_mapping(
-            {
-                field_name: settings.value(key, getattr(fallback, field_name))
-                for field_name, key in SYNC_SETTINGS_KEYS.items()
-            },
-            fallback=fallback,
-        )
+        values = {
+            field_name: settings.value(key, getattr(fallback, field_name))
+            for field_name, key in SYNC_SETTINGS_KEYS.items()
+            if field_name != "device_brightness"
+        }
+        # Stored as JSON text; a missing key reads as "no lights adjusted".
+        values["device_brightness"] = settings.value(SYNC_SETTINGS_KEYS["device_brightness"], "")
+        return cls.from_mapping(values, fallback=fallback)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -181,7 +243,14 @@ class SyncSettings:
 
     def to_qsettings(self, settings) -> None:
         for name in SYNC_SETTINGS_KEYS:
-            settings.setValue(SYNC_SETTINGS_KEYS[name], getattr(self, name))
+            if name == "device_brightness":
+                settings.setValue(SYNC_SETTINGS_KEYS[name], self.device_brightness_json())
+            else:
+                settings.setValue(SYNC_SETTINGS_KEYS[name], getattr(self, name))
+
+    def device_brightness_json(self) -> str:
+        """The per-light levels as stored in QSettings (non-default entries only)."""
+        return json.dumps(coerce_device_brightness(self.device_brightness), sort_keys=True)
 
     def copy(self) -> "SyncSettings":
         return SyncSettings(**asdict(self))
@@ -195,7 +264,10 @@ class SyncSettings:
         for item in fields(self):
             if item.name in RUNTIME_ONLY_FIELDS:
                 continue
-            setattr(self, item.name, getattr(other, item.name))
+            value = getattr(other, item.name)
+            if item.name == "device_brightness":
+                value = dict(value)
+            setattr(self, item.name, value)
 
     def brightness_for(self, mode: str) -> float:
         return self.music_brightness if mode == "music" else self.monitor_brightness
@@ -207,13 +279,48 @@ class SyncSettings:
         else:
             self.monitor_brightness = value
 
+    def device_level(self, key: str) -> float:
+        """One light's sync brightness level (1.0 unless it was changed)."""
+        levels = self.device_brightness
+        if not key or not isinstance(levels, Mapping):
+            return DEVICE_BRIGHTNESS_DEFAULT
+        raw = levels.get(key)
+        return DEVICE_BRIGHTNESS_DEFAULT if raw is None else coerce_device_level(raw)
+
+    def set_device_level(self, key: str, value: Any) -> float:
+        """Set one light's level and return it as stored (100% removes the entry)."""
+        level = coerce_device_level(value)
+        levels = dict(self.device_brightness or {})
+        if level == DEVICE_BRIGHTNESS_DEFAULT:
+            levels.pop(key, None)
+        else:
+            levels[key] = level
+        # A new dict, so a running session never sees it half-written.
+        self.device_brightness = levels
+        return level
+
+    def frame_brightness(self, mode: str, key: str) -> float:
+        """The factor a light's frames are scaled by: mode brightness x its level.
+
+        A light at 100% gets exactly the mode brightness, so its frames are
+        the same bytes as without per-light levels.
+        """
+        level = self.device_level(key)
+        base = self.brightness_for(mode)
+        return base if level == DEVICE_BRIGHTNESS_DEFAULT else base * level
+
 
 def sync_settings_from_json(data: Mapping[str, Any] | None) -> SyncSettings:
     return SyncSettings.from_mapping(data)
 
 
 __all__ = [
+    "DEVICE_BRIGHTNESS_DEFAULT",
+    "DEVICE_BRIGHTNESS_MAX",
+    "DEVICE_BRIGHTNESS_MIN",
     "SyncSettings",
     "SYNC_SETTINGS_KEYS",
+    "coerce_device_brightness",
+    "coerce_device_level",
     "sync_settings_from_json",
 ]

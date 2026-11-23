@@ -7,9 +7,9 @@ own groups ("Output", "Reaction"), each a stack of Fluent settings cards.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, Signal
 
 from ..app_settings import app_settings
 from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPixmap
@@ -33,11 +33,12 @@ from ...sync import audio
 from ..controllers.device_controller import DeviceController
 from ..controllers.sync_controller import SyncController
 from ..theme import qcolor
-from ..widgets.device_chip import DeviceChipStrip, device_id
-from ..widgets.fluent import svg_pixmap
+from ..widgets.device_chip import DeviceChipStrip, device_id, light_icon
+from ..widgets.elided_label import ElidedLabel
+from ..widgets.fluent import FluentIcon, svg_pixmap
 from ..widgets.led_mapping_widget import LedMappingWidget
 from ..widgets.product_controls import ProductComboBox, ProductSlider, ToggleSwitch
-from ..widgets.settings_card import SettingsCard, SettingsExpander, SettingsGroup
+from ..widgets.settings_card import CARD_PADDING, SettingsCard, SettingsExpander, SettingsGroup
 
 
 ACCENT_ON = "#08101F"
@@ -104,7 +105,7 @@ class NoteLabel(QLabel):
 def notify_user(view: Any, message: str, kind: str = "info") -> None:
     """Tell the user about an action they just took.
 
-    The status bar is optional (and hidden by default), so feedback the user
+    There is no status bar, so feedback the user
     must see also goes to the window's notices (toasts). ``view`` only needs
     a ``controller`` with ``status_updated``; ``window()`` is optional.
     """
@@ -129,6 +130,205 @@ def _button_icon(name: str, color: str) -> QIcon:
     return QIcon(padded)
 
 
+def _value_label(value: int) -> QLabel:
+    """A right-aligned ``75%`` beside a slider."""
+    label = QLabel(f"{value}%")
+    label.setProperty("role", "valueLabel")
+    label.setMinimumWidth(44)
+    label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    return label
+
+
+def _slider_control(slider: ProductSlider, value_label: QLabel) -> QWidget:
+    """A slider and its value label, sized like every slider card on the page."""
+    host = QWidget()
+    host.setObjectName("SliderControl")
+    row = QHBoxLayout(host)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(12)
+    slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    slider.setMinimumWidth(96)
+    slider.setMaximumWidth(280)
+    row.addWidget(slider, 1)
+    row.addWidget(value_label)
+    host.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+    host.setMaximumWidth(340)
+    return host
+
+
+def light_levels_summary(levels: Iterable[float]) -> str:
+    """``All 100%`` or ``2 adjusted`` for the collapsed per-light row."""
+    adjusted = sum(1 for level in levels if round(level * 100) != 100)
+    return f"{adjusted} adjusted" if adjusted else "All 100%"
+
+
+class _LightLevelRow(QWidget):
+    """One selected light: its icon and name, and a 10-100% level slider."""
+
+    level_changed = Signal(str, float)
+
+    def __init__(self, key: str, device: Dict[str, Any], level: float):
+        super().__init__()
+        self.key = key
+        self.name = str(device.get("name") or device.get("model") or "Light")
+        self.setObjectName("LightLevelRow")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(12)
+        self.icon = FluentIcon(light_icon(device), "fl_text_secondary", 20)
+        row.addWidget(self.icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.name_label = ElidedLabel(self.name)
+        self.name_label.setProperty("role", "settingsTitle")
+        self.name_label.setToolTip(self.name)
+        self.name_label.setMinimumWidth(80)
+        row.addWidget(self.name_label, 1, Qt.AlignmentFlag.AlignVCenter)
+        self.slider = ProductSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(10, 100)
+        self.slider.setSingleStep(5)
+        self.slider.setPageStep(10)
+        self.slider.setAccessibleName(f"{self.name} sync brightness")
+        self.slider.setToolTip(f"How bright {self.name} is during sync, on top of the Brightness slider")
+        self.value_label = _value_label(100)
+        self.set_level(level)
+        self.slider.valueChanged.connect(self._on_value)
+        row.addWidget(_slider_control(self.slider, self.value_label), 0, Qt.AlignmentFlag.AlignVCenter)
+        self.setMinimumHeight(40)
+
+    def level(self) -> float:
+        return self.slider.value() / 100.0
+
+    def set_level(self, level: float) -> None:
+        value = max(10, min(100, int(round(float(level) * 100))))
+        blocked = self.slider.blockSignals(True)
+        self.slider.setValue(value)
+        self.slider.blockSignals(blocked)
+        self.value_label.setText(f"{value}%")
+
+    def _on_value(self, value: int) -> None:
+        self.value_label.setText(f"{value}%")
+        self.level_changed.emit(self.key, value / 100.0)
+
+
+class LightBrightnessExpander(SettingsExpander):
+    """"Brightness per light": a level for each selected light, under Brightness.
+
+    The level belongs to the light, not to the mode, so the Monitor Sync and
+    Music Sync pages show (and change) the same values.
+    """
+
+    level_changed = Signal(str, float)  # device key, 0.1-1.0
+    reset_requested = Signal(list)  # device keys of the listed lights
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        self.summary_label = QLabel("All 100%")
+        self.summary_label.setProperty("role", "valueLabel")
+        self.summary_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        content = QWidget()
+        content.setObjectName("LightLevels")
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self._rows_host = QWidget()
+        self._rows_layout = QVBoxLayout(self._rows_host)
+        self._rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._rows_layout.setSpacing(4)
+        layout.addWidget(self._rows_host)
+        footer = QHBoxLayout()
+        footer.setContentsMargins(0, 0, 0, 0)
+        footer.addStretch(1)
+        self.reset_button = QPushButton("Reset")
+        self.reset_button.setObjectName("LinkButton")
+        self.reset_button.setToolTip("Set every light listed here back to 100%")
+        self.reset_button.setAccessibleName("Reset brightness per light")
+        self.reset_button.clicked.connect(self._on_reset)
+        footer.addWidget(self.reset_button)
+        layout.addLayout(footer)
+        super().__init__(
+            "layers.svg", "Brightness per light", "Dim or brighten individual lights during sync",
+            content=content, control=self.summary_label, parent=parent,
+        )
+        # Rows line up with the card's text column; sliders end where the
+        # Brightness slider above ends.
+        self.set_content_margins(CARD_PADDING + 36, 4, CARD_PADDING, 8)
+        self.header.setAccessibleName("Brightness per light")
+        self.header.clicked.connect(lambda checked: self.set_expanded(bool(checked)))
+        self._rows: List[_LightLevelRow] = []
+        self._signature: tuple = ()
+        self._update_summary()
+
+    def rows(self) -> List[_LightLevelRow]:
+        return list(self._rows)
+
+    def row_names(self) -> List[str]:
+        return [row.name for row in self._rows]
+
+    def summary(self) -> str:
+        return self.summary_label.text()
+
+    def set_lights(self, devices: List[Dict[str, Any]], level_for: Callable[[str], float]) -> None:
+        """List ``devices`` (in order) with their current levels."""
+        entries = []
+        seen = set()
+        for device in devices:
+            key = device_id(device)
+            if key in seen or key == "?":
+                continue
+            seen.add(key)
+            entries.append((key, device))
+        signature = tuple(
+            (key, str(device.get("name") or device.get("model") or ""), light_icon(device))
+            for key, device in entries
+        )
+        if signature != self._signature:
+            self._signature = signature
+            for row in self._rows:
+                self._rows_layout.removeWidget(row)
+                row.hide()
+                row.deleteLater()
+            self._rows = []
+            for key, device in entries:
+                row = _LightLevelRow(key, device, level_for(key))
+                row.level_changed.connect(self._on_row_level)
+                self._rows_layout.addWidget(row)
+                self._rows.append(row)
+        else:
+            for row in self._rows:
+                row.set_level(level_for(row.key))
+        has_lights = bool(self._rows)
+        self.header.setEnabled(has_lights)
+        self.header.setToolTip("" if has_lights else "Select at least one light first")
+        if not has_lights and self.is_expanded():
+            self.set_expanded(False, animate=False)
+        self._update_summary()
+
+    def set_level(self, key: str, level: float) -> None:
+        for row in self._rows:
+            if row.key == key:
+                row.set_level(level)
+        self._update_summary()
+
+    def _on_row_level(self, key: str, level: float) -> None:
+        self._update_summary()
+        self.level_changed.emit(key, level)
+
+    def _on_reset(self) -> None:
+        keys = [row.key for row in self._rows]
+        for row in self._rows:
+            row.set_level(1.0)
+        self._update_summary()
+        if keys:
+            self.reset_requested.emit(keys)
+
+    def _update_summary(self) -> None:
+        if not self._rows:
+            self.summary_label.setText("No lights")
+            self.reset_button.setEnabled(False)
+            return
+        levels = [row.level() for row in self._rows]
+        self.summary_label.setText(light_levels_summary(levels))
+        self.reset_button.setEnabled(any(round(level * 100) != 100 for level in levels))
+
+
 class ModesView(QWidget):
     def __init__(
         self,
@@ -148,6 +348,7 @@ class ModesView(QWidget):
         self._paused_devices: List[dict] = []
         self._action_hints: Dict[str, QLabel] = {}
         self._account_notes: Dict[str, QLabel] = {}
+        self._light_levels: Dict[str, LightBrightnessExpander] = {}
 
         self._build_ui()
         self._connect_signals()
@@ -272,29 +473,16 @@ class ModesView(QWidget):
         layout.addWidget(lights)
         return strip, save_button
 
-    @staticmethod
-    def _value_label(value: int) -> QLabel:
-        label = QLabel(f"{value}%")
-        label.setProperty("role", "valueLabel")
-        label.setMinimumWidth(44)
-        label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        return label
+    _value_label = staticmethod(_value_label)
+    _slider_control = staticmethod(_slider_control)
 
-    @staticmethod
-    def _slider_control(slider: ProductSlider, value_label: QLabel) -> QWidget:
-        host = QWidget()
-        host.setObjectName("SliderControl")
-        row = QHBoxLayout(host)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(12)
-        slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        slider.setMinimumWidth(96)
-        slider.setMaximumWidth(280)
-        row.addWidget(slider, 1)
-        row.addWidget(value_label)
-        host.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        host.setMaximumWidth(340)
-        return host
+    def _build_light_levels(self, mode: str) -> LightBrightnessExpander:
+        """The "Brightness per light" row under a mode's Brightness slider."""
+        expander = LightBrightnessExpander()
+        expander.level_changed.connect(self._on_light_level_changed)
+        expander.reset_requested.connect(self._on_light_levels_reset)
+        self._light_levels[mode] = expander
+        return expander
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
         super().resizeEvent(event)
@@ -373,6 +561,7 @@ class ModesView(QWidget):
             "sun.svg", "Brightness", "Scales every frame; the default is 75%",
             self._slider_control(self.monitor_brightness_slider, self.monitor_brightness_label),
         ))
+        self.monitor_light_levels = output.add_card(self._build_light_levels("monitor"))
 
         # Brightness boost: lifts midtones without changing hue. This is a
         # tone-map, not an overdrive; 255 per channel is still the ceiling.
@@ -580,6 +769,7 @@ class ModesView(QWidget):
             "sun.svg", "Brightness", "The ceiling for every reaction",
             self._slider_control(self.music_brightness_slider, self.music_brightness_label),
         ))
+        self.music_light_levels = output.add_card(self._build_light_levels("music"))
 
         self.music_auto_gain_check = ToggleSwitch()
         self.music_auto_gain_check.setChecked(self.controller.get_music_auto_gain())
@@ -625,6 +815,9 @@ class ModesView(QWidget):
         boost_signal = getattr(self.controller, "monitor_boost_changed", None)
         if boost_signal is not None:
             boost_signal.connect(self._on_monitor_boost_changed)
+        level_signal = getattr(self.controller, "device_sync_brightness_changed", None)
+        if level_signal is not None:
+            level_signal.connect(self._on_device_level_changed)
         self.controller.music_auto_state_changed.connect(
             self._on_music_auto_state_changed
         )
@@ -671,6 +864,7 @@ class ModesView(QWidget):
                 strip.set_selected_ids(ids)
         self._refresh_account_note(inventory)
         self._refresh_led_mapping_zone_count()
+        self._refresh_light_levels()
         self._update_action_states()
 
     def _refresh_account_note(self, inventory: List[Dict[str, Any]]) -> None:
@@ -686,6 +880,7 @@ class ModesView(QWidget):
 
     def _on_mode_devices_changed(self, mode: str, ids: List[str]) -> None:
         self._save_mode_devices(mode, ids)
+        self._refresh_light_levels(mode)
         if mode == "monitor":
             if not ids and self._mapping_expanded:
                 self._sync_was_running = False
@@ -1155,6 +1350,41 @@ class ModesView(QWidget):
     def _on_monitor_boost_changed(self, value: float) -> None:
         if hasattr(self, "monitor_boost_slider"):
             self.monitor_boost_slider.setValue(int(round(value * 100)))
+
+    # ------------------------------------------------------------------ per-light levels
+
+    def _device_level(self, key: str) -> float:
+        getter = getattr(self.controller, "get_device_sync_brightness", None)
+        if getter is None:
+            return 1.0
+        try:
+            return float(getter(key))
+        except Exception:
+            return 1.0
+
+    def _refresh_light_levels(self, mode: Optional[str] = None) -> None:
+        """List each mode's selected lights (group members individually) in order."""
+        for strip_mode, strip in self._strips():
+            if mode is not None and strip_mode != mode:
+                continue
+            expander = self._light_levels.get(strip_mode)
+            if expander is not None:
+                expander.set_lights(strip.selected_devices(), self._device_level)
+
+    def _on_light_level_changed(self, key: str, level: float) -> None:
+        setter = getattr(self.controller, "set_device_sync_brightness", None)
+        if setter is not None:
+            setter(key, level)
+
+    def _on_light_levels_reset(self, keys: List[str]) -> None:
+        reset = getattr(self.controller, "reset_device_sync_brightness", None)
+        if reset is not None:
+            reset(keys)
+
+    def _on_device_level_changed(self, key: str, level: float) -> None:
+        # One level per light: both pages (and this page's other mode) follow.
+        for expander in self._light_levels.values():
+            expander.set_level(key, level)
 
     # ------------------------------------------------------------------ start helpers
 

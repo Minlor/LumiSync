@@ -641,7 +641,7 @@ class SyncSession:
                         black_hinted = True
 
                 settings = self.settings
-                for _device, key in self._keys:
+                for device, key in self._keys:
                     adapter = self.adapters[key]
                     capabilities = adapter.capabilities
                     one_colour = _streams_one_colour(capabilities)
@@ -680,8 +680,10 @@ class SyncSession:
                         )
                         zone_colors[colors_key] = colors
                     colors = utils.resample_colors_to_count(colors, segment_count)
+                    # The mode's brightness times this light's own level, read
+                    # every frame so a slider move applies without a restart.
                     colors = processing.apply_brightness(
-                        colors, settings.monitor_brightness
+                        colors, settings.frame_brightness("monitor", device.identity)
                     )
 
                     smoother = smoothers.get(key)
@@ -868,7 +870,7 @@ class SyncSession:
                         smoothers.clear()
 
                     auto_state = None
-                    for device_index, (_device, key) in enumerate(self._keys):
+                    for device_index, (device, key) in enumerate(self._keys):
                         adapter = self.adapters[key]
                         segment_count = adapter.capabilities.segment_count
                         renderer = renderers.get(key)
@@ -903,8 +905,10 @@ class SyncSession:
                             if (last_out is not None and max_hz < 30.0)
                             else None,
                         )
+                        # The mode's brightness times this light's own level.
                         adjusted = processing.apply_brightness(
-                            frame, self.settings.music_brightness
+                            frame,
+                            self.settings.frame_brightness("music", device.identity),
                         )
                         self._submit(key, adjusted, now)
                         last_output_at[key] = now

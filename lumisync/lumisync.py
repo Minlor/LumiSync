@@ -59,6 +59,9 @@ def _discover_for_cli():
     saved = devices.get_data(refresh=False)
     saved_devices = list(saved.get("devices", []))
     server, discovered = connection.connect()
+    # Lighting on this PC's USB (RGB Fusion 2) is found the same way the GUI's
+    # Find Devices finds it, so a headless sync can target it too.
+    discovered = list(discovered) + devices.discover_local_hardware()
     if discovered:
         return server, devices.merge_discovered_devices(saved_devices, discovered)
     return server, saved_devices
