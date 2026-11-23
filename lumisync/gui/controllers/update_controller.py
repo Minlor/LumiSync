@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import tempfile
 from typing import Optional
 
@@ -12,10 +13,7 @@ from ... import __version__
 from ...updates import (
     UpdateCheckResult,
     check_for_update,
-    download_update_asset,
-    expected_sha256,
-    select_update_asset,
-    verify_file_sha256,
+    download_verified_update,
 )
 
 # Downloaded installers live in their own temp folder; old ones are removed on
@@ -25,7 +23,6 @@ UPDATE_TEMP_PREFIX = "lumisync-update-"
 
 def cleanup_old_update_downloads(max_age_seconds: float = 6 * 3600) -> int:
     """Delete update folders left by earlier runs. Returns how many went."""
-    import shutil
     import time
 
     removed = 0
@@ -72,33 +69,20 @@ class UpdateDownloadWorker(QObject):
         self.result = result
 
     def run(self) -> None:
+        directory: Optional[Path] = None
         try:
-            asset = select_update_asset(self.result.assets)
-            if asset is None:
-                raise RuntimeError(
-                    "This release has no compatible update asset for this platform."
-                )
-
-            expected = expected_sha256(asset, self.result.assets)
-            if not expected:
-                raise RuntimeError(
-                    "The release does not publish a SHA-256 checksum, so the "
-                    "download cannot be verified. Use Open Release instead."
-                )
-
-            destination = Path(tempfile.mkdtemp(prefix=UPDATE_TEMP_PREFIX)) / asset.name
-            download_update_asset(
-                asset,
-                destination,
+            directory = Path(tempfile.mkdtemp(prefix=UPDATE_TEMP_PREFIX))
+            destination = download_verified_update(
+                self.result,
+                directory,
                 progress=self.progress.emit,
             )
-            if not verify_file_sha256(destination, expected):
-                raise RuntimeError(
-                    "The downloaded file failed SHA-256 verification and was not run."
-                )
-            self.finished.emit(str(destination))
         except Exception as exc:
+            if directory is not None:
+                shutil.rmtree(directory, ignore_errors=True)
             self.failed.emit(str(exc))
+            return
+        self.finished.emit(str(destination))
 
 
 class UpdateController(QObject):

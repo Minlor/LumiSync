@@ -83,6 +83,16 @@ All notable changes to LumiSync are recorded here.
 - Sidebar icons are larger, and the Music and light bulb icons are redrawn
   as outlines to match the rest.
 
+### Updates
+
+- In-app updates are now installed only when the release is signed with
+  LumiSync's own key: the release's checksum file carries a signature that the
+  app checks against the key built into it before it downloads the installer.
+  A release without a valid signature is not installed, and the app says so;
+  it can still be downloaded from the releases page. This is LumiSync's own
+  signature, not a Windows code-signing certificate, so Windows SmartScreen
+  may still warn the first time you run a manually downloaded installer.
+
 ## 1.0.0 — 2026-11-10
 
 ### Windows installer

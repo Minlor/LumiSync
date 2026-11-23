@@ -154,6 +154,35 @@ dependency versions.
 without Inno Setup. The release workflow installs Inno Setup and publishes the
 installer and `LumiSync-Windows-SHA256SUMS.txt`.
 
+### Release signing (maintainers)
+
+The in-app updater installs a release only when
+`LumiSync-Windows-SHA256SUMS.txt.sig` is a valid Ed25519 signature, by a key
+listed in `lumisync/update_keys.py`, over the checksum manifest and the release
+version. The release workflow signs the manifest with the `UPDATE_SIGNING_KEY`
+repository secret and fails if no key is pinned or the secret is missing or
+does not match. Local builds are never signed. While `UPDATE_PUBLIC_KEYS` is
+empty, the app logs a warning and checks only the release's own checksum.
+
+- **Create the key** (once), outside the repository:
+  `uv run python tools/update_signing.py keygen --private-key-out PATH --write-public`.
+  It prints the public key and adds it to `lumisync/update_keys.py`; commit
+  that. Then `gh secret set UPDATE_SIGNING_KEY < PATH`, keep an offline copy
+  of the private key, and delete `PATH`.
+- **Check a release by hand**:
+  `uv run python tools/update_signing.py verify --manifest LumiSync-Windows-SHA256SUMS.txt --signature LumiSync-Windows-SHA256SUMS.txt.sig --version 1.0.1`.
+- **Rotate the key**: generate a new key with `--write-public` (the old key
+  stays listed) and ship a release still signed with the old key. From the
+  next release, set `UPDATE_SIGNING_KEY` to the new key; once most installs
+  have updated, remove the old public key.
+- **Key lost**: installs that only know that key can no longer update in the
+  app. Pin a new key, publish the release signed with it, and tell users to
+  install that release from the releases page once.
+- **Key leaked**: replace the secret and pin a new key at once, remove the
+  leaked public key in that release, and tell users to install it from the
+  releases page, because older installs still trust the leaked key until they
+  update. Delete any release asset you did not publish.
+
 ### Prebuilt downloads
 
 - **Windows** — **`LumiSync-Setup.exe`** is attached to each

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import sys
@@ -17,10 +20,27 @@ from packaging.version import InvalidVersion, Version
 from . import __version__
 
 
+logger = logging.getLogger(__name__)
+
 GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/Minlor/LumiSync/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/Minlor/LumiSync/releases"
 GITHUB_API_VERSION = "2026-03-10"
 USER_AGENT = f"LumiSync/{__version__}"
+
+# Release signing: a detached Ed25519 signature over the checksum manifest,
+# published as ``<manifest name>.sig`` (base64 of the 64-byte signature).
+SIGNATURE_SUFFIX = ".sig"
+SIGNED_MESSAGE_PREFIX = b"LumiSync update manifest v1\n"
+MAX_SIGNATURE_BYTES = 1024
+MAX_MANIFEST_BYTES = 256 * 1024
+UNVERIFIED_UPDATE_MESSAGE = (
+    "This update could not be verified as coming from LumiSync, so it was not "
+    "installed."
+)
+
+
+class UpdateVerificationError(RuntimeError):
+    """The update could not be proven to come from LumiSync's signing key."""
 
 
 @dataclass(frozen=True)
@@ -266,6 +286,139 @@ def fetch_text(url: str, timeout: float = 10.0) -> str:
         return response.read().decode("utf-8", errors="replace")
 
 
+def fetch_asset_bytes(url: str, max_bytes: int, timeout: float = 10.0) -> bytes:
+    """Fetch a small release asset, refusing anything over ``max_bytes``."""
+    request = Request(
+        url,
+        headers={"User-Agent": USER_AGENT, "Accept": "application/octet-stream"},
+    )
+    with urlopen(request, timeout=timeout) as response:
+        data = response.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError(f"Release asset is larger than {max_bytes} bytes")
+    return data
+
+
+def pinned_update_keys() -> tuple[str, ...]:
+    """The public keys this build accepts, read when called (not at import)."""
+    from . import update_keys
+
+    return tuple(update_keys.UPDATE_PUBLIC_KEYS)
+
+
+def release_signing_version(version: str) -> str:
+    """Normalise a release tag or version the way the signature binds it."""
+    return str(Version(normalize_version_tag(version)))
+
+
+def signed_message(version: str, manifest_bytes: bytes) -> bytes:
+    """The exact bytes a release signature covers.
+
+    The version is part of the message so an old signed manifest and its
+    installer cannot be replayed under a newer release tag.
+    """
+    normalized = release_signing_version(version)
+    return SIGNED_MESSAGE_PREFIX + normalized.encode("ascii") + b"\n" + bytes(manifest_bytes)
+
+
+def _b64decode_exact(value: str | bytes, length: int) -> Optional[bytes]:
+    try:
+        if isinstance(value, bytes):
+            value = value.decode("ascii")
+        decoded = base64.b64decode(value.strip(), validate=True)
+    except (binascii.Error, ValueError, UnicodeDecodeError, AttributeError, TypeError):
+        return None
+    return decoded if len(decoded) == length else None
+
+
+def verify_manifest_signature(
+    manifest_bytes: bytes,
+    signature_b64: str | bytes,
+    version: str,
+    public_keys: Sequence[str],
+) -> bool:
+    """Whether any of ``public_keys`` signed this manifest for ``version``.
+
+    Malformed signatures, keys or versions return False; this never raises.
+    """
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    signature = _b64decode_exact(signature_b64, 64)
+    if signature is None:
+        return False
+    try:
+        message = signed_message(version, manifest_bytes)
+    except (InvalidVersion, UnicodeEncodeError, TypeError, ValueError):
+        return False
+    for encoded_key in public_keys:
+        raw_key = _b64decode_exact(encoded_key, 32)
+        if raw_key is None:
+            continue
+        try:
+            Ed25519PublicKey.from_public_bytes(raw_key).verify(signature, message)
+        except (InvalidSignature, ValueError, TypeError):
+            continue
+        return True
+    return False
+
+
+def select_signature_asset(
+    manifest_asset: ReleaseAsset,
+    assets: Sequence[ReleaseAsset],
+) -> Optional[ReleaseAsset]:
+    """Find the ``<manifest>.sig`` published next to ``manifest_asset``."""
+    wanted = f"{manifest_asset.name}{SIGNATURE_SUFFIX}".casefold()
+    for asset in assets:
+        if asset.name.casefold() == wanted:
+            return asset
+    return None
+
+
+def signed_expected_sha256(
+    asset: ReleaseAsset,
+    assets: Sequence[ReleaseAsset],
+    version: Optional[str],
+    public_keys: Sequence[str],
+    *,
+    fetch: Optional[Callable[[str, int], bytes]] = None,
+) -> Optional[str]:
+    """Find ``asset``'s SHA-256 in a manifest signed by a pinned key.
+
+    Only manifests whose ``.sig`` verifies for ``version`` count; GitHub's
+    asset digest and unsigned manifests are ignored. Returns ``None`` when no
+    signed manifest lists the asset.
+    """
+    if not version or not public_keys:
+        return None
+    reader = fetch or fetch_asset_bytes
+    wanted = asset.name.casefold()
+    for manifest in select_checksum_assets(assets, asset):
+        signature_asset = select_signature_asset(manifest, assets)
+        if signature_asset is None:
+            continue
+        if manifest.size > MAX_MANIFEST_BYTES or signature_asset.size > MAX_SIGNATURE_BYTES:
+            continue
+        try:
+            manifest_bytes = reader(manifest.url, MAX_MANIFEST_BYTES)
+            signature = reader(signature_asset.url, MAX_SIGNATURE_BYTES)
+        except (OSError, ValueError):
+            continue
+        if not verify_manifest_signature(manifest_bytes, signature, version, public_keys):
+            logger.warning("Update manifest %s has an invalid signature", manifest.name)
+            continue
+        text = manifest_bytes.decode("utf-8", errors="replace")
+        checksums = parse_checksums(text)
+        if wanted in checksums:
+            return checksums[wanted]
+        if manifest.name.casefold() == f"{wanted}.sha256":
+            parts = text.split()
+            token = parts[0].casefold() if parts else ""
+            if _is_sha256_hex(token):
+                return token
+    return None
+
+
 def verify_file_sha256(path: str | os.PathLike[str], expected: str) -> bool:
     """Return whether ``path`` matches the expected SHA-256 hex digest."""
     expected = expected.strip().casefold()
@@ -310,6 +463,65 @@ def download_update_asset(
         raise ValueError(
             f"Downloaded {written} bytes but the release listed {asset.size}"
         )
+    return destination
+
+
+def download_verified_update(
+    result: UpdateCheckResult,
+    directory: str | os.PathLike[str],
+    *,
+    progress: Optional[Callable[[int, int], None]] = None,
+    public_keys: Optional[Sequence[str]] = None,
+) -> Path:
+    """Download this platform's update into ``directory`` and verify it.
+
+    With pinned keys (``public_keys`` defaults to :func:`pinned_update_keys`)
+    the expected hash must come from a checksum manifest whose signature
+    verifies for the release version, and that is checked before the
+    installer is downloaded. Without keys the release's own checksum is
+    trusted, as before, and a warning is logged. A file that fails
+    verification is deleted; errors are raised with a user-facing message.
+    """
+    asset = select_update_asset(result.assets)
+    if asset is None:
+        raise RuntimeError(
+            "This release has no compatible update asset for this platform."
+        )
+
+    keys = tuple(pinned_update_keys() if public_keys is None else public_keys)
+    if keys:
+        expected = signed_expected_sha256(
+            asset, result.assets, result.latest_version, keys
+        )
+        if not expected:
+            raise UpdateVerificationError(UNVERIFIED_UPDATE_MESSAGE)
+    else:
+        logger.warning(
+            "Update signatures are not being checked: this build has no "
+            "update signing key."
+        )
+        expected = expected_sha256(asset, result.assets)
+        if not expected:
+            raise RuntimeError(
+                "The release does not publish a SHA-256 checksum, so the "
+                "download cannot be verified. Use Open Release instead."
+            )
+
+    destination = Path(directory) / asset.name
+    try:
+        download_update_asset(asset, destination, progress=progress)
+        if not verify_file_sha256(destination, expected):
+            if keys:
+                raise UpdateVerificationError(UNVERIFIED_UPDATE_MESSAGE)
+            raise RuntimeError(
+                "The downloaded file failed SHA-256 verification and was not run."
+            )
+    except BaseException:
+        try:
+            destination.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not delete the rejected update %s", destination)
+        raise
     return destination
 
 

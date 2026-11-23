@@ -56,6 +56,49 @@ jobs:
             throw "Uninstaller failed with exit code $($uninstall.ExitCode)"
           }
 
+      # In-app updates only install a release whose checksum manifest is signed
+      # with a key pinned in lumisync/update_keys.py (tools/update_signing.py).
+      # The signed message binds the release tag, normalised the same way the
+      # updater normalises the tag it reads from GitHub.
+      - name: Check update signing is configured
+        if: github.event_name == 'release'
+        shell: pwsh
+        run: |
+          $count = & .\build\windows\.venv\Scripts\python.exe -c "from lumisync.update_keys import UPDATE_PUBLIC_KEYS; print(len(UPDATE_PUBLIC_KEYS))"
+          if ($LASTEXITCODE -ne 0) { throw "Could not read lumisync/update_keys.py" }
+          if ([int]$count -lt 1) {
+            throw "No update signing public key is pinned in lumisync/update_keys.py. Run tools/update_signing.py keygen --write-public and commit the key before releasing."
+          }
+
+      - name: Sign the update checksum manifest
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          LUMISYNC_UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:LUMISYNC_UPDATE_SIGNING_KEY)) {
+            throw "The UPDATE_SIGNING_KEY repository secret is empty or missing, so the release cannot be signed. Set it with: gh secret set UPDATE_SIGNING_KEY < PATH"
+          }
+          & .\build\windows\.venv\Scripts\python.exe tools\update_signing.py sign `
+            --manifest dist\LumiSync-Windows-SHA256SUMS.txt `
+            --version $env:RELEASE_TAG
+          if ($LASTEXITCODE -ne 0) { throw "Signing the checksum manifest failed" }
+
+      - name: Verify the update signature against the pinned keys
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          & .\build\windows\.venv\Scripts\python.exe tools\update_signing.py verify `
+            --manifest dist\LumiSync-Windows-SHA256SUMS.txt `
+            --signature dist\LumiSync-Windows-SHA256SUMS.txt.sig `
+            --version $env:RELEASE_TAG
+          if ($LASTEXITCODE -ne 0) {
+            throw "The signature does not verify with the keys pinned in lumisync/update_keys.py. Check that UPDATE_SIGNING_KEY matches a pinned public key."
+          }
+
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -68,6 +111,8 @@ jobs:
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v3
         with:
+          fail_on_unmatched_files: true
           files: |
             dist/LumiSync-Setup.exe
             dist/LumiSync-Windows-SHA256SUMS.txt
+            dist/LumiSync-Windows-SHA256SUMS.txt.sig
