@@ -48,6 +48,10 @@ dependencies = [
   "winrt-Windows-Media-Control>=3.2.1; sys_platform == 'win32'",
   "winrt-Windows-Storage-Streams>=3.2.1; sys_platform == 'win32'",
   "mss>=10.1.0; sys_platform != 'win32'",
+  # Wayland Monitor sync talks to the screen-sharing portal over D-Bus. Pure
+  # Python and already installed through keyring on Linux; listed so capture
+  # does not depend on keyring's choice of backend.
+  "jeepney>=0.8; sys_platform == 'linux'",
 ]
 
 [tool.ruff]
@@ -87,8 +91,10 @@ include = [
   "lumisync/updates.py",
   "tools/update_signing.py",
   "lumisync/config",
+  "lumisync/sync/mpris_artwork.py",
   "lumisync/sync/processing.py",
   "lumisync/sync/session.py",
+  "lumisync/sync/wayland_capture.py",
   "lumisync/sync/streaming.py",
   "lumisync/drivers/base.py",
   "lumisync/drivers/gigabyte_fusion.py",

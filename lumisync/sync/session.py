@@ -61,6 +61,15 @@ SILENCE_HINT_AFTER = 8.0
 
 _FULL_SCREEN: led_mapping.NormalizedRect = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
 
+# Capture errors that end Monitor sync with their own plain message instead
+# of a retry: a missing backend, or a screen share the user refused or the
+# desktop ended (retrying would only bring the share dialog back).
+_FATAL_CAPTURE_ERRORS = (
+    monitor.WaylandUnsupportedError,
+    monitor.ScreenCaptureDependencyError,
+    monitor.ScreenSharingDeniedError,
+)
+
 
 class _SendFailure(NamedTuple):
     """The last send error reported for one device."""
@@ -161,6 +170,8 @@ class SyncSession:
         except monitor.WaylandUnsupportedError as exc:
             self._error(str(exc))
         except monitor.ScreenCaptureDependencyError as exc:
+            self._error(str(exc))
+        except monitor.ScreenSharingDeniedError as exc:
             self._error(str(exc))
         except Exception as exc:
             self._error(f"{self.mode.capitalize()} sync error: {exc}")
@@ -516,7 +527,7 @@ class SyncSession:
                         display_name=target[1] or None,
                         stop_event=self.stop_event,
                     )
-                except (monitor.WaylandUnsupportedError, monitor.ScreenCaptureDependencyError):
+                except _FATAL_CAPTURE_ERRORS:
                     raise
                 except Exception as exc:
                     message = f"Error in monitor sync: {exc}"
@@ -547,7 +558,7 @@ class SyncSession:
 
             try:
                 frame, channel_order = self._capture_screen_frame(self._screen_grab)
-            except (monitor.WaylandUnsupportedError, monitor.ScreenCaptureDependencyError):
+            except _FATAL_CAPTURE_ERRORS:
                 raise
             except Exception as exc:
                 # A broken capture (dxcam's "NoneType has no AcquireNextFrame",
@@ -715,7 +726,7 @@ class SyncSession:
                         last_sent[key] = smoothed
                         last_sent_at[key] = now
                 last_processing_error = None
-            except (monitor.WaylandUnsupportedError, monitor.ScreenCaptureDependencyError):
+            except _FATAL_CAPTURE_ERRORS:
                 raise
             except Exception as exc:
                 message = f"Error in monitor sync: {exc}"

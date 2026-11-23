@@ -135,6 +135,16 @@ for _pkg in ("bleak", "winrt", "tinytuya", "requests", "certifi", "cryptography"
     binaries += _b
     hiddenimports += _h
 
+# Wayland Monitor sync: the portal handshake uses jeepney (pure Python), and
+# wayland_capture imports it by name at runtime, which PyInstaller cannot see.
+# The screen stream is read by the host's GStreamer (gst-launch-1.0 or
+# PyGObject), so no Qt Multimedia or FFmpeg libraries are bundled.
+if sys.platform.startswith("linux"):
+    _d, _b, _h = safe_collect_all("jeepney")
+    datas += _d
+    binaries += _b
+    hiddenimports += _h + ["jeepney", "jeepney.io.blocking"]
+
 # Pillow's PyInstaller hook drags in tkinter (and the tcl/tk runtime) via
 # PIL.ImageTk even though the GUI is pure Qt, and its AVIF codec is an 8 MB
 # binary — the app only builds PIL images from in-memory capture arrays.

@@ -1,4 +1,4 @@
-"""Non-blocking color palettes from the current Windows media artwork."""
+"""Non-blocking color palettes from the current media artwork (Windows, Linux)."""
 
 from __future__ import annotations
 
@@ -118,7 +118,19 @@ async def _current_artwork_bytes() -> bytes | None:
 
 
 def read_current_artwork_bytes() -> bytes | None:
-    """Read the current media thumbnail from a worker-thread event loop."""
+    """Read the current media thumbnail; called on the palette worker thread.
+
+    Windows asks the system media session through winrt on a private event
+    loop. Linux asks the MPRIS player on the D-Bus session bus. Other platforms
+    have no source and report ``None``, as does every failure.
+    """
+    if sys.platform.startswith("linux"):
+        try:
+            from .mpris_artwork import read_artwork_bytes
+
+            return read_artwork_bytes()
+        except Exception:
+            return None
     try:
         return asyncio.run(_current_artwork_bytes())
     except (ImportError, OSError, RuntimeError):

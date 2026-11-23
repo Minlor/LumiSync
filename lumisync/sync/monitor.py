@@ -10,7 +10,7 @@ import numpy as np
 
 from ..config.options import GENERAL
 from ..config.sync_settings import SyncSettings
-from . import processing
+from . import processing, wayland_capture
 
 
 MISSING_CAPTURE_BACKEND_MESSAGE = (
@@ -24,10 +24,10 @@ MISSING_X11_CAPTURE_MESSAGE = (
 )
 
 WAYLAND_MESSAGE = (
-    "Monitor (screen) sync isn't available on Wayland yet — Wayland has no "
-    "direct screen grab. Music sync and manual control still work. For screen "
-    "sync, log out and choose an X11/Xorg session (running under XWayland does "
-    "not help). Wayland capture via the desktop portal is planned."
+    "Monitor (screen) sync on Wayland needs the desktop's screen-sharing "
+    "portal and GStreamer's PipeWire plugin. Music sync and manual control "
+    "still work. Install them, or log out and choose an X11/Xorg session "
+    "(running under XWayland does not help)."
 )
 
 # dxcam retries a lost output forever (a detached monitor, a display that went
@@ -41,7 +41,11 @@ class ScreenCaptureDependencyError(RuntimeError):
 
 
 class WaylandUnsupportedError(RuntimeError):
-    """Raised when monitor sync is attempted on a Wayland session."""
+    """Raised when Wayland capture is attempted without what it needs."""
+
+
+# The user refused the desktop's share dialog, or the desktop ended the share.
+ScreenSharingDeniedError = wayland_capture.ScreenSharingDenied
 
 
 class CaptureRecoveryTimeout(RuntimeError):
@@ -49,13 +53,18 @@ class CaptureRecoveryTimeout(RuntimeError):
 
 
 def capture_supported() -> Tuple[bool, str]:
-    """Return whether monitor sync can capture this session, and why not."""
+    """Return whether monitor sync can capture this session, and a message.
+
+    When capture is not possible the message says why. On Wayland a
+    supported session still carries a note (capture there is experimental);
+    callers show the message only when they have nothing else to say.
+    """
     if GENERAL.platform == "Windows":
         if importlib.util.find_spec("dxcam") is None:
             return False, MISSING_CAPTURE_BACKEND_MESSAGE
         return True, ""
     if GENERAL.compositor == "wayland":
-        return False, WAYLAND_MESSAGE
+        return wayland_capture.availability()
     if importlib.util.find_spec("mss") is None:
         return False, MISSING_X11_CAPTURE_MESSAGE
     return True, ""
@@ -278,10 +287,14 @@ class ScreenGrab:
                     )
                 self.capture_method = partial(self.camera.grab, self.camera.monitors[monitor_idx])
             else:
-                # TODO: Wayland capture via xdg-desktop-portal ScreenCast +
-                # PipeWire. Until then, fail with an actionable message rather
-                # than a raw NotImplementedError.
-                raise WaylandUnsupportedError(WAYLAND_MESSAGE)
+                # The desktop's share dialog picks the screen, not the index.
+                supported, reason = wayland_capture.availability()
+                if not supported:
+                    raise WaylandUnsupportedError(reason or WAYLAND_MESSAGE)
+                self.camera = wayland_capture.service().acquire()
+                if self.camera.waiting_for_user():
+                    self.fallback_note = wayland_capture.WAITING_NOTE
+                self.capture_method = self.camera.grab
 
     def _create_camera(
         self,

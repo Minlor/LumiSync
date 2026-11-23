@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from ... import connection
+from ...config.options import GENERAL
 from ...drivers.registry import capabilities_for_device, is_cloud
 from ...sync import audio
 from ..controllers.device_controller import DeviceController
@@ -43,6 +44,15 @@ from ..widgets.settings_card import CARD_PADDING, SettingsCard, SettingsExpander
 
 ACCENT_ON = "#08101F"
 SELECT_LIGHT_HINT = "Select at least one light to start."
+WAYLAND_DISPLAY_ITEM = "Chosen when sharing starts"
+WAYLAND_DISPLAY_NOTE = (
+    "On Wayland your desktop's screen-sharing dialog chooses the screen"
+)
+
+
+def _sharing_dialog_picks_screen() -> bool:
+    """Wayland capture shares whichever screen the desktop's dialog picks."""
+    return GENERAL.platform != "Windows" and GENERAL.compositor == "wayland"
 
 
 def account_only_lights(devices: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -542,9 +552,18 @@ class ModesView(QWidget):
         index = self.display_combo.findData(saved_display)
         if index >= 0:
             self.display_combo.setCurrentIndex(index)
+        display_description = "The screen whose colors are sent to the lights"
+        if _sharing_dialog_picks_screen():
+            # On Wayland the desktop's sharing dialog chooses the screen; a
+            # working picker here would only pretend to.
+            self.display_combo.clear()
+            self.display_combo.addItem(WAYLAND_DISPLAY_ITEM, saved_display)
+            self.display_combo.setEnabled(False)
+            self.display_combo.setToolTip(WAYLAND_DISPLAY_NOTE)
+            display_description = WAYLAND_DISPLAY_NOTE
         self.display_combo.currentIndexChanged.connect(self._on_display_changed)
         self.display_card = output.add_card(SettingsCard(
-            "screen.svg", "Display", "The screen whose colors are sent to the lights",
+            "screen.svg", "Display", display_description,
             self.display_combo,
         ))
 
@@ -997,6 +1016,9 @@ class ModesView(QWidget):
                 continue
             text = SELECT_LIGHT_HINT if strip.devices() and not strip.selected_devices() else ""
             if mode == "monitor" and not capture_ok and current_mode != "monitor":
+                text = capture_reason
+            elif mode == "monitor" and capture_ok and capture_reason and not text:
+                # A supported session with a caveat (Wayland is experimental).
                 text = capture_reason
             hint.setText(text)
             hint.setVisible(bool(text))

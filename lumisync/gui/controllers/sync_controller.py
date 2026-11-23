@@ -322,10 +322,12 @@ class SyncController(QObject):
         )
 
     def monitor_capture_supported(self) -> Tuple[bool, str]:
-        """Whether this session can capture the screen, and the message if not.
+        """Whether this session can capture the screen, and a message.
 
-        Wayland has no direct screen grab; the GUI can use this to disable the
-        Monitor start button up front.
+        The GUI uses this to disable the Monitor start button up front when
+        capture is impossible (for example Wayland without the screen-sharing
+        portal or GStreamer). A supported Wayland session still returns a
+        note, since capture there is experimental.
         """
         try:
             return monitor.capture_supported()
