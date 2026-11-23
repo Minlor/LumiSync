@@ -1,6 +1,6 @@
 """Toast notifications — transient in-window status messages.
 
-The status bar is hidden by default, so controller feedback (device
+The window has no status bar, so feedback the user must see (device
 actions, sync state, errors) surfaces here instead: Fluent InfoBar-style
 cards stacked in the bottom-right corner of the main window that fade in,
 wait, and fade out. At most three are visible; the oldest goes first.
@@ -322,15 +322,7 @@ class ToastManager(QObject):
 
     def _restack(self) -> None:
         area = self._window.contentsRect()
-        status = getattr(self._window, "statusBar", None)
-        bottom = area.bottom()
-        try:
-            bar = status() if callable(status) else None
-        except RuntimeError:
-            bar = None
-        if bar is not None and bar.isVisible():
-            bottom = bar.geometry().top() - 1
-        y = bottom - MARGIN + 1
+        y = area.bottom() - MARGIN + 1
         for toast in reversed(self._toasts):
             if toast._closing:
                 continue

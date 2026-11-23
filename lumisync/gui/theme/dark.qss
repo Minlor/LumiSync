@@ -43,14 +43,12 @@ QMainWindow[backdrop="acrylic"] {
 }
 
 QMainWindow[backdrop="mica"] QStackedWidget#ContentStack,
-QMainWindow[backdrop="mica"] QFrame#Sidebar,
-QMainWindow[backdrop="mica"] QStatusBar {
+QMainWindow[backdrop="mica"] QFrame#Sidebar {
     background: {mica_bg};
 }
 
 QMainWindow[backdrop="acrylic"] QStackedWidget#ContentStack,
-QMainWindow[backdrop="acrylic"] QFrame#Sidebar,
-QMainWindow[backdrop="acrylic"] QStatusBar {
+QMainWindow[backdrop="acrylic"] QFrame#Sidebar {
     background: {acrylic_bg};
 }
 
@@ -1128,24 +1126,6 @@ QMenu::separator {
 
 QMenu::icon {
     padding-left: 10px;
-}
-
-/* --------------------------------------------------------------- status bar */
-
-QStatusBar {
-    background: {bg};
-    color: {fl_text_secondary};
-    border-top: 1px solid {fl_divider};
-    font-size: 12px;
-}
-
-QStatusBar QLabel {
-    font-size: 12px;
-    color: {fl_text_secondary};
-}
-
-QStatusBar::item {
-    border: none;
 }
 
 /* ---------------------------------------------------------------- tabs */

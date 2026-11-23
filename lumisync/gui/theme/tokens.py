@@ -28,10 +28,12 @@ TOKENS: dict[str, str] = {
     "mica_border":     "rgba(255, 255, 255, 0.070)",
     "mica_device_surface": "rgba(255, 255, 255, 0.051)",
     "mica_inspector_surface": "rgba(40, 40, 40, 0.92)",
-    # Desktop Acrylic shows the desktop through a blur, so its tint stays
-    # dense enough to keep text and focus legible over bright wallpapers.
-    "acrylic_bg":      "rgba(28, 28, 28, 0.84)",
-    "acrylic_sidebar": "rgba(28, 28, 28, 0.84)",
+    # Desktop Acrylic shows the desktop through a blur. The tint is light
+    # enough that the blur reads clearly and the content sits close to the
+    # DWM-drawn title bar, and dense enough to keep text legible over bright
+    # wallpapers (cards add their own surface on top).
+    "acrylic_bg":      "rgba(28, 28, 28, 0.60)",
+    "acrylic_sidebar": "rgba(28, 28, 28, 0.60)",
     "acrylic_surface": "rgba(255, 255, 255, 0.051)",
     "acrylic_control": "rgba(255, 255, 255, 0.061)",
     "acrylic_border":  "rgba(255, 255, 255, 0.070)",

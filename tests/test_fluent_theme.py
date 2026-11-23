@@ -16,6 +16,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QLabel,
     QStyle,
     QStyleOptionViewItem,
     QVBoxLayout,
@@ -33,6 +34,7 @@ from lumisync.gui.widgets.navigation_shell import (
     ICON_ONLY_RAIL_WIDTH,
     NavigationShell,
     NavRailItemDelegate,
+    RAIL_ITEM_HEIGHT,
 )
 from lumisync.gui.widgets.product_controls import ProductComboBox, ProductSlider, ToggleSwitch
 from lumisync.gui.widgets.toast import KIND_ERROR, KIND_SUCCESS, KIND_WARNING, MAX_TOASTS, ToastManager
@@ -93,7 +95,7 @@ class FluentThemeTests(unittest.TestCase):
         shell.show()
         self.app.processEvents()
         self.assertEqual(shell.sidebar.width(), ICON_ONLY_RAIL_WIDTH)
-        self.assertLessEqual(ICON_ONLY_RAIL_WIDTH, 72)
+        self.assertLessEqual(ICON_ONLY_RAIL_WIDTH, 80)
         for lst in (shell.nav_list, shell.bottom_nav_list):
             for row in range(lst.count()):
                 item = lst.item(row)
@@ -102,12 +104,12 @@ class FluentThemeTests(unittest.TestCase):
                 self.assertEqual(item.data(Qt.ItemDataRole.AccessibleTextRole), item.toolTip())
         self.assertEqual(shell.nav_list.item(1).data(NavRailItemDelegate.LABEL_ROLE), "Monitor")
 
-        # The delegate paints a pill and an icon, never a label.
+        # The delegate paints a highlight tab and an icon, never a label.
         delegate = shell.nav_list.itemDelegate()
         for state in (QStyle.StateFlag.State_None, QStyle.StateFlag.State_Selected,
                       QStyle.StateFlag.State_MouseOver):
             option = QStyleOptionViewItem()
-            option.rect = QRect(0, 0, ICON_ONLY_RAIL_WIDTH, 44)
+            option.rect = QRect(0, 0, ICON_ONLY_RAIL_WIDTH, RAIL_ITEM_HEIGHT)
             option.state = state | QStyle.StateFlag.State_Enabled
             painter = MagicMock()
             delegate.paint(painter, option, shell.nav_list.model().index(1, 0))
@@ -305,8 +307,12 @@ class FluentThemeTests(unittest.TestCase):
         for name in ("install_update_button", "check_updates_button", "open_release_button",
                      "auto_update_toggle", "update_status_label", "open_logs_button",
                      "repository_button", "account_setup_button", "tray_check",
-                     "autostart_check", "statusbar_check", "window_material_combo"):
+                     "autostart_check", "window_material_combo"):
             self.assertTrue(hasattr(page, name), name)
+        # The status bar option is gone: the window has no status bar.
+        self.assertFalse(hasattr(page, "statusbar_check"))
+        titles = [label.text() for label in page.findChildren(QLabel)]
+        self.assertNotIn("Status bar", titles)
         self.assertIsInstance(page.auto_update_toggle, ToggleSwitch)
         self.assertIsInstance(page.tray_check, ToggleSwitch)
         self.assertTrue(page.install_update_button.isHidden())

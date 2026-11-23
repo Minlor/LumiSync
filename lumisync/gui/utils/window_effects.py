@@ -23,7 +23,7 @@ import platform
 import sys
 
 from PySide6.QtCore import QEvent, QObject, Qt
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QPainter, QPalette, QRegion
 from PySide6.QtWidgets import QApplication, QWidget
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -137,11 +137,11 @@ def enable_windows_rounded_corners(hwnd: int) -> bool:
         return False
 
 
-def enable_dark_titlebar(hwnd: int, *, material: bool = False) -> bool:
+def enable_dark_titlebar(hwnd: int, *, material: bool | str = False) -> bool:
     """Ask DWM to draw this window's titlebar in dark mode.
 
-    With ``material`` the caption keeps the system backdrop instead of the
-    solid caption colour.
+    ``material`` is the active backdrop name (or True for any): the caption
+    then keeps the system backdrop instead of the solid caption colour.
     """
 
     if not _IS_WINDOWS:
@@ -190,7 +190,8 @@ class _DarkTitlebarFilter(QObject):
             and obj.isWindow()
         ):
             try:
-                material = str(obj.property("backdrop") or "") in ("mica", "acrylic")
+                backdrop = str(obj.property("backdrop") or "")
+                material = backdrop if backdrop in ("mica", "acrylic") else False
                 enable_dark_titlebar(int(obj.winId()), material=material)
             except Exception:
                 pass
@@ -331,6 +332,36 @@ def windows_system_backdrop_supported() -> bool:
         return False
 
 
+BACKDROP_MATERIALS = ("mica", "acrylic")
+
+
+def has_backdrop_material(window: QWidget) -> bool:
+    """Whether a Mica or Acrylic material is active on ``window``."""
+
+    return str(window.property("backdrop") or "") in BACKDROP_MATERIALS
+
+
+def clear_backdrop_region(widget: QWidget, region: QRegion) -> None:
+    """Reset ``region`` of a translucent top-level to fully transparent.
+
+    Call from the top-level's ``paintEvent``, which Qt runs before any child
+    paints. Qt only clears a translucent window's backing store itself when
+    the native window was created with an alpha format. A window created
+    opaque (started on Solid, then switched to Mica or Acrylic) keeps its old
+    pixels, and the translucent page and rail fills are blended over them:
+    the previous page shows through the new one and the material slowly
+    turns opaque. Clearing here makes every repaint start from transparent.
+    """
+
+    painter = QPainter(widget)
+    try:
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        for rect in region:
+            painter.fillRect(rect, Qt.GlobalColor.transparent)
+    finally:
+        painter.end()
+
+
 def _opaque_window_palette(window: QWidget) -> QPalette:
     app = QApplication.instance()
     if app is not None:
@@ -429,7 +460,7 @@ def _apply_windows_system_backdrop(
         window.setAutoFillBackground(False)
 
         hwnd = int(window.winId())
-        enable_dark_titlebar(hwnd, material=True)
+        enable_dark_titlebar(hwnd, material=style_name)
         if not enable_windows_backdrop(hwnd, backdrop):
             restore_opaque_fallback()
             return False
@@ -482,5 +513,8 @@ __all__ = [
     "disable_windows_backdrop",
     "apply_windows_mica",
     "apply_windows_acrylic",
+    "BACKDROP_MATERIALS",
+    "clear_backdrop_region",
+    "has_backdrop_material",
     "WindowsBackdropType",
 ]

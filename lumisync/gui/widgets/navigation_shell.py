@@ -1,11 +1,13 @@
 """Fluent navigation rail (WinUI NavigationView, LeftCompact) + page stack.
 
-- An icon-only rail: each destination is a 40×36 pill with a 20 px icon.
-  Hover shows a subtle fill, the current page a slightly stronger one plus a
-  3×16 accent bar at the pill's left edge that slides between items.
+- An icon-only rail: each destination is a tab attached to the window's left
+  edge (square left corners, rounded right ones) that stops 10 px short of
+  the rail's right edge, with a 26 px icon centred in it. Hover shows a
+  subtle fill, the current page a slightly stronger one plus a 3×20 accent
+  bar on the window edge that slides between items.
 - Page names live in tooltips and the accessibility tree, not under icons.
 - Bottom-pinned items (Settings), and a content stack with cross-fades.
-- The rail shares the window background with the content.
+- The rail shares the window background with the content; no divider.
 """
 
 from __future__ import annotations
@@ -15,16 +17,19 @@ from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import (
     QEasingCurve,
+    QEvent,
     QPoint,
     QPropertyAnimation,
     QRect,
     QRectF,
     QSize,
     Qt,
+    Signal,
 )
-from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -43,15 +48,22 @@ from ..theme import qcolor
 from ..utils.animations import fade_swap_stack
 
 
-RAIL_WIDTH = 64
-ICON_ONLY_RAIL_WIDTH = 64
-RAIL_ITEM_HEIGHT = 44
-RAIL_PILL_WIDTH = 40
-RAIL_PILL_HEIGHT = 36
-RAIL_ITEM_SIZE = RAIL_PILL_HEIGHT  # Backwards-compatible name for the pill height.
-RAIL_ICON_SIZE = 20
+RAIL_WIDTH = 76
+ICON_ONLY_RAIL_WIDTH = 76
+# Each row is 56 px; the 48 px highlight tab leaves 4 px above and below, so
+# the gap between rows lives inside the row and list height stays rows × 56.
+RAIL_ITEM_HEIGHT = 56
+RAIL_HIGHLIGHT_INSET = 4
+RAIL_HIGHLIGHT_RIGHT_GAP = 10
+RAIL_HIGHLIGHT_RADIUS = 10
+RAIL_PILL_WIDTH = ICON_ONLY_RAIL_WIDTH - RAIL_HIGHLIGHT_RIGHT_GAP
+RAIL_PILL_HEIGHT = RAIL_ITEM_HEIGHT - 2 * RAIL_HIGHLIGHT_INSET
+RAIL_ITEM_SIZE = RAIL_PILL_HEIGHT  # Backwards-compatible name for the highlight height.
+RAIL_ICON_SIZE = 26
+RAIL_TOP_PADDING = 12
+RAIL_BOTTOM_PADDING = 12
 INDICATOR_WIDTH = 3
-INDICATOR_HEIGHT = 16
+INDICATOR_HEIGHT = 20
 
 
 @dataclass(frozen=True)
@@ -62,18 +74,47 @@ class NavItem:
     widget: QWidget
 
 
-def pill_rect(rect: QRect) -> QRect:
-    """The 40×36 hover/selection pill centred in a rail item."""
+def highlight_rect(rect: QRect) -> QRect:
+    """The hover/selection tab of a rail item: flush with the item's left
+    edge (the window edge), ending ``RAIL_HIGHLIGHT_RIGHT_GAP`` short of its
+    right edge, ``RAIL_HIGHLIGHT_INSET`` px in from its top and bottom."""
     return QRect(
-        rect.center().x() - RAIL_PILL_WIDTH // 2 + 1,
-        rect.center().y() - RAIL_PILL_HEIGHT // 2 + 1,
-        RAIL_PILL_WIDTH,
-        RAIL_PILL_HEIGHT,
+        rect.left(),
+        rect.top() + RAIL_HIGHLIGHT_INSET,
+        max(0, rect.width() - RAIL_HIGHLIGHT_RIGHT_GAP),
+        max(0, rect.height() - 2 * RAIL_HIGHLIGHT_INSET),
     )
 
 
+# Backwards-compatible name: the highlight used to be a centred pill.
+pill_rect = highlight_rect
+
+
+def tab_path(rect: QRectF, radius: float) -> QPainterPath:
+    """A rectangle with square left corners and rounded right corners."""
+    r = max(0.0, min(radius, rect.width() / 2, rect.height() / 2))
+    path = QPainterPath()
+    path.moveTo(rect.left(), rect.top())
+    path.lineTo(rect.right() - r, rect.top())
+    path.arcTo(QRectF(rect.right() - 2 * r, rect.top(), 2 * r, 2 * r), 90, -90)
+    path.lineTo(rect.right(), rect.bottom() - r)
+    path.arcTo(QRectF(rect.right() - 2 * r, rect.bottom() - 2 * r, 2 * r, 2 * r), 0, -90)
+    path.lineTo(rect.left(), rect.bottom())
+    path.closeSubpath()
+    return path
+
+
+def badge_rect(icon_x: float, icon_y: float) -> QRectF:
+    """The attention dot, centred on the icon's top-right corner area and
+    scaled with the icon (8 px at the old 24 px icon size)."""
+    diameter = RAIL_ICON_SIZE / 3
+    centre_x = icon_x + RAIL_ICON_SIZE
+    centre_y = icon_y + RAIL_ICON_SIZE / 12
+    return QRectF(centre_x - diameter / 2, centre_y - diameter / 2, diameter, diameter)
+
+
 class NavRailItemDelegate(QStyledItemDelegate):
-    """Paints a rail item: the pill (hover/selected) and the tinted icon.
+    """Paints a rail item: the edge tab (hover/selected) and the tinted icon.
 
     The accent location bar is an animated overlay owned by the shell. Page
     labels are kept as item data (``LABEL_ROLE``) for callers, never painted.
@@ -91,7 +132,21 @@ class NavRailItemDelegate(QStyledItemDelegate):
         self._pixmap_cache: Dict[Tuple[str, int, int, float], QPixmap] = {}
 
     def _pill_rect(self, rect: QRect) -> QRect:
-        return pill_rect(rect)
+        return highlight_rect(rect)
+
+    @staticmethod
+    def _fill_for(selected: bool, hovered: bool, pressed: bool) -> QColor:
+        """Translucent overlay fill, so the tab reads on opaque, Mica and
+        Acrylic backgrounds alike."""
+        if pressed:
+            fill = qcolor("fl_subtle_selected")
+            fill.setAlpha(min(255, fill.alpha() + 16))
+        elif selected and hovered:
+            fill = qcolor("fl_subtle_selected")
+            fill.setAlpha(min(255, fill.alpha() + 8))
+        else:
+            fill = qcolor("fl_subtle_selected" if selected else "fl_subtle_hover")
+        return fill
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
         painter.save()
@@ -100,17 +155,13 @@ class NavRailItemDelegate(QStyledItemDelegate):
         rect = option.rect
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
         hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
-        pill = QRectF(self._pill_rect(rect))
+        pressed = hovered and bool(QGuiApplication.mouseButtons() & Qt.MouseButton.LeftButton)
+        tab = QRectF(self._pill_rect(rect))
 
         if selected or hovered:
-            if selected and hovered:
-                fill = qcolor("fl_subtle_selected")
-                fill.setAlpha(fill.alpha() + 8)
-            else:
-                fill = qcolor("fl_subtle_selected" if selected else "fl_subtle_hover")
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(fill)
-            painter.drawRoundedRect(pill, 4, 4)
+            painter.setBrush(self._fill_for(selected, hovered, pressed))
+            painter.drawPath(tab_path(tab, RAIL_HIGHLIGHT_RADIUS))
 
         widget = option.widget
         window = widget.window() if widget is not None else None
@@ -120,22 +171,31 @@ class NavRailItemDelegate(QStyledItemDelegate):
         if option.state & QStyle.StateFlag.State_HasFocus and keyboard:
             painter.setPen(QPen(qcolor("fl_text"), 2))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(pill.adjusted(1, 1, -1, -1), 4, 4)
+            painter.drawPath(tab_path(tab.adjusted(1, 1, -1, -1), RAIL_HIGHLIGHT_RADIUS - 1))
 
         icon_color = qcolor("fl_text") if selected else qcolor("fl_text_secondary")
         svg_name = index.data(self.SVG_ROLE)
         if isinstance(svg_name, str) and svg_name:
             dpr = widget.devicePixelRatioF() if widget is not None else 1.0
             pm = self._tinted_svg_pixmap(svg_name, QSize(RAIL_ICON_SIZE, RAIL_ICON_SIZE), icon_color, dpr)
-            x = int(pill.center().x() - RAIL_ICON_SIZE / 2)
-            y = int(pill.center().y() - RAIL_ICON_SIZE / 2)
+            # Centred in the tab (a little left of the rail's centre).
+            x = round(tab.left() + (tab.width() - RAIL_ICON_SIZE) / 2)
+            y = round(tab.top() + (tab.height() - RAIL_ICON_SIZE) / 2)
             painter.drawPixmap(QPoint(x, y), pm)
             if index.data(self.BADGE_ROLE):
                 painter.setPen(QPen(qcolor("bg"), 2))
                 painter.setBrush(qcolor("fl_accent"))
-                painter.drawEllipse(QRectF(x + RAIL_ICON_SIZE - 4, y - 2, 8, 8))
+                painter.drawEllipse(badge_rect(x, y))
 
         painter.restore()
+
+    def editorEvent(self, event, model, option, index) -> bool:
+        # Repaint on press and release so the pressed fill never lingers.
+        if event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
+            view = self.parent()
+            if isinstance(view, QAbstractItemView):
+                view.viewport().update(option.rect)
+        return super().editorEvent(event, model, option, index)
 
     def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:
         return QSize(ICON_ONLY_RAIL_WIDTH, RAIL_ITEM_HEIGHT)
@@ -163,7 +223,8 @@ class NavRailItemDelegate(QStyledItemDelegate):
 
 
 class _SelectionIndicator(QWidget):
-    """Pill-shaped accent indicator that slides between nav items."""
+    """Accent bar on the window edge that slides between nav items; square
+    on the left (against the edge), rounded on the right."""
 
     def __init__(self, parent: QWidget):
         super().__init__(parent)
@@ -177,11 +238,14 @@ class _SelectionIndicator(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(self._color)
-        painter.drawRoundedRect(self.rect(), 1.5, 1.5)
+        painter.drawPath(tab_path(QRectF(self.rect()), INDICATOR_WIDTH / 2))
 
 
 class NavigationShell(QWidget):
     """Icon rail + stacked pages container with animated transitions."""
+
+    # A page's key, whenever the rail opens that page.
+    page_activated = Signal(str)
 
     def __init__(
         self,
@@ -207,7 +271,7 @@ class NavigationShell(QWidget):
         self.sidebar.setFixedWidth(self._rail_width)
 
         sb_layout = QVBoxLayout(self.sidebar)
-        sb_layout.setContentsMargins(0, 6, 0, 8)
+        sb_layout.setContentsMargins(0, RAIL_TOP_PADDING, 0, RAIL_BOTTOM_PADDING)
         sb_layout.setSpacing(0)
 
         self.title_label = QLabel(title)
@@ -226,6 +290,8 @@ class NavigationShell(QWidget):
         self.nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.nav_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.nav_list.setMouseTracking(True)
+        # No frame even without the theme, so the tab starts at the window edge.
+        self.nav_list.setFrameShape(QFrame.Shape.NoFrame)
         self.nav_list.currentRowChanged.connect(self._on_row_changed)
         self.nav_list.setItemDelegate(
             NavRailItemDelegate(self.nav_list)
@@ -244,6 +310,7 @@ class NavigationShell(QWidget):
         self.bottom_nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.bottom_nav_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.bottom_nav_list.setMouseTracking(True)
+        self.bottom_nav_list.setFrameShape(QFrame.Shape.NoFrame)
         self.bottom_nav_list.setFixedHeight(RAIL_ITEM_HEIGHT)
         self.bottom_nav_list.currentRowChanged.connect(self._on_bottom_row_changed)
         self.bottom_nav_list.setItemDelegate(
@@ -351,6 +418,14 @@ class NavigationShell(QWidget):
                     lst.viewport().update()
                     return
 
+    def current_key(self) -> Optional[str]:
+        """The key of the page the rail has selected, if any."""
+        for lst in (self.nav_list, self.bottom_nav_list):
+            row = lst.currentRow()
+            if row >= 0:
+                return lst.item(row).data(Qt.ItemDataRole.UserRole)
+        return None
+
     def set_current_by_key(self, key: str) -> None:
         found = self._find_row(key)
         if found is None or found[0].isRowHidden(found[1]):
@@ -419,16 +494,18 @@ class NavigationShell(QWidget):
                 fade_swap_stack(self.content_stack, idx)
                 break
         self._move_indicator_to(source_list, row)
+        self.page_activated.emit(str(key))
 
     def _move_indicator_to(self, lst: QListWidget, row: int, *, animate: bool = True) -> None:
         item_rect = lst.visualItemRect(lst.item(row))
         # Map to sidebar coords: lst is inside sb_layout
         top_left = lst.mapTo(self.sidebar, item_rect.topLeft())
-        # The 3×16 accent bar sits at the pill's left edge, vertically centred.
-        pill = pill_rect(QRect(top_left, item_rect.size()))
+        # The 3×20 accent bar sits on the window edge inside the tab,
+        # vertically centred on it.
+        tab = highlight_rect(QRect(top_left, item_rect.size()))
         target = QRect(
-            pill.left(),
-            pill.center().y() - INDICATOR_HEIGHT // 2 + 1,
+            tab.left(),
+            tab.top() + (tab.height() - INDICATOR_HEIGHT) // 2,
             INDICATOR_WIDTH,
             INDICATOR_HEIGHT,
         )
