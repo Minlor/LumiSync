@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 import shiboken6
 from PySide6.QtCore import QEvent, QRectF, QSize, QTimer, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPen, QPixmap
+from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPalette, QPen, QPixmap
 from PySide6.QtWidgets import (
     QColorDialog,
     QFrame,
@@ -29,7 +29,9 @@ from ..controllers.device_controller import DeviceController
 from ..dialogs.add_device_dialog import AddDeviceDialog
 from ..resources.icons import IconKey, tinted_pixmap, tinted_icon
 from ..theme import qcolor
-from ..utils import firewall
+from ..app_settings import app_settings
+from ..controllers.background import start_task
+from ..utils import firewall, linux_firewall
 from ..utils.device_grid import DeviceGridLayout
 from ..utils.device_identity import is_pc_hardware
 from ..widgets.color_flyout import remember_recent_color
@@ -67,6 +69,16 @@ PC_AUTO_SCAN_INTERVAL_MS = 5_000
 PC_AUTO_SCAN_SHOW_DELAY_MS = 250
 
 
+def _found(result: object) -> int:
+    """A search transport's device count (0 when missing or malformed)."""
+    if not isinstance(result, Mapping):
+        return 0
+    try:
+        return max(0, int(result.get("found") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def confirm_lighting_sync(parent: Optional[QWidget], sync) -> bool:
     """Ask before allowing sync on a device that wears with every change.
 
@@ -84,6 +96,13 @@ def confirm_lighting_sync(parent: Optional[QWidget], sync) -> bool:
     box.setEscapeButton(cancel)
     box.exec()
     return box.clickedButton() is allow
+
+LINUX_FIREWALL_TITLE = "A firewall may be blocking LumiSync"
+LINUX_FIREWALL_MESSAGE = (
+    "No lights answered the search and {name} is active. Copy the commands that let "
+    "LumiSync hear your lights and run them in a terminal."
+)
+LINUX_FIREWALL_DISMISSED_KEY = "devices/linux_firewall_hint_dismissed"
 
 FIREWALL_PUBLIC_TITLE = "Your network is set to Public"
 FIREWALL_PUBLIC_MESSAGE = (
@@ -295,6 +314,12 @@ class DevicesView(QWidget):
         # Connectivity problems reported by the last search.
         self._network_problem = False
         self._bluetooth_problem = False
+        # Linux: the last search reached the network but found no local
+        # device, and ufw/firewalld may be why. Detected off the GUI thread.
+        self._linux_firewall_supported = (
+            sys.platform.startswith("linux") and scope == SCOPE_LIGHTS
+        )
+        self._lan_found_nothing = False
         # InfoBar key -> the problem signature the user closed it on.
         self._dismissed: Dict[str, object] = {}
         self._issue_account_ids: list[str] = []
@@ -318,6 +343,8 @@ class DevicesView(QWidget):
         self._build()
         self._connect_signals()
         self._rebuild_cards()
+        if self._linux_firewall_supported and not linux_firewall.is_detected():
+            start_task(linux_firewall.detect, self._on_linux_firewall_detected)
 
     def is_pc_page(self) -> bool:
         return self.scope == SCOPE_PC
@@ -459,6 +486,15 @@ class DevicesView(QWidget):
         self.firewall_info_bar.action_button.setAccessibleName("Allow LumiSync through Windows Firewall")
         self.firewall_info_bar.action_triggered.connect(self._allow_firewall)
         self.firewall_info_bar.closed.connect(lambda: self._dismiss("firewall"))
+        self.linux_firewall_info_bar = InfoBar(
+            SEVERITY_CAUTION, LINUX_FIREWALL_TITLE, "", "Copy commands"
+        )
+        self.linux_firewall_info_bar.setObjectName("LinuxFirewallInfoBar")
+        self.linux_firewall_info_bar.action_button.setAccessibleName(
+            "Copy the firewall commands that let LumiSync hear your lights"
+        )
+        self.linux_firewall_info_bar.action_triggered.connect(self._copy_linux_firewall_commands)
+        self.linux_firewall_info_bar.closed.connect(self._dismiss_linux_firewall)
         self.bluetooth_info_bar = InfoBar(
             SEVERITY_CAUTION,
             "Bluetooth is off",
@@ -695,6 +731,9 @@ class DevicesView(QWidget):
         lan = summary.get("lan")
         if isinstance(lan, dict):
             self._network_problem = lan.get("available") is False
+            tuya = summary.get("tuya")
+            local_found = _found(lan) + (_found(tuya) if isinstance(tuya, dict) else 0)
+            self._lan_found_nothing = lan.get("available") is True and local_found == 0
         bluetooth = summary.get("bluetooth")
         if isinstance(bluetooth, dict):
             self._bluetooth_problem = bluetooth.get("available") is False
@@ -750,10 +789,65 @@ class DevicesView(QWidget):
         if key == "firewall":
             state = self._firewall.state() if self._firewall is not None else None
             return (state.status, state.block_all) if state is not None else None
+        if key == "linux_firewall":
+            return linux_firewall.cached()
         return self._bluetooth_problem
 
     def _info_bars(self) -> Tuple[InfoBar, ...]:
-        return (self.account_info_bar, self.network_info_bar, self.firewall_info_bar, self.bluetooth_info_bar)
+        return (
+            self.account_info_bar,
+            self.network_info_bar,
+            self.firewall_info_bar,
+            self.linux_firewall_info_bar,
+            self.bluetooth_info_bar,
+        )
+
+    # ------------------------------------------------------------ linux firewall
+
+    def _on_linux_firewall_detected(self, _value, _error) -> None:
+        if shiboken6.isValid(self):
+            self._update_info_bars()
+
+    def _linux_firewall_dismissed(self) -> bool:
+        return str(app_settings().value(LINUX_FIREWALL_DISMISSED_KEY, False)).lower() in ("true", "1")
+
+    def _linux_firewall_problem(self) -> bool:
+        if not self._linux_firewall_supported or not self._lan_found_nothing:
+            return False
+        return linux_firewall.cached() is not None and not self._linux_firewall_dismissed()
+
+    def _update_linux_firewall_bar(self) -> bool:
+        problem = self._linux_firewall_problem()
+        if problem:
+            self.linux_firewall_info_bar.set_content(
+                SEVERITY_CAUTION,
+                LINUX_FIREWALL_TITLE,
+                LINUX_FIREWALL_MESSAGE.format(name=linux_firewall.cached()),
+                "Copy commands",
+            )
+        self._show_bar("linux_firewall", self.linux_firewall_info_bar, problem)
+        return problem
+
+    def _copy_linux_firewall_commands(self) -> None:
+        name = linux_firewall.cached()
+        text = linux_firewall.allow_commands_text(name) if name else ""
+        if not text:
+            return
+        clipboard = QGuiApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(text)
+        self.controller.notice.emit(
+            "Copied the firewall commands. Run them in a terminal, then choose Find devices.",
+            "info",
+        )
+
+    def _dismiss_linux_firewall(self) -> None:
+        # Remembered across runs: LumiSync never changes the firewall itself,
+        # so the hint stays closed once the user has seen it.
+        settings = app_settings()
+        settings.setValue(LINUX_FIREWALL_DISMISSED_KEY, True)
+        settings.sync()
+        self._dismiss("linux_firewall")
 
     # ------------------------------------------------------------------ firewall
 
@@ -836,6 +930,7 @@ class DevicesView(QWidget):
         self._show_bar("accounts", self.account_info_bar, bool(parts))
         self._show_bar("network", self.network_info_bar, self._network_problem)
         self._update_firewall_bar()
+        self._update_linux_firewall_bar()
         self._show_bar(
             "bluetooth", self.bluetooth_info_bar, self._bluetooth_problem and self._has_bluetooth_devices()
         )

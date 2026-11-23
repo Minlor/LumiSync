@@ -90,11 +90,12 @@ class InstallEligibilityTests(unittest.TestCase):
                 LumiSyncMainWindow.can_install_update(None, _result(assets=[self.setup]))  # type: ignore[arg-type]
             )
 
-    def test_linux_opens_the_release_page_instead(self):
+    def test_linux_outside_an_appimage_opens_the_release_page_instead(self):
         appimage = ReleaseAsset("LumiSync-x86_64.AppImage", "https://example/app")
-        with patch("lumisync.gui.main_window.sys.platform", "linux"), patch(
+        with patch.dict(os.environ), patch("lumisync.gui.main_window.sys.platform", "linux"), patch(
             "lumisync.gui.main_window.is_installed_build", return_value=True
         ):
+            os.environ.pop("APPIMAGE", None)
             self.assertFalse(
                 LumiSyncMainWindow.can_install_update(None, _result(assets=[appimage]))  # type: ignore[arg-type]
             )

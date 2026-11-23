@@ -10,7 +10,9 @@ import json
 import logging
 import os
 from pathlib import Path
+import stat
 import sys
+import tempfile
 from typing import Any, Callable, Optional, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -184,6 +186,14 @@ def select_checksum_assets(
         return manifests
     sidecar = f"{target.name}.sha256".casefold()
     platform_word = "windows" if target.name.casefold().endswith(".exe") else "linux"
+    # The other platform's manifest never vouches for this file, even when
+    # it happens to list a file of the same name.
+    other_word = "linux" if platform_word == "windows" else "windows"
+    manifests = [
+        asset
+        for asset in manifests
+        if asset.name.casefold() == sidecar or other_word not in asset.name.casefold()
+    ]
 
     def rank(asset: ReleaseAsset) -> tuple[bool, bool]:
         name = asset.name.casefold()
@@ -489,33 +499,12 @@ def download_verified_update(
         )
 
     keys = tuple(pinned_update_keys() if public_keys is None else public_keys)
-    if keys:
-        expected = signed_expected_sha256(
-            asset, result.assets, result.latest_version, keys
-        )
-        if not expected:
-            raise UpdateVerificationError(UNVERIFIED_UPDATE_MESSAGE)
-    else:
-        logger.warning(
-            "Update signatures are not being checked: this build has no "
-            "update signing key."
-        )
-        expected = expected_sha256(asset, result.assets)
-        if not expected:
-            raise RuntimeError(
-                "The release does not publish a SHA-256 checksum, so the "
-                "download cannot be verified. Use Open Release instead."
-            )
+    expected = _trusted_sha256(asset, result, keys)
 
     destination = Path(directory) / asset.name
     try:
         download_update_asset(asset, destination, progress=progress)
-        if not verify_file_sha256(destination, expected):
-            if keys:
-                raise UpdateVerificationError(UNVERIFIED_UPDATE_MESSAGE)
-            raise RuntimeError(
-                "The downloaded file failed SHA-256 verification and was not run."
-            )
+        _check_download(destination, expected, keys)
     except BaseException:
         try:
             destination.unlink(missing_ok=True)
@@ -523,6 +512,258 @@ def download_verified_update(
             logger.warning("Could not delete the rejected update %s", destination)
         raise
     return destination
+
+
+def _trusted_sha256(
+    asset: ReleaseAsset, result: UpdateCheckResult, keys: Sequence[str]
+) -> str:
+    """The SHA-256 ``asset`` must have, found before anything is downloaded.
+
+    With pinned keys only a signed manifest counts; without them the release's
+    own checksum is trusted and a warning is logged.
+    """
+    if keys:
+        expected = signed_expected_sha256(
+            asset, result.assets, result.latest_version, keys
+        )
+        if not expected:
+            raise UpdateVerificationError(UNVERIFIED_UPDATE_MESSAGE)
+        return expected
+    logger.warning(
+        "Update signatures are not being checked: this build has no "
+        "update signing key."
+    )
+    expected = expected_sha256(asset, result.assets)
+    if not expected:
+        raise RuntimeError(
+            "The release does not publish a SHA-256 checksum, so the "
+            "download cannot be verified. Use Open Release instead."
+        )
+    return expected
+
+
+def _check_download(path: Path, expected: str, keys: Sequence[str]) -> None:
+    if not verify_file_sha256(path, expected):
+        if keys:
+            raise UpdateVerificationError(UNVERIFIED_UPDATE_MESSAGE)
+        raise RuntimeError(
+            "The downloaded file failed SHA-256 verification and was not run."
+        )
+
+
+# ------------------------------------------------------------ Linux AppImage
+#
+# An AppImage is one file, so updating it means swapping that file. The new
+# image is downloaded next to the old one (same folder, so the final rename
+# is atomic), verified, given the old file's permissions plus the executable
+# bits, flushed to disk, and renamed over ``$APPIMAGE``. A running AppImage
+# keeps its open handle on the old file, so this copy runs on until it
+# restarts. Anything that fails before the rename leaves the old file as it
+# was and deletes the partial download.
+
+APPIMAGE_PART_SUFFIX = ".part"
+
+
+def _appimage_part_prefix(appimage: Path) -> str:
+    return f".{appimage.name}.update-"
+
+
+def _can_replace(path: Path) -> bool:
+    """Whether this user may write ``path`` and create files beside it."""
+    return os.access(path, os.W_OK) and os.access(path.parent, os.W_OK | os.X_OK)
+
+
+def appimage_update_target(
+    environ: Optional[dict[str, str]] = None,
+    *,
+    platform: Optional[str] = None,
+    frozen: Optional[bool] = None,
+) -> Optional[Path]:
+    """The AppImage file this process may update in place, if any.
+
+    Only a packaged Linux build started from an AppImage qualifies: ``$APPIMAGE``
+    must name an existing regular file that this user can replace (the file
+    and its folder are writable). Anything else returns ``None``, and the app
+    opens the release page instead.
+    """
+    platform = (platform or sys.platform).lower()
+    if not platform.startswith("linux"):
+        return None
+    if not (is_installed_build() if frozen is None else frozen):
+        return None
+    env = os.environ if environ is None else environ
+    raw = (env.get("APPIMAGE") or "").strip()
+    if not raw or not os.path.isabs(raw):
+        return None
+    path = Path(os.path.realpath(raw))
+    try:
+        mode = os.stat(path).st_mode
+    except OSError:
+        return None
+    if not stat.S_ISREG(mode):
+        return None
+    if not _can_replace(path):
+        return None
+    return path
+
+
+def _executable_mode(mode: int) -> int:
+    """The old file's permission bits, with execute wherever read is allowed."""
+    mode = stat.S_IMODE(mode) & 0o777
+    mode |= stat.S_IXUSR | stat.S_IRUSR
+    if mode & stat.S_IRGRP:
+        mode |= stat.S_IXGRP
+    if mode & stat.S_IROTH:
+        mode |= stat.S_IXOTH
+    return mode
+
+
+def _chmod(path: Path, mode: int) -> None:
+    os.chmod(path, mode)
+
+
+def _fsync_file(path: Path) -> None:
+    # POSIX can flush through a read-only handle (the file may already be
+    # r-x after the chmod); Windows' _commit needs a writable one.
+    flags = os.O_RDONLY if os.name == "posix" else os.O_RDWR | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_directory(path: Path) -> None:
+    """Make the rename durable (POSIX only; best effort)."""
+    if os.name != "posix":
+        return
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def install_appimage_update(
+    result: UpdateCheckResult,
+    appimage: str | os.PathLike[str],
+    *,
+    progress: Optional[Callable[[int, int], None]] = None,
+    public_keys: Optional[Sequence[str]] = None,
+) -> Path:
+    """Replace ``appimage`` with this release's verified AppImage.
+
+    The trust rule is the one :func:`download_verified_update` applies: with
+    pinned keys the expected hash must come from a signed manifest for this
+    platform, checked before the download starts. Returns the replaced path.
+    """
+    target = Path(appimage)
+    asset = select_update_asset(result.assets, platform="linux")
+    if asset is None:
+        raise RuntimeError(
+            "This release has no compatible update asset for this platform."
+        )
+    keys = tuple(pinned_update_keys() if public_keys is None else public_keys)
+    expected = _trusted_sha256(asset, result, keys)
+
+    old_mode = os.stat(target).st_mode
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix=_appimage_part_prefix(target),
+        suffix=APPIMAGE_PART_SUFFIX,
+        dir=target.parent,
+    )
+    os.close(descriptor)
+    partial = Path(temp_name)
+    try:
+        download_update_asset(asset, partial, progress=progress)
+        _check_download(partial, expected, keys)
+        _chmod(partial, _executable_mode(old_mode))
+        _fsync_file(partial)
+        os.replace(partial, target)
+    except BaseException:
+        try:
+            partial.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not delete the rejected update %s", partial)
+        raise
+    _fsync_directory(target.parent)
+    return target
+
+
+def cleanup_stale_appimage_parts(
+    appimage: str | os.PathLike[str], max_age_seconds: float = 3600
+) -> int:
+    """Delete partial AppImage downloads a killed run left beside ``appimage``."""
+    import time
+
+    target = Path(appimage)
+    removed = 0
+    now = time.time()
+    try:
+        candidates = list(
+            target.parent.glob(f"{_appimage_part_prefix(target)}*{APPIMAGE_PART_SUFFIX}")
+        )
+    except OSError:
+        return 0
+    for path in candidates:
+        try:
+            if not path.is_file() or now - path.stat().st_mtime < max_age_seconds:
+                continue
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def appimage_restart_command(
+    appimage: str | os.PathLike[str], pid: Optional[int] = None
+) -> tuple[str, list[str]]:
+    """``(program, arguments)`` that start ``appimage`` once this process exits.
+
+    The new copy must not start while this one still holds the single-instance
+    lock, or it would only bring this window forward and exit. A small shell
+    waits (at most about 30 s) for this PID to go, then runs the AppImage with
+    no arguments, like the Windows installer's restart.
+    """
+    script = (
+        'pid="$1"; shift; i=0; '
+        'while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 150 ]; do '
+        "sleep 0.2 2>/dev/null || sleep 1; i=$((i+1)); done; "
+        'exec "$@"'
+    )
+    process_id = os.getpid() if pid is None else int(pid)
+    return "/bin/sh", ["-c", script, "lumisync-restart", str(process_id), str(Path(appimage))]
+
+
+def appimage_child_environment(environ: Optional[dict[str, str]] = None) -> dict[str, str]:
+    """This process's environment, minus library paths into its own mount.
+
+    AppRun puts the old image's mount (gone once this copy exits) in front of
+    ``LD_LIBRARY_PATH``; the restart helper and the new image must not load
+    libraries from there.
+    """
+    env = dict(os.environ if environ is None else environ)
+    mount = (env.get("APPDIR") or "").rstrip("/")
+    for name in ("LD_LIBRARY_PATH", "LD_LIBRARY_PATH_ORIG"):
+        value = env.get(name)
+        if value is None:
+            continue
+        kept = [
+            entry
+            for entry in value.split(":")
+            if entry and not (mount and (entry == mount or entry.startswith(mount + "/")))
+        ]
+        if kept:
+            env[name] = ":".join(kept)
+        else:
+            env.pop(name, None)
+    return env
 
 
 def parse_release_payload(

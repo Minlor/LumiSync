@@ -12,8 +12,11 @@ from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
 from ... import __version__
 from ...updates import (
     UpdateCheckResult,
+    appimage_update_target,
     check_for_update,
+    cleanup_stale_appimage_parts,
     download_verified_update,
+    install_appimage_update,
 )
 
 # Downloaded installers live in their own temp folder; old ones are removed on
@@ -40,6 +43,14 @@ def cleanup_old_update_downloads(max_age_seconds: float = 6 * 3600) -> int:
             removed += 1
         except OSError:
             continue
+    # A Linux AppImage update killed mid-download leaves a hidden partial
+    # file beside the AppImage.
+    try:
+        appimage = appimage_update_target()
+        if appimage is not None:
+            removed += cleanup_stale_appimage_parts(appimage)
+    except OSError:
+        pass
     return removed
 
 
@@ -69,6 +80,20 @@ class UpdateDownloadWorker(QObject):
         self.result = result
 
     def run(self) -> None:
+        target = appimage_update_target()
+        if target is not None:
+            # Linux AppImage: verify and swap the image file in place; the
+            # new version starts on the next launch (or Restart).
+            try:
+                replaced = install_appimage_update(
+                    self.result, target, progress=self.progress.emit
+                )
+            except Exception as exc:
+                self.failed.emit(str(exc))
+                return
+            self.finished.emit(str(replaced))
+            return
+
         directory: Optional[Path] = None
         try:
             directory = Path(tempfile.mkdtemp(prefix=UPDATE_TEMP_PREFIX))

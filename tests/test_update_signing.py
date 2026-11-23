@@ -430,6 +430,9 @@ class SigningToolTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.directory, ignore_errors=True)
         self.keys_file = self.directory / "update_keys.py"
         shutil.copyfile(ROOT / "lumisync" / "update_keys.py", self.keys_file)
+        # Start from no pinned key, whatever the real module pins.
+        tool.write_pinned_keys((), self.keys_file)
+        self.real_keys = tuple(update_keys.UPDATE_PUBLIC_KEYS)
 
     def _run(self, *argv, env=None):
         out, err = io.StringIO(), io.StringIO()
@@ -460,7 +463,8 @@ class SigningToolTests(unittest.TestCase):
         self.assertEqual(len(pinned), 1)
         self.assertIn(pinned[0], out)
         # The real keys module is untouched.
-        self.assertEqual(update_keys.UPDATE_PUBLIC_KEYS, ())
+        self.assertEqual(tuple(update_keys.UPDATE_PUBLIC_KEYS), self.real_keys)
+        self.assertEqual(tool.read_pinned_keys(ROOT / "lumisync" / "update_keys.py"), self.real_keys)
         if os.name == "posix":
             self.assertEqual(key_path.stat().st_mode & 0o777, 0o600)
 
@@ -557,6 +561,26 @@ class ReleaseWorkflowSigningTests(unittest.TestCase):
         self.assertLess(sign, verify)
         self.assertLess(verify, attach)
         self.assertIn("dist/LumiSync-Windows-SHA256SUMS.txt.sig", workflow[attach:])
+        # The secret reaches exactly one step, only as the tool's env var.
+        self.assertEqual(workflow.count("secrets."), 1)
+        self.assertIn(
+            "LUMISYNC_UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}", workflow
+        )
+
+    def test_linux_release_signs_and_uploads_the_manifest_signature(self):
+        workflow = (ROOT / ".github" / "workflows" / "linux-release.yaml").read_text(
+            encoding="utf-8"
+        )
+        sums = workflow.index("> LumiSync-Linux-SHA256SUMS.txt")
+        sign = workflow.index("tools/update_signing.py sign")
+        verify = workflow.index("tools/update_signing.py verify")
+        attach = workflow.index("Attach artifact to GitHub Release")
+        self.assertLess(workflow.index("Build AppImage"), sums)
+        self.assertLess(sums, sign)
+        self.assertLess(sign, verify)
+        self.assertLess(verify, attach)
+        self.assertIn("dist/LumiSync-Linux-SHA256SUMS.txt.sig", workflow[attach:])
+        self.assertIn("fail_on_unmatched_files: true", workflow[attach:])
         # The secret reaches exactly one step, only as the tool's env var.
         self.assertEqual(workflow.count("secrets."), 1)
         self.assertIn(

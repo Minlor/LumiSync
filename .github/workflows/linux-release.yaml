@@ -84,6 +84,43 @@ jobs:
           sha256sum LumiSync-x86_64.AppImage LumiSync-x86_64.AppImage.tar.gz \
             > LumiSync-Linux-SHA256SUMS.txt
 
+      # In-app updates only replace an AppImage whose checksum manifest is
+      # signed with a key pinned in lumisync/update_keys.py. The signed
+      # message binds the release tag, normalised as the updater does.
+      - name: Check update signing is configured
+        if: github.event_name == 'release'
+        run: |
+          count="$(build/linux/venv/bin/python -c 'from lumisync.update_keys import UPDATE_PUBLIC_KEYS; print(len(UPDATE_PUBLIC_KEYS))')"
+          if [ "${count:-0}" -lt 1 ]; then
+            echo "No update signing public key is pinned in lumisync/update_keys.py. Run tools/update_signing.py keygen --write-public and commit the key before releasing." >&2
+            exit 1
+          fi
+
+      - name: Sign the update checksum manifest
+        if: github.event_name == 'release'
+        env:
+          LUMISYNC_UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ -z "${LUMISYNC_UPDATE_SIGNING_KEY// /}" ]; then
+            echo "The UPDATE_SIGNING_KEY repository secret is empty or missing, so the release cannot be signed. Set it with: gh secret set UPDATE_SIGNING_KEY < PATH" >&2
+            exit 1
+          fi
+          build/linux/venv/bin/python tools/update_signing.py sign \
+            --manifest dist/LumiSync-Linux-SHA256SUMS.txt \
+            --version "$RELEASE_TAG"
+
+      - name: Verify the update signature against the pinned keys
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          build/linux/venv/bin/python tools/update_signing.py verify \
+            --manifest dist/LumiSync-Linux-SHA256SUMS.txt \
+            --signature dist/LumiSync-Linux-SHA256SUMS.txt.sig \
+            --version "$RELEASE_TAG" \
+            || { echo "The signature does not verify with the keys pinned in lumisync/update_keys.py. Check that UPDATE_SIGNING_KEY matches a pinned public key." >&2; exit 1; }
+
       - name: Upload workflow artifact
         # The artifact zip drops the executable bit, so it carries only the
         # tar.gz, which keeps it. Check it with: sha256sum -c --ignore-missing
@@ -100,7 +137,9 @@ jobs:
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v3
         with:
+          fail_on_unmatched_files: true
           files: |
             dist/LumiSync-x86_64.AppImage
             dist/LumiSync-x86_64.AppImage.tar.gz
             dist/LumiSync-Linux-SHA256SUMS.txt
+            dist/LumiSync-Linux-SHA256SUMS.txt.sig
