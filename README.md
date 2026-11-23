@@ -21,7 +21,7 @@ Visit the website: [lumisync.minlor.net](https://lumisync.minlor.net)
 ---
 
 > [!NOTE]
-> LumiSync 1.0 supports Windows and Linux X11. Wayland and macOS screen capture remain in progress.
+> LumiSync 1.0 supports Windows and Linux X11. Monitor sync on Wayland is experimental (see the platform notes); macOS screen capture is not supported yet.
 
 ## Features
 
@@ -157,9 +157,10 @@ installer and `LumiSync-Windows-SHA256SUMS.txt`.
 ### Release signing (maintainers)
 
 The in-app updater installs a release only when
-`LumiSync-Windows-SHA256SUMS.txt.sig` is a valid Ed25519 signature, by a key
+`LumiSync-Windows-SHA256SUMS.txt.sig` (for the AppImage,
+`LumiSync-Linux-SHA256SUMS.txt.sig`) is a valid Ed25519 signature, by a key
 listed in `lumisync/update_keys.py`, over the checksum manifest and the release
-version. The release workflow signs the manifest with the `UPDATE_SIGNING_KEY`
+version. Each release workflow signs its manifest with the `UPDATE_SIGNING_KEY`
 repository secret and fails if no key is pinned or the secret is missing or
 does not match. Local builds are never signed. While `UPDATE_PUBLIC_KEYS` is
 empty, the app logs a warning and checks only the release's own checksum.
@@ -202,6 +203,10 @@ empty, the app logs a warning and checks only the release's own checksum.
   [the Linux build workflow](.github/workflows/linux-release.yaml)). The
   AppImage requires glibc 2.35 or newer (Ubuntu 22.04+). Linux releases are
   checked by opening the packaged GUI on X11 in a clean Ubuntu 22.04 runtime.
+  Keep the AppImage in a folder you own (for example `~/Applications`) and
+  LumiSync updates it in place, after checking the download against the
+  release's signed `LumiSync-Linux-SHA256SUMS.txt`; other Linux installs open
+  the release page instead.
   A Flatpak is scaffolded in `packaging/flatpak/` but
   not yet finished.
 
@@ -210,8 +215,32 @@ empty, the app logs a warning and checks only the release's own checksum.
 > planned for a future release.
 
 > **Platform notes:** Windows is fully supported. On Linux, device control,
-> music sync, and manual control work on X11 and Wayland; **screen (monitor)
-> sync currently requires an X11/Xorg session** — Wayland capture is planned.
+> music sync, and manual control work on X11 and Wayland. Screen (monitor)
+> sync works on X11/Xorg; **on Wayland it is experimental**. It shares the
+> screen through the desktop's screen-sharing portal and PipeWire, so it needs
+> `xdg-desktop-portal` with your desktop's backend (GNOME, KDE or wlr),
+> PipeWire, and GStreamer's PipeWire plugin:
+>
+> - Debian/Ubuntu: `sudo apt install gstreamer1.0-pipewire gstreamer1.0-tools`
+> - Fedora: `sudo dnf install pipewire-gstreamer`
+> - Arch: `sudo pacman -S gst-plugin-pipewire`
+>
+> The desktop's sharing dialog asks once which screen to share (and remembers
+> it where the desktop supports that); the Display setting applies only on
+> Windows and X11. Without these packages Monitor sync says what to install.
+> Wayland capture has so far been verified on a headless wlroots session only,
+> not yet on GNOME or KDE. macOS screen capture is not supported.
+>
+> **Music sync on Linux:** "Current Artwork" colours come from the playing
+> MPRIS player's cover and need `busctl` (systemd) or `gdbus` (GLib).
+> Keeping the lights independent of the system volume needs `pactl`
+> (PulseAudio or PipeWire's `pipewire-pulse`); outputs with hardware volume
+> are left alone.
+>
+> **Firewall on Linux:** if ufw or firewalld is active, it may block the
+> replies from Govee (UDP 4002) and LSC/Tuya (UDP 6667) lights. When a search
+> then finds no local devices, the Devices page explains why and can copy the
+> commands that open those ports; LumiSync never changes the firewall itself.
 
 > **PC lighting on Linux:** the Gigabyte board's lighting controller, the
 > Logitech mouse and the Lorgar keyboard are `/dev/hidraw` devices that only root can open by default.
@@ -277,17 +306,17 @@ Android installation or developer account is needed.
 - **Music Sync** — Choose reactions, palettes, targets and brightness, or use Auto Director.
 - **PC** — Lighting inside or attached to this computer: Gigabyte RGB Fusion 2 motherboard lighting (colour, brightness, colour correction and per-zone layout) the Logitech G502 HERO mouse (colour, brightness, colour correction, per-zone layout, fixed colour, breathing or colour cycle with a speed, and an optional separate logo colour) and the Lorgar AZAR keyboard (one colour or a built-in effect, brightness and power; a sync target only after opting in on its card, as one colour with limited updates, because every change wears the keyboard's memory). The page finds this hardware by itself while it is open; **Scan this PC** looks again at once, without a network search (Windows and Linux).
 - **Draw** — Paint still images or frame-by-frame animations for compatible iDotMatrix panels. The device inspector's Panel Tools opens clock, countdown, scoreboard, and rotation controls.
-- **Settings** — Choose Acrylic, Mica or Solid Dark; tune sync, startup and system-tray behavior. About shows your version, account setup, update checks (including one-click download/install on Windows) and the logs folder.
+- **Settings** — Four tabs, General, Sync, Updates and About: choose Acrylic, Mica or Solid Dark; tune sync, startup and system-tray behavior; check for updates (one-click download/install on Windows and for an AppImage in a folder you own); About shows your version, account setup, the logs folder and links to the repository, the author's GitHub and Ko-fi.
 
 The UI adapts to short/narrow windows: account actions and sync Start/Stop stay
-visible, Draw tools reflow above the canvas, and Settings uses a section dropdown
-when space is tight. Daily readings and technical details expand on demand.
+visible, Draw tools reflow above the canvas, and the Settings tabs stay above
+the scrolling content. Daily readings and technical details expand on demand.
 
 ### Configuration
 
 - **LED Mapping** - Customize which screen regions map to which LEDs
 - **Brightness** - Adjust per-mode brightness (10-100%), plus a 100-150% tone-map boost for Monitor Sync. "Brightness per light" dims or brightens individual lights (10-100% of the mode's brightness); a light's level is shared by Monitor and Music Sync
-- **Display Selection** - Choose which monitor to capture (multi-monitor support)
+- **Display Selection** - Choose which monitor to capture (multi-monitor support; Windows and X11 only, on Wayland the desktop's sharing dialog picks the screen)
 - **Sync Tuning** - Tune smoothing, saturation, frame rate, gamma and music response
 
 ### Troubleshooting
@@ -349,8 +378,8 @@ application setup; review those images for private details before sharing.
 |----------|---------------|--------|
 | Windows | dxcam | ✅ Full support |
 | Linux (X11) | mss | ⚠️ Partial |
-| Linux (Wayland) | - | 🚧 WIP |
-| macOS | - | 🚧 WIP |
+| Linux (Wayland) | xdg-desktop-portal + PipeWire (GStreamer) | 🧪 Experimental |
+| macOS | - | ❌ Not supported |
 
 ## Roadmap
 
@@ -358,7 +387,9 @@ application setup; review those images for private details before sharing.
 - [x] Govee, Tuya Smart and LSC personal accounts
 - [x] Device capability controls and supported plug metering
 - [x] iDotMatrix drawing and display tools
-- [ ] Wayland & macOS screen capture
+- [x] Wayland screen capture (experimental, through the screen-sharing portal)
+- [ ] Wayland capture verified on GNOME and KDE
+- [ ] macOS screen capture
 - [x] Basic color control mode
 - [ ] Custom sync algorithms
 - [ ] Plugin system for community extensions

@@ -4,6 +4,30 @@ All notable changes to LumiSync are recorded here.
 
 ## Unreleased
 
+- Settings is split into four tabs, General, Sync, Updates and About, picked
+  from a row under the title (arrow keys or Ctrl+Tab also switch). The last
+  tab opened comes back on the next start, and an update notification or the
+  dot on the Settings icon opens the Updates tab. Tabs with a single group no
+  longer repeat the tab name as a heading.
+- Monitor sync works on Wayland (experimental): LumiSync shares your screen
+  through the desktop's screen-sharing portal and PipeWire. Your desktop asks
+  once which screen to share, and remembers it where the desktop supports
+  that. Needs xdg-desktop-portal (GNOME, KDE or wlr) and GStreamer's PipeWire
+  plugin; without them Monitor sync says what to install.
+- Music sync on Linux: "Current Artwork" colours come from the playing MPRIS
+  player's cover (needs `busctl` or `gdbus`).
+- Music sync on Linux: turning the system volume down no longer dims the
+  lights on PulseAudio/PipeWire outputs with software volume (read with
+  `pactl`); hardware-volume outputs are left alone.
+- Linux: LumiSync updates itself in place when run from an AppImage you can
+  write to; the download is checked against a signed
+  `LumiSync-Linux-SHA256SUMS.txt` before it replaces the file. Other Linux
+  installs still open the release page.
+- Linux: when ufw or firewalld is active and a search finds no local devices,
+  the Devices page explains why and can copy the commands for UDP 4002 and
+  6667. LumiSync never changes the firewall itself.
+- The sidebar has GitHub and Ko-fi links above Settings, and About links to
+  the repository, the author's GitHub and Ko-fi.
 - Gigabyte RGB Fusion 2 motherboard lighting over USB (Windows and Linux):
   Find Devices now finds the board's lighting controller (verified on the B550
   AORUS ELITE, ITE IT5702, under Windows and under a Linux kernel in WSL2), with
