@@ -119,10 +119,9 @@ class _LanSocketCore:
         # On Windows SO_REUSEADDR lets Govee Desktop bind the same port first
         # and silently steal replies. Exclusive use turns that into a clear
         # conflict message instead.
-        if platform.system() == "Windows" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-            self._socket.setsockopt(
-                socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1
-            )
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if platform.system() == "Windows" and exclusive is not None:
+            self._socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
         try:
             self._socket.bind(("", port))
         except OSError as exc:

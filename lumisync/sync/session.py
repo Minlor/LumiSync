@@ -9,7 +9,7 @@ once so both front ends run the same code.
 
 from __future__ import annotations
 
-import platform
+import sys
 import threading
 import time
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
@@ -155,11 +155,14 @@ class SyncSession:
         """Block until the stop event is set, then release every resource."""
         com_initialized = False
         try:
-            if self.mode == "music" and platform.system() == "Windows":
-                from pythoncom import CoInitialize
+            # sys.platform (not platform.system()) so type checkers on other
+            # platforms skip the pywin32-only imports.
+            if sys.platform == "win32":
+                if self.mode == "music":
+                    from pythoncom import CoInitialize
 
-                CoInitialize()
-                com_initialized = True
+                    CoInitialize()
+                    com_initialized = True
             if not self._open_devices() or self.stop_event.is_set():
                 return
             self._notify_started()
@@ -177,7 +180,7 @@ class SyncSession:
             self._error(f"{self.mode.capitalize()} sync error: {exc}")
         finally:
             self._close_devices()
-            if com_initialized:
+            if sys.platform == "win32" and com_initialized:
                 try:
                     from pythoncom import CoUninitialize
 

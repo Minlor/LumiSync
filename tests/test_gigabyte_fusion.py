@@ -348,9 +348,13 @@ class AdapterTests(FusionTestCase):
         adapter.set_color(5, 5, 5)
         self.assertEqual(self.frames(self.hid.reports[3:]), [(5, 5, 5)])
 
+    # Access denied means "another program holds it" on Windows only; Linux
+    # explains the udev rule instead (LinuxTests).
+    @patch.object(sys, "platform", "win32")
     def test_open_denied_and_enumeration_errors_surface_as_runtime_errors(self):
         adapter = self.adapter()
-        self.hid.open_error = OSError(13, "Access is denied")
+        # OSError(13, ...) is a PermissionError; spelt out so the intent shows.
+        self.hid.open_error = PermissionError(13, "Access is denied")
         with self.assertRaises(RuntimeError) as caught:
             adapter.set_power(True)
         self.assertEqual(str(caught.exception), fusion.OPEN_FAILED_MESSAGE)
@@ -501,11 +505,13 @@ class DiscoveryTests(FusionTestCase):
         self.assertEqual(fusion.discover(), [])
         self.assertEqual(self.hid.events, [])
 
+    # On Linux a denied open still lists the board (LinuxTests twin).
+    @patch.object(sys, "platform", "win32")
     def test_backend_failures_never_raise(self):
         self.hid.enumerate_error = OSError(5, "boom")
         self.assertEqual(fusion.discover(), [])
         self.hid.enumerate_error = None
-        self.hid.open_error = OSError(13, "denied")
+        self.hid.open_error = PermissionError(13, "denied")
         self.assertEqual(fusion.discover(), [])
         self.hid.open_error = None
         self.hid.reply = bytes(64)
@@ -645,6 +651,24 @@ class LinuxTests(FusionTestCase):
     def test_discovery_still_skips_a_controller_that_is_not_rgb_fusion(self):
         self.hid.reply = bytes([0xCC, 0x07]) + GOLDEN_REPLY[2:]
         self.assertEqual(fusion.discover(), [])
+
+    def test_backend_failures_never_raise(self):
+        self.hid.enumerate_error = OSError(5, "boom")
+        self.assertEqual(fusion.discover(), [])
+        self.hid.enumerate_error = None
+        # Denied: the udev rule is missing, so the bare board is listed.
+        self.hid.open_error = PermissionError(13, "denied")
+        found = fusion.discover()
+        self.assertEqual([d["device_id"] for d in found], ["rgbfusion2-048d-5702"])
+        self.assertNotIn("rgb_fusion_firmware", found[0])
+        self.hid.open_error = OSError(16, "Device or resource busy")
+        self.assertEqual(fusion.discover(), [])
+        self.hid.open_error = None
+        self.hid.reply = bytes(64)
+        self.assertEqual(fusion.discover(), [])
+        with patch.object(fusion, "_hid", UntouchableHid()):
+            self.assertEqual(fusion.discover(), [])
+        self.assertEqual(self.hid.reports, [fusion.build_identify_query()])
 
     def test_discovery_skips_other_open_failures(self):
         self.hid.open_error = OSError(16, "Device or resource busy")

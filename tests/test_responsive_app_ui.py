@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QFont, QFontDatabase
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QPushButton, QScrollArea, QWidget
 
-from lumisync.config.options import BRIGHTNESS, SYNC
+from lumisync.config.options import BRIGHTNESS, GENERAL, SYNC
 from lumisync.gui.controllers.sync_controller import SyncController, SYNC_SETTINGS_KEYS
 from lumisync.gui.dialogs.add_device_dialog import AddDeviceDialog
 from lumisync.gui.dialogs.panel_tools_dialog import PanelToolsDialog
@@ -57,6 +57,10 @@ class ResponsiveAppUiTests(unittest.TestCase):
         self.patches = [
             patch("lumisync.gui.views.modes_view.app_settings", return_value=self.settings),
             patch("lumisync.gui.controllers.sync_controller.app_settings", return_value=self.settings),
+            # These pages assume a session that can list displays; a Wayland
+            # desktop (or WSLg) would otherwise switch monitor mode to portal
+            # capture. Wayland has its own tests in test_wayland_capture.
+            patch.object(GENERAL, "compositor", "x11"),
         ]
         for item in self.patches:
             item.start()
