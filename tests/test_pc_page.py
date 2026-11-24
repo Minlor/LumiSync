@@ -140,7 +140,7 @@ class LocalHardwareHelperTests(unittest.TestCase):
         with patch.dict(sys.modules, {"lumisync.drivers._fixture_working": working}), \
                 patch.object(devices, "LOCAL_HARDWARE_DRIVERS", ("_fixture_working", "_fixture_missing")):
             self.assertEqual(devices.discover_local_hardware(), [mouse])
-        self.assertEqual(devices.LOCAL_HARDWARE_DRIVERS, ("gigabyte_fusion", "logitech_hidpp", "lorgar_keyboard"))
+        self.assertEqual(devices.LOCAL_HARDWARE_DRIVERS, ("gigabyte_fusion", "logitech_hidpp", "lorgar_keyboard", "asus_laptop"))
 
 
 class PcHardwareLabelTests(unittest.TestCase):

@@ -436,7 +436,7 @@ def merge_discovered_devices(
 # Driver modules (under lumisync.drivers) whose discover() lists lighting on
 # this PC. Each returns descriptors and never raises; adding a driver is one
 # entry here.
-LOCAL_HARDWARE_DRIVERS = ("gigabyte_fusion", "logitech_hidpp", "lorgar_keyboard")
+LOCAL_HARDWARE_DRIVERS = ("gigabyte_fusion", "logitech_hidpp", "lorgar_keyboard", "asus_laptop")
 
 
 def discover_local_hardware() -> List[Dict[str, Any]]:

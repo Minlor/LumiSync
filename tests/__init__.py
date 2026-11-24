@@ -114,3 +114,35 @@ except ImportError:
     pass
 else:
     _lorgar_keyboard._hid = _NoLorgar()
+
+
+# The same for the ASUS laptop driver: by default it lists nothing and opens
+# nothing. Tests of it patch ``asus_laptop._acpi`` and system info.
+class _NoAsus:
+    """An empty ACPI layer for the ASUS laptop driver."""
+
+    @staticmethod
+    def open_device():
+        raise AssertionError("A test opened a real ACPI device through the ASUS laptop driver.")
+
+    @staticmethod
+    def send_control(_handle, _packet):
+        raise AssertionError("A test sent an ACPI control call through the ASUS laptop driver.")
+
+    @staticmethod
+    def query_status(_handle, _dev_id):
+        raise AssertionError("A test sent an ACPI status query through the ASUS laptop driver.")
+
+    @staticmethod
+    def close_device(_handle):
+        pass
+
+
+try:
+    from lumisync.drivers import asus_laptop as _asus_laptop  # noqa: E402
+except ImportError:
+    pass
+else:
+    _asus_laptop._acpi = _NoAsus()
+    _asus_laptop._get_system_info = lambda: (False, "")
+
