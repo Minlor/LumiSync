@@ -189,6 +189,44 @@ class AsusLaptopDiscoveryTests(unittest.TestCase):
         self.assertEqual(asus_laptop.discover(), [])
 
     @patch("lumisync.drivers.asus_laptop._get_system_info")
+    def test_detect_device_id_reports_answering_id(self, mock_info) -> None:
+        mock_info.return_value = (True, "ASUS TUF Gaming A15 FA506NCR")
+        self.assertEqual(asus_laptop.detect_device_id(), asus_laptop.TUF_KB_DEVID)
+        self.fake_acpi.query_status_results[asus_laptop.TUF_KB_DEVID] = 0
+        self.fake_acpi.query_status_results[asus_laptop.TUF_KB_DEVID_FALLBACK] = asus_laptop.DSTS_PRESENCE_BIT
+        self.assertEqual(asus_laptop.detect_device_id(), asus_laptop.TUF_KB_DEVID_FALLBACK)
+        self.fake_acpi.query_status_results[asus_laptop.TUF_KB_DEVID_FALLBACK] = 0
+        self.assertIsNone(asus_laptop.detect_device_id())
+
+    def test_only_fa506ncr_is_verified(self) -> None:
+        self.assertTrue(asus_laptop.is_verified_model("ASUS TUF Gaming A15 FA506NCR_FA506NCR"))
+        self.assertTrue(asus_laptop.is_verified_model("fa506ncr"))
+        for model in (
+            "ASUS TUF Gaming A15 FA506IV_TUF506IV",
+            "FA506IV",
+            "FA506IH",
+            "FA506II",
+            "FA506IU",
+            "FA506QM",
+            "FA506",
+        ):
+            with self.subTest(model=model):
+                self.assertFalse(asus_laptop.is_verified_model(model))
+
+    @patch("lumisync.drivers.asus_laptop._get_system_info")
+    def test_fa506_variant_is_not_probed(self, mock_info) -> None:
+        mock_info.return_value = (True, "ASUS TUF Gaming A15 FA506IV_TUF506IV")
+        self.assertEqual(asus_laptop.discover(), [])
+        self.assertFalse(asus_laptop.device_present())
+        self.assertEqual(self.fake_acpi.events, [])
+
+    @patch("lumisync.drivers.asus_laptop._get_system_info")
+    def test_discover_reads_system_info_once(self, mock_info) -> None:
+        mock_info.return_value = (True, "ASUS TUF Gaming A15 FA506NCR")
+        self.assertEqual(len(asus_laptop.discover()), 1)
+        self.assertEqual(mock_info.call_count, 1)
+
+    @patch("lumisync.drivers.asus_laptop._get_system_info")
     def test_asus_discovery_handles_atkacpi_failure(self, mock_info) -> None:
         mock_info.return_value = (True, "ASUS TUF Gaming A15 FA506NCR")
         self.fake_acpi.open_error = OSError("ATKACPI not found")
@@ -213,9 +251,94 @@ class AsusLaptopAdapterTests(unittest.TestCase):
         ctrl.color = (255, 255, 255)
         ctrl.manual_known = False
         ctrl.last_stream_color = None
+        ctrl.last_shown = None
+        ctrl.dev_id = None
 
     def tearDown(self) -> None:
         asus_laptop._acpi = self.orig_acpi
+
+    def _packet_devids(self) -> List[int]:
+        return [struct.unpack("<I", pkt[8:12])[0] for pkt in self.fake_acpi.packets]
+
+    @patch("lumisync.drivers.asus_laptop._get_system_info")
+    def test_fallback_only_laptop_packets_target_fallback_id(self, mock_info) -> None:
+        mock_info.return_value = (True, "ASUS TUF Gaming A15 FA506NCR_FA506NCR")
+        self.fake_acpi.query_status_results[asus_laptop.TUF_KB_DEVID] = 0
+        self.fake_acpi.query_status_results[asus_laptop.TUF_KB_DEVID_FALLBACK] = asus_laptop.DSTS_PRESENCE_BIT
+        devs = asus_laptop.discover()
+        self.assertEqual(len(devs), 1)
+
+        adapter = asus_laptop.AsusLaptopAdapter(devs[0])
+        adapter.set_color(10, 20, 30)
+        adapter.begin_stream()
+        adapter.set_segments([(200, 0, 0)])
+        adapter.end_stream()
+        adapter.set_power(False)
+        adapter.set_power(True)
+        self.assertGreaterEqual(len(self.fake_acpi.packets), 4)
+        self.assertEqual(
+            set(self._packet_devids()), {asus_laptop.TUF_KB_DEVID_FALLBACK}
+        )
+        adapter.close()
+
+    def test_primary_laptop_packets_target_primary_id(self) -> None:
+        adapter = asus_laptop.AsusLaptopAdapter(FAKE_DESCRIPTOR)
+        adapter.set_color(10, 20, 30)
+        adapter.begin_stream()
+        adapter.set_segments([(200, 0, 0)])
+        adapter.set_power(False)
+        self.assertEqual(len(self.fake_acpi.packets), 3)
+        self.assertEqual(set(self._packet_devids()), {asus_laptop.TUF_KB_DEVID})
+        # Only the primary ID was queried: it answered, so no fallback query
+        self.assertNotIn(f"query_0x{asus_laptop.TUF_KB_DEVID_FALLBACK:08X}", self.fake_acpi.events)
+        adapter.close()
+
+    def test_no_device_id_present_raises_and_sends_nothing(self) -> None:
+        self.fake_acpi.query_status_results[asus_laptop.TUF_KB_DEVID] = 0
+        self.fake_acpi.query_status_results[asus_laptop.TUF_KB_DEVID_FALLBACK] = 0
+        adapter = asus_laptop.AsusLaptopAdapter(FAKE_DESCRIPTOR)
+        with self.assertRaises(OSError) as caught:
+            adapter.set_color(255, 0, 0)
+        self.assertIn("not present", str(caught.exception))
+        self.assertEqual(self.fake_acpi.packets, [])
+        self.assertNotIn("send", self.fake_acpi.events)
+        # The handle opened for the DSTS query was closed again
+        self.assertFalse(self.fake_acpi.is_open)
+        ctrl = asus_laptop._get_shared_controller()
+        self.assertIsNone(ctrl.handle)
+        self.assertIsNone(ctrl.dev_id)
+        adapter.close()
+
+    def test_power_on_after_stream_restores_last_streamed_color(self) -> None:
+        adapter = asus_laptop.AsusLaptopAdapter(FAKE_DESCRIPTOR)
+        adapter.begin_stream()
+        adapter.set_segments([(10, 10, 10)])
+        adapter.set_segments([(200, 100, 50)])
+        adapter.end_stream()
+        adapter.set_power(False)
+        adapter.set_power(True)
+
+        self.assertEqual(len(self.fake_acpi.packets), 4)
+        off_pkt, on_pkt = self.fake_acpi.packets[2], self.fake_acpi.packets[3]
+        self.assertEqual(tuple(off_pkt[14:17]), (0, 0, 0))
+        self.assertEqual(on_pkt[12], asus_laptop.OPCODE_SET)  # 0xB3
+        self.assertEqual(tuple(on_pkt[14:17]), (200, 100, 50))
+        adapter.close()
+
+    def test_power_on_after_manual_color_restores_manual_color(self) -> None:
+        adapter = asus_laptop.AsusLaptopAdapter(FAKE_DESCRIPTOR)
+        adapter.set_color(50, 100, 150)
+        adapter.begin_stream()
+        adapter.set_segments([(255, 0, 0)])
+        adapter.set_power(False)
+        adapter.set_power(True)
+
+        on_pkt = self.fake_acpi.packets[-1]
+        self.assertEqual(on_pkt[12], asus_laptop.OPCODE_SET)  # 0xB3, not a second save
+        self.assertEqual(tuple(on_pkt[14:17]), (50, 100, 150))
+        opcodes = [pkt[12] for pkt in self.fake_acpi.packets]
+        self.assertEqual(opcodes.count(asus_laptop.OPCODE_SAVE), 1)
+        adapter.close()
 
     def test_manual_set_color_sends_0xb4_save(self) -> None:
         adapter = asus_laptop.AsusLaptopAdapter(FAKE_DESCRIPTOR)

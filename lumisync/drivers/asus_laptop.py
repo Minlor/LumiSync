@@ -1,8 +1,9 @@
-"""ASUS TUF and ROG laptop keyboard lighting over ATKACPI.
+"""ASUS laptop keyboard lighting over ATKACPI.
 
-Direct hardware lighting control for built-in keyboards on ASUS gaming
-laptops (TUF Gaming and ROG series) through the ASUS ATKACPI driver
-interface (``\\\\.\\ATKACPI``).
+Direct hardware lighting control for the built-in keyboard of ASUS gaming
+laptops through the ASUS ATKACPI driver interface (``\\\\.\\ATKACPI``). The
+only model verified on real hardware is the ASUS TUF Gaming A15 (FA506NCR);
+other models are not enabled until someone tests them.
 
 Protocol and Hardware Background
 --------------------------------
@@ -13,8 +14,11 @@ sent to ``\\\\.\\ATKACPI`` using DeviceIoControl code ``0x0022240C``:
 * Method ``DSTS`` (``0x53545344``): Query device status and presence
 
 Device IDs:
-* Primary TUF/ROG keyboard: ``0x00100056`` (``TUF_KB_DEVID``)
-* Fallback TUF/ROG keyboard: ``0x0010005A`` (``TUF_KB_DEVID_FALLBACK``)
+* Primary keyboard: ``0x00100056`` (``TUF_KB_DEVID``)
+* Fallback keyboard: ``0x0010005A`` (``TUF_KB_DEVID_FALLBACK``)
+
+The driver asks ``DSTS`` for the primary ID first, then the fallback, and sends
+every ``DEVS`` packet to whichever ID reported presence.
 
 The ``DEVS`` static color payload layout (Windows ATKACPI format):
 * Argument length: 10 bytes (4-byte device ID + 6-byte setting buffer)
@@ -44,6 +48,9 @@ Safety and Invariants
   ``\\\\.\\ATKACPI``.
 - **Read-Only DSTS Query:** Before registering a device, discovery evaluates
   the ``DSTS`` method to confirm ``ASUS_WMI_DSTS_PRESENCE_BIT`` (``0x00010000``).
+  The controller repeats this query when it opens its handle, to pick the
+  device ID its ``DEVS`` packets target; if neither ID is present it sends
+  nothing and raises ``OSError``.
 - **Firmware Status Verification:** Every ``DEVS`` call verifies that the
   firmware returned status 1 (success) in the output buffer, raising an
   ``OSError`` on rejection.
@@ -55,6 +62,8 @@ Safety and Invariants
   by at least :data:`SYNC_COLOR_THRESHOLD` are dropped to minimize ACPI traffic.
 - **Manual State Tracking:** If no manual color was configured, ending a
   stream leaves the hardware on the last frame without restoring a fake white.
+  Power-on after power-off restores the manual color if one was set, otherwise
+  the last color the keyboard showed (for example the last streamed frame).
 - **Measured Latency:** Benchmarked on ASUS TUF Gaming A15 (FA506NCR) at
   average 0.63 ms per DeviceIoControl call (min 0.52 ms, max 1.24 ms over 50
   calls), yielding a light bus duty cycle (~1.9%) at 30 Hz.
@@ -113,10 +122,11 @@ SUPPORTED_DEVICES = frozenset({TUF_KB_DEVID, TUF_KB_DEVID_FALLBACK})
 # Minimum channel difference to trigger a new ACPI write during streaming
 SYNC_COLOR_THRESHOLD = 2
 
-# Table of verified laptop model identifiers (checked against SystemProductName)
+# Table of verified laptop model identifiers, matched as substrings of
+# SystemProductName (e.g. "ASUS TUF Gaming A15 FA506NCR_FA506NCR"). Only models
+# tested on real hardware belong here: other FA506 variants are not verified.
 VERIFIED_MODELS: Tuple[str, ...] = (
     "FA506NCR",
-    "FA506",
 )
 
 
@@ -342,28 +352,56 @@ def _get_system_info() -> Tuple[bool, str]:
     return False, ""
 
 
-def device_present(device: Optional[DeviceLike] = None) -> bool:
-    """Return whether an ASUS laptop with ATKACPI lighting support is present.
+def _query_device_id(handle: int) -> Optional[int]:
+    """Return the keyboard device ID whose DSTS reports presence on ``handle``.
 
-    Verifies manufacturer, checks against the verified models table, opens
-    ATKACPI, and queries firmware presence via DSTS (devid 0x00100056 with
-    0x0010005A fallback).
+    Asks the primary ID (0x00100056) first, then the fallback (0x0010005A).
+    Returns None when neither is present. Query errors propagate.
     """
-    is_asus, model = _get_system_info()
-    if not is_asus or not is_verified_model(model):
-        return False
+    for dev_id in (TUF_KB_DEVID, TUF_KB_DEVID_FALLBACK):
+        status = _acpi.query_status(handle, dev_id)
+        if (status & DSTS_PRESENCE_BIT) != 0:
+            return dev_id
+    return None
+
+
+def _probe_device_id() -> Optional[int]:
+    """Open ATKACPI, find the present keyboard device ID, and close it again.
+
+    Does no system gating: callers check manufacturer and model first.
+    Returns None on any failure.
+    """
     try:
         handle = _acpi.open_device()
         try:
-            status = _acpi.query_status(handle, TUF_KB_DEVID)
-            if (status & DSTS_PRESENCE_BIT) != 0:
-                return True
-            status_fallback = _acpi.query_status(handle, TUF_KB_DEVID_FALLBACK)
-            return (status_fallback & DSTS_PRESENCE_BIT) != 0
+            return _query_device_id(handle)
         finally:
             _acpi.close_device(handle)
     except Exception:
-        return False
+        return None
+
+
+def _is_supported_system(is_asus: bool, model: str) -> bool:
+    return is_asus and is_verified_model(model)
+
+
+def detect_device_id() -> Optional[int]:
+    """Return the ATKACPI keyboard device ID this laptop answers on, if any.
+
+    Verifies manufacturer, checks against the verified models table, opens
+    ATKACPI, and queries firmware presence via DSTS (devid 0x00100056 with
+    0x0010005A fallback). Returns None when the machine is not supported or
+    neither ID reports presence.
+    """
+    is_asus, model = _get_system_info()
+    if not _is_supported_system(is_asus, model):
+        return None
+    return _probe_device_id()
+
+
+def device_present(device: Optional[DeviceLike] = None) -> bool:
+    """Return whether an ASUS laptop with ATKACPI lighting support is present."""
+    return detect_device_id() is not None
 
 
 def descriptor_for(model_name: str) -> Dict[str, Any]:
@@ -393,12 +431,17 @@ def discover() -> List[Dict[str, Any]]:
     If the machine matches and DSTS presence confirms lighting hardware,
     returns its device descriptor.
     """
+    # Read the registry once and probe ACPI directly, rather than through
+    # device_present(), which would read the registry a second time.
     is_asus, model = _get_system_info()
-    if not is_asus or not is_verified_model(model):
+    if not _is_supported_system(is_asus, model):
         return []
 
-    if device_present():
-        logger.info("Found ASUS laptop keyboard lighting on %s", model or "ASUS laptop")
+    dev_id = _probe_device_id()
+    if dev_id is not None:
+        logger.info(
+            "Found ASUS laptop keyboard lighting on %s (device 0x%08X)", model or "ASUS laptop", dev_id
+        )
         return [descriptor_for(model)]
     return []
 
@@ -426,16 +469,40 @@ class _Controller:
         # does not force white onto the keyboard.
         self.manual_known = False
         self.last_stream_color: Optional[RGB] = None
+        # The last non-black RGB actually sent to the keyboard while it was on
+        # (brightness already applied). Power-on restores it when no manual
+        # color is known, so the keyboard does not stay black after sync + off.
+        self.last_shown: Optional[RGB] = None
+        # The keyboard device ID that answered DSTS when the handle was opened.
+        self.dev_id: Optional[int] = None
 
     def open_handle(self) -> None:
-        if self.handle is None:
-            self.handle = _acpi.open_device()
-            logger.info("ASUS ATKACPI lighting interface opened")
+        if self.handle is not None:
+            return
+        handle = _acpi.open_device()
+        try:
+            dev_id = _query_device_id(handle)
+        except BaseException:
+            _acpi.close_device(handle)
+            raise
+        if dev_id is None:
+            _acpi.close_device(handle)
+            raise OSError(
+                "ASUS ATKACPI keyboard lighting is not present: DSTS reported neither "
+                f"device 0x{TUF_KB_DEVID:08X} nor 0x{TUF_KB_DEVID_FALLBACK:08X}"
+            )
+        self.handle = handle
+        self.dev_id = dev_id
+        logger.info("ASUS ATKACPI lighting interface opened (device 0x%08X)", dev_id)
 
-    def send_packet(self, packet: bytes) -> None:
+    def send_color(self, r: int, g: int, b: int, save: bool = False) -> None:
+        """Send a static color DEVS packet to the detected keyboard device ID."""
         self.open_handle()
-        assert self.handle is not None
+        assert self.handle is not None and self.dev_id is not None
+        packet = build_color_packet(r, g, b, save=save, dev_id=self.dev_id)
         _acpi.send_control(self.handle, packet)
+        if (r, g, b) != (0, 0, 0):
+            self.last_shown = (r, g, b)
 
     def close_handle(self) -> None:
         if self.handle is not None:
@@ -443,6 +510,7 @@ class _Controller:
                 _acpi.close_device(self.handle)
             finally:
                 self.handle = None
+                self.dev_id = None
             logger.info("ASUS ATKACPI lighting interface closed")
 
 
@@ -458,7 +526,7 @@ def _get_shared_controller() -> _Controller:
 
 
 class AsusLaptopAdapter(TransportAdapter):
-    """LumiSync TransportAdapter for ASUS TUF and ROG laptop keyboards."""
+    """LumiSync TransportAdapter for the ASUS laptop keyboard (verified on the TUF Gaming A15 FA506NCR)."""
 
     def __init__(self, device: DeviceLike) -> None:
         super().__init__(device)
@@ -492,20 +560,28 @@ class AsusLaptopAdapter(TransportAdapter):
         r = int(color[0] * factor)
         g = int(color[1] * factor)
         b = int(color[2] * factor)
-        packet = build_color_packet(r, g, b, save=save)
-        self._controller.send_packet(packet)
+        self._controller.send_color(r, g, b, save=save)
 
     def set_power(self, on: bool) -> None:
         with self._controller.lock:
+            ctrl = self._controller
             if on:
-                if self._controller.manual_known:
-                    self._apply_color(self._controller.color, self._controller.brightness, save=False)
-                self._controller.power_on = True
+                # Restore with 0xB3 only: the manual color if one is known,
+                # else the last color the keyboard showed (e.g. a stream frame).
+                # The default white is used only after our own power-off when
+                # nothing was ever shown.
+                if ctrl.manual_known:
+                    self._apply_color(ctrl.color, ctrl.brightness, save=False)
+                elif ctrl.last_shown is not None:
+                    ctrl.send_color(*ctrl.last_shown, save=False)
+                elif ctrl.power_on is False:
+                    self._apply_color(ctrl.color, ctrl.brightness, save=False)
+                ctrl.power_on = True
             else:
                 # Power-off writes black (0, 0, 0) via 0xB3 (RAM only).
                 # Never 0xB4, so black does not persist across reboots.
-                self._controller.send_packet(build_color_packet(0, 0, 0, save=False))
-                self._controller.power_on = False
+                ctrl.send_color(0, 0, 0, save=False)
+                ctrl.power_on = False
 
     def set_brightness(self, percent: int) -> None:
         level = max(0, min(100, int(percent)))
@@ -521,7 +597,9 @@ class AsusLaptopAdapter(TransportAdapter):
         with self._controller.lock:
             self._controller.manual_known = True
             if self._controller.power_on is not False:
-                # User explicit manual color change: save=True (0xB4) so it persists across reboots
+                # User explicit manual color change: save=True (0xB4) so it persists across reboots.
+                # One 0xB4 packet per manual color change. The saved color includes the
+                # brightness at this moment, since brightness itself is only sent with 0xB3.
                 self._apply_color(color, self._controller.brightness, save=True)
                 self._controller.power_on = True
             self._controller.color = color
@@ -593,6 +671,7 @@ __all__ = [
     "build_color_packet",
     "build_dsts_packet",
     "descriptor_for",
+    "detect_device_id",
     "device_present",
     "discover",
     "is_verified_model",
