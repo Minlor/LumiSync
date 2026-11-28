@@ -15,6 +15,7 @@ from .idotmatrix_ble import IDotMatrixBleAdapter
 RGB_FUSION_TYPE = "rgb_fusion2"
 LOGITECH_HIDPP_TYPE = "logitech_hidpp"
 LORGAR_KEYBOARD_TYPE = "lorgar_keyboard"
+ASUS_LAPTOP_TYPE = "asus_laptop"
 
 
 def _type(device: Any) -> str:
@@ -45,6 +46,10 @@ def lighting_options(device: Any):
         from . import lorgar_keyboard
 
         return lorgar_keyboard.lighting_options(device)
+    if kind == ASUS_LAPTOP_TYPE:
+        from . import asus_laptop
+
+        return asus_laptop.lighting_options(device)
     if kind == RGB_FUSION_TYPE:
         from . import gigabyte_fusion
 
@@ -66,6 +71,10 @@ def local_hardware_presence(device: DeviceLike) -> Tuple[bool, str]:
         from . import lorgar_keyboard
 
         return lorgar_keyboard.device_present(device), lorgar_keyboard.NOT_FOUND_MESSAGE
+    if _type(device) == ASUS_LAPTOP_TYPE:
+        from . import asus_laptop
+
+        return asus_laptop.device_present(device), asus_laptop.NOT_FOUND_MESSAGE
     from . import gigabyte_fusion
 
     return gigabyte_fusion.controller_present(device), gigabyte_fusion.NOT_FOUND_MESSAGE
@@ -78,7 +87,7 @@ SUPPORTED_TRANSPORTS = frozenset({
     "ble", "tuya", "usb",
 })
 _TYPES_WITH_ADAPTERS = frozenset({
-    "idotmatrix", "idotmatrix_ble", "tuya", "lsc", LOGITECH_HIDPP_TYPE, LORGAR_KEYBOARD_TYPE, RGB_FUSION_TYPE,
+    "idotmatrix", "idotmatrix_ble", "tuya", "lsc", LOGITECH_HIDPP_TYPE, LORGAR_KEYBOARD_TYPE, RGB_FUSION_TYPE, ASUS_LAPTOP_TYPE,
 })
 
 
@@ -121,6 +130,10 @@ def create_adapter(device: DeviceLike, server=None) -> TransportAdapter:
         from .lorgar_keyboard import LorgarKeyboardAdapter
 
         return LorgarKeyboardAdapter(device)
+    if kind == ASUS_LAPTOP_TYPE:
+        from .asus_laptop import AsusLaptopAdapter
+
+        return AsusLaptopAdapter(device)
     if transport == "usb" or kind == RGB_FUSION_TYPE:
         from .gigabyte_fusion import GigabyteFusionAdapter
 
@@ -143,6 +156,10 @@ def capabilities_for_device(device: DeviceLike):
         from .lorgar_keyboard import LorgarKeyboardAdapter
 
         return LorgarKeyboardAdapter.capabilities_for(device)
+    if kind == ASUS_LAPTOP_TYPE:
+        from .asus_laptop import AsusLaptopAdapter
+
+        return AsusLaptopAdapter.capabilities_for(device)
     if transport == "usb" or kind == RGB_FUSION_TYPE:
         from .gigabyte_fusion import GigabyteFusionAdapter
 
